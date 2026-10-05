@@ -14,6 +14,7 @@ import {
   fromBase64,
   keyToHex,
   keyFromHex,
+  isE2EEReady,
 } from "../src/e2ee.js";
 
 await sodium.ready;
@@ -113,5 +114,77 @@ describe("E2EE", () => {
     const hex = keyToHex(keyPair.publicKey);
     const restored = keyFromHex(hex);
     expect(restored).toEqual(keyPair.publicKey);
+  });
+
+  it("reports readiness once libsodium is initialized", () => {
+    expect(isE2EEReady()).toBe(true);
+  });
+
+  it("rejects a truncated public key", () => {
+    const sender = generateKeyPair();
+    const recipient = generateKeyPair();
+    const truncated = recipient.publicKey.subarray(0, 8);
+
+    expect(() => encrypt(Buffer.from("x"), truncated, sender.privateKey)).toThrow(
+      /recipientPublicKey must be 32 bytes/,
+    );
+  });
+
+  it("rejects a truncated private key", () => {
+    const recipient = generateKeyPair();
+
+    expect(() => computeSharedKey(recipient.publicKey, Buffer.alloc(4))).toThrow(
+      /senderPrivateKey must be 32 bytes/,
+    );
+  });
+
+  it("rejects a shared key of the wrong length", () => {
+    const alice = generateKeyPair();
+    const bob = generateKeyPair();
+    const sharedKey = computeSharedKey(bob.publicKey, alice.privateKey);
+
+    expect(() => encryptWithSharedKey(Buffer.from("x"), sharedKey.subarray(0, 4))).toThrow(
+      /sharedKey must be 32 bytes/,
+    );
+  });
+
+  it("rejects a ciphertext that is too short to contain a nonce and tag", () => {
+    const alice = generateKeyPair();
+    const bob = generateKeyPair();
+    const sharedKey = computeSharedKey(bob.publicKey, alice.privateKey);
+
+    expect(() => decryptWithSharedKey(Buffer.alloc(8), sharedKey)).toThrow(
+      /at least 40 bytes/,
+    );
+  });
+
+  it("rejects a non-Buffer message", () => {
+    const sender = generateKeyPair();
+    const recipient = generateKeyPair();
+
+    expect(() =>
+      encrypt("plain text" as unknown as Buffer, recipient.publicKey, sender.privateKey),
+    ).toThrow(/message must be a Buffer/);
+  });
+
+  it("rejects malformed base64 and hex input", () => {
+    expect(() => fromBase64("***not base64***")).toThrow(/not valid base64/);
+    expect(() => keyFromHex("zzzz")).toThrow(/not valid hexadecimal/);
+    expect(() => keyFromHex("abc")).toThrow(/not valid hexadecimal/);
+    expect(() => toBase64("nope" as unknown as Buffer)).toThrow(/must be a Buffer/);
+  });
+
+  it("encrypts the same plaintext differently on every call", () => {
+    const alice = generateKeyPair();
+    const bob = generateKeyPair();
+    const sharedKey = computeSharedKey(bob.publicKey, alice.privateKey);
+    const message = Buffer.from("same input");
+
+    const first = encryptWithSharedKey(message, sharedKey);
+    const second = encryptWithSharedKey(message, sharedKey);
+
+    expect(first.equals(second)).toBe(false);
+    expect(decryptWithSharedKey(first, sharedKey)).toEqual(message);
+    expect(decryptWithSharedKey(second, sharedKey)).toEqual(message);
   });
 });

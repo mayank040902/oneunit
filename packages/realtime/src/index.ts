@@ -1,28 +1,69 @@
 export {
   RealtimeHub,
-  broadcastPublicInteraction,
+  createRealtimeHub,
   decodeMessage,
-  decryptMessage,
+  CONNECTION_OPEN,
+  DEFAULT_LIMITS,
+  DEFAULT_HEARTBEAT,
+  DEFAULT_BACKPRESSURE,
   type Client,
+  type ClientInput,
+  type JoinOptions,
+  type Connection,
+  type BroadcastTarget,
   type BroadcastOptions,
-  type Channel,
+  type Logger,
+  type RealtimeLimits,
+  type HeartbeatOptions,
+  type BackpressureOptions,
+  type RealtimeAction,
+  type AuthenticateContext,
+  type AuthenticateHook,
+  type AuthorizeContext,
+  type AuthorizeHook,
+  type RealtimeEvent,
+  type RealtimeEventName,
+  type RealtimeHubStats,
+  type RealtimeHubOptions,
+  type CreateRealtimeHubOptions,
+  type E2EEFrame,
+  type ClientRef,
 } from "./hub.js";
 
 export {
-  createRealtimeHub,
-  registerRealtime,
-  realtimePlugin,
-  type RealtimePluginOptions,
-} from "./plugin.js";
+  RealtimeError,
+  ConnectionError,
+  ConnectionClosedError,
+  ChannelError,
+  AuthenticationError,
+  AuthorizationError,
+  MessageTooLargeError,
+  ConnectionLimitError,
+  type RealtimeErrorCode,
+} from "./errors.js";
 
 export {
-  createKafkaBridge,
-  type KafkaBridgeConfig,
-  type KafkaBridge,
-  type KafkaClientLike,
-  type KafkaBridgeLogger,
-  type EachMessagePayload,
-} from "./kafka-bridge.js";
+  createConnectionAdapter,
+  attachWebSocketAdapter,
+  matchesPath,
+  type ConnectionAdapter,
+  type ConnectionAdapterOptions,
+  type AttachedWebSocketAdapter,
+  type AttachWebSocketAdapterOptions,
+  type HttpServerLike,
+  type WebSocketServerLike,
+  type RealtimeConnection,
+  type RealtimeConnectionHandler,
+  type RealtimeMessageHandler,
+} from "./adapter.js";
+
+export {
+  registerRealtime,
+  realtimePlugin,
+  matchesRealtimePath,
+  type RealtimePluginOptions,
+  type RealtimePluginLogger,
+} from "./plugin.js";
 
 export {
   generateKeyPair,
@@ -38,6 +79,8 @@ export {
   fromBase64,
   keyToHex,
   keyFromHex,
+  e2eeReady,
+  isE2EEReady,
   type KeyPair,
   type SharedKeyData,
 } from "./e2ee.js";
