@@ -1,0 +1,301 @@
+name: logger
+
+# `paths` is not evaluated for tag pushes, which is what makes a release tag
+# reach the publish job below: tag logger-v<version> and GitHub runs this
+# workflow, the verify and consumer-smoke jobs gate the publish, and the
+# publish job checks that the tag matches package.json before uploading.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/logger/**"
+      - ".github/workflows/logger.yml"
+  pull_request:
+    paths:
+      - "packages/logger/**"
+      - ".github/workflows/logger.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared in package.json "engines".
+        node: ["20", "22", "24"]
+
+    defaults:
+      run:
+        working-directory: packages/logger
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      # Examples import from dist, so this needs the build to have run first.
+      - name: Typecheck examples
+        run: pnpm run typecheck:examples
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Pack check
+        run: pnpm run pack:check
+
+      - name: Audit
+        run: pnpm audit --audit-level high
+
+  publish-dry-run:
+    name: Consumer smoke test
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and pack
+        run: |
+          pnpm --filter @oneunit/logger run build
+          pnpm --filter @oneunit/logger pack --pack-destination "$RUNNER_TEMP"
+
+      # A published package is only correct if it works when installed, so this
+      # installs the real tarball and exercises the public API against it. It
+      # also catches examples that import from a path npm does not ship.
+      - name: Install the tarball into a clean project
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y > /dev/null
+          npm pkg set type=module > /dev/null
+          npm install "$RUNNER_TEMP"/oneunit-logger-*.tgz
+
+      # A logger is only useful if it does not leak, so the smoke test asserts
+      # on what actually reaches the sink rather than on the shape of the
+      # configuration.
+      - name: Verify the public API
+        run: |
+          cat > "$RUNNER_TEMP/consumer/smoke.mjs" <<'EOF'
+          import assert from "node:assert/strict";
+          import { Writable } from "node:stream";
+          import {
+            createLogger,
+            createChildLogger,
+            createHttpLogger,
+            createSerializers,
+            createTransport,
+            createMultiTransport,
+            defineConfig,
+            redactBindings,
+            redactLogObject,
+          } from "@oneunit/logger";
+
+          const lines = [];
+          const stream = new Writable({
+            write(chunk, _encoding, callback) {
+              lines.push(chunk.toString().trim());
+              callback();
+            },
+          });
+
+          const logger = createLogger({ mode: "production", destination: stream });
+          logger.child({ requestId: "r1", sessionId: "SECRET" }).info(
+            { password: "SECRET", url: "/pay?token=SECRET", user: { apiKey: "SECRET" } },
+            "msg",
+          );
+          logger.error({ err: Object.assign(new Error("boom"), { token: "SECRET" }) }, "failed");
+
+          const records = lines.map((l) => JSON.parse(l));
+          const emitted = JSON.stringify(records);
+
+          // Nothing sensitive may reach the sink.
+          assert.equal(emitted.includes("SECRET"), false, "a secret reached the log sink");
+
+          // Child bindings, deep keys, and direct URLs are all masked.
+          assert.equal(records[0].sessionId, "[REDACTED]");
+          assert.equal(records[0].password, "[REDACTED]");
+          assert.equal(records[0].user.apiKey, "[REDACTED]");
+          assert.equal(records[0].url, "/pay");
+          assert.equal(records[0].requestId, "r1");
+
+          // Redaction must not cost an error its message or stack.
+          assert.equal(records[1].err.message, "boom");
+          assert.match(records[1].err.stack, /Error: boom/);
+          assert.equal(records[1].err.token, "[REDACTED]");
+
+          // The package's own formatting, not pino's defaults.
+          assert.equal(records[0].level, "info");
+          assert.match(records[0].time, /^\d{4}-\d{2}-\d{2}T/);
+
+          // The rest of the public surface.
+          assert.equal(typeof createChildLogger(logger, { a: 1 }).info, "function");
+          assert.equal(typeof createHttpLogger({ logger }).logger, "object");
+          assert.equal(typeof createSerializers().req, "function");
+          assert.equal(createSerializers().req({ method: "GET", url: "/x?token=SECRET" }).url, "/x");
+          assert.equal(defineConfig({ mode: "test" }).level, "silent");
+          assert.deepEqual(redactLogObject({ password: "x" }), { password: "[REDACTED]" });
+          assert.deepEqual(redactBindings({ token: "x" }), { token: "[REDACTED]" });
+          assert.equal(
+            createTransport({ target: "file", destination: "/dev/null" }).targets.length,
+            1,
+          );
+          assert.equal(
+            createMultiTransport([{ target: "file", destination: "/dev/null" }]).targets.length,
+            1,
+          );
+
+          console.log("public API OK");
+          EOF
+          cd "$RUNNER_TEMP/consumer"
+          node smoke.mjs
+
+      # Subpath exports are part of the published contract, so each one is
+      # imported rather than assumed to resolve.
+      - name: Verify subpath exports
+        working-directory: ${{ runner.temp }}/consumer
+        run: |
+          for subpath in config http logger serialize transport; do
+            node --input-type=module -e "
+              import('@oneunit/logger/$subpath').then(
+                () => console.log('  ok: @oneunit/logger/$subpath'),
+                (e) => { console.error('  FAILED: @oneunit/logger/$subpath', e.code); process.exit(1); },
+              );
+            "
+          done
+
+      # The two runnable examples. fastify-example starts a server and is
+      # excluded: it does not exit on its own.
+      - name: Verify shipped examples resolve
+        working-directory: ${{ runner.temp }}/consumer
+        run: |
+          npx --yes tsx "node_modules/@oneunit/logger/examples/ts/logger-example.ts"
+          npx --yes tsx "node_modules/@oneunit/logger/examples/ts/http-example.ts"
+
+      # The published tarball must include the sources its own .js.map and
+      # .d.ts.map point at, or consumer stack traces and editor navigation
+      # break with no warning.
+      - name: Verify sourcemap targets ship
+        run: |
+          cd "$RUNNER_TEMP/consumer/node_modules/@oneunit/logger"
+          node --input-type=module -e '
+            import { existsSync, readFileSync } from "node:fs";
+            import { dirname, resolve } from "node:path";
+            import { globSync } from "node:fs";
+
+            // A source path in a map is relative to that map, not to the
+            // package root, so resolving against the wrong base reports every
+            // map as broken.
+            const maps = globSync("dist/*.map");
+            const missing = [];
+            for (const map of maps) {
+              const { sources = [] } = JSON.parse(readFileSync(map, "utf8"));
+              for (const source of sources) {
+                const target = resolve(dirname(map), source);
+                if (!existsSync(target)) missing.push(`${map} references ${source}`);
+              }
+            }
+            if (missing.length > 0) {
+              for (const m of missing) console.error(`::error::${m}, which is not published`);
+              process.exit(1);
+            }
+            console.log(`sourcemap targets OK (${maps.length} maps)`);
+          '
+
+  # Publishing is driven by a tag, never by a push to main. The tag is the
+  # release record: `git tag logger-v1.0.0 && git push origin logger-v1.0.0`.
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: [verify, publish-dry-run]
+    if: startsWith(github.ref, 'refs/tags/logger-v')
+
+    # id-token: write is what makes npm Trusted Publishing work: the runner
+    # exchanges this OIDC identity for a short-lived publish token, so there is
+    # no long-lived npm secret in this repo. Configure the trusted publisher on
+    # npmjs.com (package settings -> Trusted Publisher) with the repository
+    # "mayank040902/oneunit" and this workflow filename. If you would rather
+    # not set that up, delete the `permissions` block above and use a
+    # repository secret NPM_TOKEN instead, as shown in the commented step.
+    permissions:
+      contents: read
+      id-token: write
+
+    defaults:
+      run:
+        working-directory: packages/logger
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org/
+
+      - run: pnpm install --frozen-lockfile
+
+      # npm refuses to reuse a version number, so a typo in the tag would
+      # produce a failed release that cannot simply be retried. Fail here with
+      # a clear message instead.
+      - name: Tag must match the package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#logger-v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag: $TAG_VERSION, package.json: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      # prepublishOnly runs the full check set, so a failing test blocks the
+      # release before anything reaches the registry.
+      - name: Publish
+        run: pnpm publish --access public --no-git-checks
+        # Uncomment only if you are using an NPM_TOKEN secret instead of
+        # Trusted Publishing:
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Confirm it is live
+        run: |
+          PUBLISHED="$(npm view @oneunit/logger version)"
+          echo "published: $PUBLISHED"
+          if [ "$PUBLISHED" != "$TAG_VERSION" ]; then
+            echo "::error::registry reports $PUBLISHED, expected $TAG_VERSION"
+            exit 1
+          fi

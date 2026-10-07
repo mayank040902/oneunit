@@ -1,4 +1,4 @@
-# @bootstrap-framework/kafka
+# @oneunit/kafka
 
 KafkaJS client for Node.js. The only runtime dependency is `kafkajs`. Logger, config, and codecs are adapters.
 
@@ -7,13 +7,13 @@ Package README: `packages/kafka/README.md`
 ## Install
 
 ```bash
-npm install @bootstrap-framework/kafka
+npm install @oneunit/kafka
 ```
 
 ## Quick start
 
 ```javascript
-import { createKafkaClient } from "@bootstrap-framework/kafka";
+import { createKafkaClient } from "@oneunit/kafka";
 
 const client = createKafkaClient({
   brokers: "localhost:9092",

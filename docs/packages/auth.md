@@ -89,8 +89,10 @@ fastify.get("/me", { preHandler: [fastify.authenticate()] }, async (req) => req.
 fastify.get("/admin", { preHandler: [fastify.authenticate(), fastify.requireRole("admin")] }, handler);
 ```
 
-Tokens are read from `Authorization: Bearer`, an `access_token` cookie, or
-`?access_token=`. `optional: true` set on the plugin applies to every route
+Tokens are read from `Authorization: Bearer` or an `access_token` cookie. The
+query string is only read when you pass `{ query: true }`, which you need for
+flows that cannot set a header — a browser `WebSocket`, an `EventSource`, or a
+file download. `optional: true` set on the plugin applies to every route
 unless a route passes its own options.
 
 ## Also included

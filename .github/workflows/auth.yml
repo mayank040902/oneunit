@@ -134,7 +134,7 @@ jobs:
       - name: Verify shipped examples resolve
         working-directory: ${{ runner.temp }}/consumer
         run: |
-          for example in standalone express fastify uwebsockets oauth-social; do
+          for example in standalone express fastify uwebsockets oauth-social sessions; do
             npx --yes tsx "node_modules/@oneunit/auth/examples/$example.ts"
           done
 

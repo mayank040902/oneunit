@@ -1,5 +1,5 @@
 {
-  "name": "@bootstrap-framework/server",
+  "name": "@oneunit/server",
   "version": "1.0.0",
   "description": "Fastify-based server bootstrap with optional plugins for logging, database, kafka, redis, and realtime.",
   "type": "module",
@@ -90,54 +90,70 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mayank040902/framework.git",
+    "url": "git+https://github.com/mayank040902/oneunit.git",
     "directory": "packages/server"
   },
   "bugs": {
-    "url": "https://github.com/mayank040902/framework/issues"
+    "url": "https://github.com/mayank040902/oneunit/issues"
   },
-  "homepage": "https://github.com/mayank040902/framework/tree/main/packages/server#readme",
+  "homepage": "https://github.com/mayank040902/oneunit/tree/master/packages/server#readme",
   "dependencies": {
     "fastify": "^5.12.5"
   },
   "devDependencies": {
-    "@bootstrap-framework/database": "workspace:*",
-    "@bootstrap-framework/errors": "workspace:*",
-    "@bootstrap-framework/kafka": "workspace:*",
-    "@bootstrap-framework/logger": "workspace:*",
-    "@bootstrap-framework/realtime": "workspace:*",
-    "@bootstrap-framework/redis": "workspace:*",
     "@fastify/compress": "^9.2.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^11.3.0",
+    "@fastify/csrf-protection": "^8.0.0",
     "@fastify/helmet": "^13.1.1",
+    "@fastify/multipart": "^9.0.0",
     "@fastify/rate-limit": "^11.2.0",
+    "@fastify/request-context": "^7.0.0",
+    "@fastify/sensible": "^6.0.0",
+    "@fastify/swagger": "^9.0.0",
+    "@fastify/swagger-ui": "^5.0.0",
+    "@fastify/under-pressure": "^9.0.0",
     "@msgpack/msgpack": "^3.1.3",
+    "@oneunit/database": "workspace:*",
+    "@oneunit/errors": "workspace:*",
+    "@oneunit/kafka": "workspace:*",
+    "@oneunit/logger": "workspace:*",
+    "@oneunit/realtime": "workspace:*",
+    "@oneunit/redis": "workspace:*",
     "@types/node": "^24.5.2",
     "dotenv": "^18.0.3",
     "fastify-plugin": "^6.0.0",
     "fastify-type-provider-zod": "^7.0.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2",
+    "undici": "^7.0.0",
     "vitest": "^3.2.4",
     "zod": "^4.1.11"
   },
   "peerDependencies": {
-    "@bootstrap-framework/database": "^1.0.0",
-    "@bootstrap-framework/errors": "^1.0.0",
-    "@bootstrap-framework/kafka": "^1.0.0",
-    "@bootstrap-framework/logger": "^1.0.0",
-    "@bootstrap-framework/realtime": "^1.0.0",
-    "@bootstrap-framework/redis": "^1.0.0",
     "@fastify/compress": "^9.2.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^11.3.0",
+    "@fastify/csrf-protection": "^8.0.0",
     "@fastify/helmet": "^13.1.1",
+    "@fastify/multipart": "^9.0.0",
     "@fastify/rate-limit": "^11.2.0",
+    "@fastify/request-context": "^7.0.0",
+    "@fastify/sensible": "^6.0.0",
+    "@fastify/swagger": "^9.0.0",
+    "@fastify/swagger-ui": "^5.0.0",
+    "@fastify/under-pressure": "^9.0.0",
     "@msgpack/msgpack": "^3.1.3",
+    "@oneunit/database": "^1.0.0",
+    "@oneunit/errors": "^1.0.0 || ^2.0.0",
+    "@oneunit/kafka": "^1.0.0",
+    "@oneunit/logger": "^1.0.0",
+    "@oneunit/realtime": "^1.0.0",
+    "@oneunit/redis": "^1.0.0",
     "dotenv": "^18.0.3",
     "fastify-plugin": "^6.0.0",
     "fastify-type-provider-zod": "^7.0.0",
+    "undici": "^7.0.0",
     "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -150,10 +166,31 @@
     "@fastify/cors": {
       "optional": true
     },
+    "@fastify/csrf-protection": {
+      "optional": true
+    },
     "@fastify/helmet": {
       "optional": true
     },
+    "@fastify/multipart": {
+      "optional": true
+    },
     "@fastify/rate-limit": {
+      "optional": true
+    },
+    "@fastify/request-context": {
+      "optional": true
+    },
+    "@fastify/sensible": {
+      "optional": true
+    },
+    "@fastify/swagger": {
+      "optional": true
+    },
+    "@fastify/swagger-ui": {
+      "optional": true
+    },
+    "@fastify/under-pressure": {
       "optional": true
     },
     "dotenv": {
@@ -165,28 +202,31 @@
     "fastify-type-provider-zod": {
       "optional": true
     },
-    "@bootstrap-framework/logger": {
+    "@oneunit/logger": {
       "optional": true
     },
     "zod": {
       "optional": true
     },
-    "@bootstrap-framework/database": {
+    "@oneunit/database": {
       "optional": true
     },
-    "@bootstrap-framework/kafka": {
+    "@oneunit/kafka": {
       "optional": true
     },
-    "@bootstrap-framework/redis": {
+    "@oneunit/redis": {
       "optional": true
     },
-    "@bootstrap-framework/realtime": {
+    "@oneunit/realtime": {
       "optional": true
     },
-    "@bootstrap-framework/errors": {
+    "@oneunit/errors": {
       "optional": true
     },
     "@msgpack/msgpack": {
+      "optional": true
+    },
+    "undici": {
       "optional": true
     }
   }

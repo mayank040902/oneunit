@@ -1,4 +1,4 @@
-# @bootstrap-framework/logger
+# @oneunit/logger
 
 Structured logging built on Pino. Fastify-friendly HTTP logging, serializers, and optional pretty transport.
 
@@ -7,7 +7,7 @@ Package README: `packages/logger/README.md`
 ## Install
 
 ```bash
-npm install @bootstrap-framework/logger
+npm install @oneunit/logger
 ```
 
 `pino-pretty` is an optional peer for development pretty-print.

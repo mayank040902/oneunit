@@ -4,8 +4,8 @@ import {
   BadRequestError,
   ConflictError,
   NotFoundError,
-} from "@bootstrap-framework/errors";
-import { createQueue, createWorker } from "@bootstrap-framework/redis";
+} from "@oneunit/errors";
+import { createQueue, createWorker } from "@oneunit/redis";
 
 interface CombinedRequest extends FastifyRequest {
   user?: JwtPayload | null;
@@ -185,7 +185,12 @@ export async function registerCombinedRoutes(server: CombinedServer, auth: Auth)
   });
 
   if (server.realtime) {
-    server.get("/ws/events", { websocket: true } as never, (connection: {
+    // `as never` on the route options and the widened handler signature are
+    // both deliberate: the realtime bridge accepts a socket-like object, while
+    // Fastify types every route handler as taking a Fastify request. The
+    // example narrows back to the socket shape at runtime, which is the honest
+    // description of what actually arrives on a websocket route.
+    server.get("/ws/events", { websocket: true } as never, ((connection: {
       socket?: { send: (data: string) => void; on: (event: string, fn: () => void) => void };
       send?: (data: string) => void;
       on?: (event: string, fn: () => void) => void;
@@ -197,7 +202,7 @@ export async function registerCombinedRoutes(server: CombinedServer, auth: Auth)
       socket.on?.("close", () => {
         server.realtime?.leave(EVENTS_CHANNEL, clientId);
       });
-    });
+    }) as never);
   }
 }
 

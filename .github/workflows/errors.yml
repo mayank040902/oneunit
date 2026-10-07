@@ -1,0 +1,293 @@
+name: errors
+
+# Mirrors redis.yml: a tag on `master` is what reaches the publish job, and
+# the verify and consumer-smoke jobs gate it. See the comments there for why
+# both branch names are listed and why publishing is driven by a tag.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "packages/errors/**"
+      - ".github/workflows/errors.yml"
+  pull_request:
+    paths:
+      - "packages/errors/**"
+      - ".github/workflows/errors.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20.19 is the floor declared in package.json "engines": ESM-only output
+        # means a CommonJS consumer needs `require(esm)`, which landed there.
+        node: ["20.19", "22", "24"]
+
+    defaults:
+      run:
+        working-directory: packages/errors
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `dist/` is gitignored, and the pack check below reads it, so the build
+      # has to happen before anything inspects the tarball.
+      - name: Build
+        run: pnpm run build
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm test
+
+      # Thresholds live in vitest.config.ts. This job is what makes them
+      # enforceable; without it they are only a suggestion nobody checks.
+      - name: Coverage
+        run: pnpm run test:coverage
+
+      - name: Pack check
+        run: pnpm run pack:check
+
+      - name: Audit
+        run: pnpm audit --audit-level high
+
+  publish-dry-run:
+    name: Consumer smoke test
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and pack
+        run: |
+          pnpm --filter @oneunit/errors run build
+          pnpm --filter @oneunit/errors pack --pack-destination "$RUNNER_TEMP"
+
+      # A published package is only correct if it works when installed. This
+      # catches anything the suite reaches through a relative path that npm
+      # does not ship, and proves the ESM-only output loads on a clean install.
+      - name: Install the tarball into a clean project
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y > /dev/null
+          npm pkg set type=module > /dev/null
+          npm install "$RUNNER_TEMP"/oneunit-errors-*.tgz
+
+      # Subpath exports are part of the published contract, so each is imported
+      # rather than assumed to resolve. This runs *before* fastify is installed
+      # on purpose: it proves the ESM-only output loads with no optional peer
+      # present, which is the claim `import type` + verbatimModuleSyntax makes.
+      - name: Verify subpath exports resolve without the optional peer
+        working-directory: ${{ runner.temp }}/consumer
+        run: |
+          for subpath in errors try-catch fastify; do
+            node --input-type=module -e "
+              import('@oneunit/errors/$subpath').then(
+                () => console.log('  ok: @oneunit/errors/$subpath'),
+                (e) => { console.error('  FAILED: @oneunit/errors/$subpath', e.code); process.exit(1); },
+              );
+            "
+          done
+          if npm ls fastify > /dev/null 2>&1; then
+            echo "::error::fastify is installed; this check is meaningless"
+            exit 1
+          fi
+
+      # The published tarball must include the sources its own .js.map and
+      # .d.ts.map point at, or consumer stack traces and editor navigation
+      # break with no warning.
+      - name: Verify sourcemap targets ship
+        run: |
+          cd "$RUNNER_TEMP/consumer/node_modules/@oneunit/errors"
+          node --input-type=module -e '
+            import { existsSync, readFileSync, globSync } from "node:fs";
+            import { dirname, resolve } from "node:path";
+
+            const maps = [...globSync("dist/**/*.js.map"), ...globSync("dist/**/*.d.ts.map")];
+            const missing = [];
+            for (const map of maps) {
+              const { sources = [] } = JSON.parse(readFileSync(map, "utf8"));
+              for (const source of sources) {
+                if (!existsSync(resolve(dirname(map), source))) missing.push(`${map} references ${source}`);
+              }
+            }
+            if (missing.length > 0) {
+              for (const m of missing) console.error(`::error::${m}, which is not published`);
+              process.exit(1);
+            }
+            console.log(`sourcemap targets OK (${maps.length} maps)`);
+          '
+
+      # fastify is an optional peer, so the suite above could not exercise the
+      # handler. Installed here, for the smoke test only.
+      - name: Install the optional peer for the handler checks
+        working-directory: ${{ runner.temp }}/consumer
+        run: npm install fastify > /dev/null
+
+      # Asserts on what a consumer actually gets, including the invariants that
+      # are easy to regress silently: a falsy id surviving NotFoundError, an
+      # error surviving a JSON round trip, and redaction masking secrets.
+      - name: Verify the public API
+        run: |
+          cat > "$RUNNER_TEMP/consumer/smoke.mjs" <<'EOF'
+          import assert from "node:assert/strict";
+          import fastify from "fastify";
+          import {
+            AppError,
+            NotFoundError,
+            RateLimitError,
+            ValidationError,
+            AbortError,
+            formatError,
+            getErrorStatusCode,
+            getRootCause,
+            isAppError,
+            isRetryable,
+            redactDetails,
+            registerErrorHandler,
+            serializeError,
+            deserializeError,
+            withRetry,
+          } from "@oneunit/errors";
+
+          // An error must survive the wire, or instanceof fails downstream.
+          const original = new NotFoundError("User", 0);
+          assert.equal(original.message, 'User with id "0" not found');
+          const restored = deserializeError(JSON.parse(JSON.stringify(serializeError(original))));
+          assert.ok(restored instanceof AppError, "round trip must rebuild an AppError");
+          assert.equal(restored.name, "NotFoundError");
+          assert.equal(getErrorStatusCode(restored), 404);
+
+          // Cause chains, redaction, and the status fallback.
+          const root = new Error("ECONNREFUSED");
+          assert.equal(getRootCause(new AppError("wrapped", "X", 500, undefined, root)), root);
+          assert.equal(
+            formatError(new AppError("m", "X", 500, { password: "hunter2" }), { redact: true }).details.password,
+            "[REDACTED]",
+          );
+          assert.equal(redactDetails({ token: "t" }).token, "[REDACTED]");
+          assert.equal(getErrorStatusCode(Object.assign(new Error("x"), { statusCode: 418 })), 418);
+          assert.equal(isRetryable(new ValidationError("bad", {})), false);
+
+          // Cancellation must surface this package's own AbortError type rather
+          // than the platform DOMException, which is not instanceof-compatible.
+          const controller = new AbortController();
+          controller.abort();
+          await assert.rejects(withRetry(async () => "never", { signal: controller.signal }), AbortError);
+
+          // A statusCode outside 100-599 reaches reply.status() and throws there.
+          assert.throws(() => new AppError("m", "X", 999), RangeError);
+
+          // The Fastify handlers, end to end on the built output.
+          const app = fastify();
+          await registerErrorHandler(app, { logErrors: false, redactDetails: true });
+          app.get("/limited", async () => {
+            throw new RateLimitError("Too many requests", 30);
+          });
+          app.get("/secret", async () => {
+            throw new AppError("auth failed", "AUTH_FAILED", 401, { password: "hunter2" });
+          });
+
+          const limited = await app.inject({ method: "GET", url: "/limited" });
+          assert.equal(limited.statusCode, 429);
+          assert.equal(limited.headers["retry-after"], "30", "Retry-After header missing");
+
+          const secret = await app.inject({ method: "GET", url: "/secret" });
+          assert.equal(secret.json().error.details.password, "[REDACTED]");
+
+          // Unmatched routes must use the canonical payload, not Fastify's.
+          const missing = await app.inject({ method: "GET", url: "/nope" });
+          assert.equal(missing.statusCode, 404);
+          assert.equal(missing.json().error.code, "NOT_FOUND");
+
+          assert.ok(isAppError(new ValidationError("v", {})));
+          console.log("public API OK");
+          EOF
+          cd "$RUNNER_TEMP/consumer"
+          node smoke.mjs
+
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: [verify, publish-dry-run]
+    if: startsWith(github.ref, 'refs/tags/errors-v')
+
+    permissions:
+      contents: read
+      id-token: write
+
+    defaults:
+      run:
+        working-directory: packages/errors
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org/
+
+      - run: pnpm install --frozen-lockfile
+
+      # npm refuses to reuse a version number, so a typo in the tag would
+      # produce a failed release that cannot simply be retried.
+      - name: Tag must match the package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#errors-v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag: $TAG_VERSION, package.json: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Publish
+        run: pnpm publish --access public --no-git-checks
+
+      - name: Confirm it is live
+        run: |
+          PUBLISHED="$(npm view @oneunit/errors version)"
+          echo "published: $PUBLISHED"
+          if [ "$PUBLISHED" != "$TAG_VERSION" ]; then
+            echo "::error::registry reports $PUBLISHED, expected $TAG_VERSION"
+            exit 1
+          fi

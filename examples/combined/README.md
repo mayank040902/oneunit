@@ -23,7 +23,7 @@ From the workspace root:
 pnpm install
 pnpm build
 cp examples/combined/.env.example examples/combined/.env
-pnpm --filter @bootstrap-framework/combined-example start
+pnpm --filter @oneunit/combined-example start
 ```
 
 Listen address defaults to `http://127.0.0.1:8080`.

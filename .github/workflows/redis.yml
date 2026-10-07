@@ -1,0 +1,482 @@
+name: redis
+
+# `paths` is not evaluated for tag pushes, which is what makes a release tag
+# reach the publish job below: tag redis-v<version> and GitHub runs this
+# workflow, the verify and consumer-smoke jobs gate the publish, and the
+# publish job checks that the tag matches package.json before uploading.
+on:
+  push:
+    # `master` is the release branch, so a tag is cut from it and a push to it
+    # must be gated. `main` is kept in case the repository settles on it: a
+    # single-branch value here is a silent gate that can simply stop running.
+    branches: [main, master]
+    paths:
+      - "packages/redis/**"
+      - ".github/workflows/redis.yml"
+  pull_request:
+    paths:
+      - "packages/redis/**"
+      - ".github/workflows/redis.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared in package.json "engines".
+        node: ["20", "22", "24"]
+
+    # Without a server most of the suite returns early — the queue, worker, and
+    # pipeline tests all guard on `redisAvailable()` — so a green run with no
+    # Redis proves very little. The consumer smoke test below has the same
+    # service for the same reason.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: packages/redis
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Build first, and not because it is the interesting step. `dist/` is
+      # gitignored, and every test file imports `../dist/index.js` rather than
+      # `../src`, so the suite cannot even load until this has run. See
+      # packages/redis/CONTRIBUTING.md — `npm test` tests the build, not the
+      # sources.
+      - name: Build
+        run: pnpm run build
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Pack check
+        run: pnpm run pack:check
+
+      - name: Audit
+        run: pnpm audit --audit-level high
+
+  publish-dry-run:
+    name: Consumer smoke test
+    runs-on: ubuntu-latest
+    needs: verify
+
+    # Most tests in this package no-op when no Redis is listening, so a green
+    # run without a server proves very little. The smoke test below needs one
+    # to exercise queues at all.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and pack
+        run: |
+          pnpm --filter @oneunit/redis run build
+          pnpm --filter @oneunit/redis pack --pack-destination "$RUNNER_TEMP"
+
+      # A published package is only correct if it works when installed, so this
+      # installs the real tarball into a clean project. It also catches anything
+      # the tests reach only through a relative path that npm does not ship.
+      - name: Install the tarball into a clean project
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y > /dev/null
+          npm pkg set type=module > /dev/null
+          npm install "$RUNNER_TEMP"/oneunit-redis-*.tgz
+
+      # Asserts on what a consumer actually gets: the documented defaults, both
+      # createClient argument forms, a job travelling through a worker, and the
+      # guarantee that a password never reaches the logger.
+      - name: Verify the public API
+        run: |
+          cat > "$RUNNER_TEMP/consumer/smoke.mjs" <<'EOF'
+          import assert from "node:assert/strict";
+          import {
+            attachEvents,
+            attachQueueEvents,
+            consoleLogger,
+            createClient,
+            createLogger,
+            createQueue,
+            createWorker,
+             health,
+             isLogger,
+             pipelineValues,
+             redactError,
+             runPipeline,
+             shutdown,
+             silentLogger,
+           } from "@oneunit/redis";
+
+          const REDIS_URL = process.env.REDIS_URL ?? "redis://127.0.0.1:6379";
+
+          // Exports are part of the contract, so check their shapes rather than
+          // assuming they resolve.
+          for (const [name, fn] of Object.entries({
+             createClient, createQueue, createWorker, attachQueueEvents,
+             health, shutdown, attachEvents, redactError, createLogger, isLogger,
+             runPipeline, pipelineValues,
+           })) {
+            assert.equal(typeof fn, "function", `${name} is not a function`);
+          }
+          assert.equal(typeof silentLogger.info, "function");
+          assert.equal(typeof consoleLogger.error, "function");
+
+          // A logger implementing only some levels must not throw. BullMQ
+          // re-emits a throwing listener as "error", which throws again and
+          // lands on console.error, so a missing `info` is noisy rather than
+          // merely broken.
+          const partialLines = [];
+          const partial = createLogger({
+            error: (m) => partialLines.push(m),
+            warn: () => {},
+          });
+          partial.info("must not throw");
+          partial.error("recorded");
+          assert.deepEqual(partialLines, ["recorded"]);
+
+          // Documented defaults.
+          const options = createClient({ url: REDIS_URL }).options;
+          assert.equal(options.lazyConnect, true);
+          assert.equal(options.maxRetriesPerRequest, null);
+
+          // The URL string form. Destructuring it as an options object yields
+          // no `url` and silently connects to localhost:6379.
+          const stringForm = createClient(REDIS_URL, silentLogger);
+          assert.equal(stringForm.options.port, 6379);
+
+          const client = createClient({ url: REDIS_URL }, silentLogger);
+          await client.connect();
+
+          const health1 = await health(client, { timeout: 2000 });
+          assert.equal(health1.status, "up");
+
+          // A pipeline. The point being asserted is that a failing command does
+          // not fail the batch: ioredis resolves EXEC and reports the failure
+          // per command, so reading only the values would look successful.
+          await client.set("smoke:str", "not-a-number");
+          const batch = await runPipeline(client, [
+            { label: "set", run: (p) => void p.set("smoke:k", "v") },
+            { label: "incr", run: (p) => void p.incr("smoke:str") },
+            { label: "get", run: (p) => void p.get("smoke:k") },
+          ]);
+          assert.equal(batch.failed, 1, "the failing command must be reported");
+          assert.equal(batch.results[1].label, "incr");
+          assert.ok(batch.results[1].error, "failure must carry an error");
+          assert.match(batch.results[1].error.message, /not an integer/);
+          assert.equal(batch.results[2].value, "v", "batch must still run");
+
+          // pipelineValues refuses a partially failed batch.
+          assert.throws(
+            () => pipelineValues(batch.results),
+            (e) => e.name === "PipelineCommandError",
+          );
+
+          const cleanBatch = await runPipeline(client, [
+            { label: "set", run: (p) => void p.set("smoke:k2", "v2") },
+            { label: "get", run: (p) => void p.get("smoke:k2") },
+          ]);
+          assert.deepEqual(pipelineValues(cleanBatch.results), ["OK", "v2"]);
+
+          // EXEC against an unreachable server must be bounded, not hang.
+          const deadPipeline = runPipeline(
+            createClient(
+              { url: "redis://127.0.0.1:6399", retryStrategy: () => null },
+              silentLogger,
+            ),
+            [{ label: "ping", run: (p) => void p.ping() }],
+            { timeout: 1000 },
+          );
+          await deadPipeline.catch((e) => {
+            assert.equal(e.name, "PipelineTimeoutError", `got ${e.name}`);
+          });
+
+          // health must be bounded. A dead port never settles a queued PING.
+          const dead = createClient(
+            { url: "redis://127.0.0.1:6399", retryStrategy: () => null },
+            silentLogger,
+          );
+          const health2 = await health(dead, { timeout: 1000 });
+          assert.equal(health2.status, "down");
+          dead.disconnect();
+
+          // A queue, a worker, and the event listener, on one client.
+          const queue = createQueue({ name: "smoke", connection: client });
+          const events = attachQueueEvents({ queue, logger: silentLogger });
+          const seen = [];
+          events.on("completed", (args) => seen.push(args.jobId));
+
+          const worker = createWorker({
+            name: "smoke",
+            connection: client,
+            processor: async () => "done",
+          });
+
+          await queue.waitUntilReady();
+          await events.waitUntilReady();
+          const job = await queue.add("smoke-job", { hello: "world" });
+          assert.equal(job.opts.attempts, 3, "package default for attempts");
+          assert.deepEqual(
+            job.opts.backoff,
+            { type: "exponential", delay: 1000 },
+            "package default for backoff",
+          );
+
+          const deadline = Date.now() + 10000;
+          while (seen.length === 0 && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          assert.equal(seen.length, 1, "worker did not report completion");
+
+          await worker.close();
+          await events.close();
+          await queue.close();
+          await shutdown(client);
+          await shutdown(stringForm);
+
+          // shutdown is idempotent: SIGINT and SIGTERM both call it.
+          await shutdown(client);
+
+          // Redaction. ioredis attaches the failing command to its errors, and
+          // for AUTH those args are the password in plaintext.
+          const authError = Object.assign(
+            new Error("WRONGPASS invalid username-password pair"),
+            { command: { name: "auth", args: ["LEAKED-PASSWORD", ""] } },
+          );
+          const redacted = JSON.stringify(redactError(authError));
+          assert.equal(redacted.includes("LEAKED-PASSWORD"), false, "password leaked");
+          assert.equal(redactError(authError).message, authError.message);
+
+          console.log("public API OK");
+          EOF
+          cd "$RUNNER_TEMP/consumer"
+          REDIS_URL=redis://127.0.0.1:6379 node smoke.mjs
+
+      # The whole package redacts; assert it end to end against a real AUTH
+      # failure rather than only at the redactError unit.
+      - name: Verify credentials never reach the logger
+        run: |
+          cat > "$RUNNER_TEMP/consumer/leak.mjs" <<'EOF'
+          import assert from "node:assert/strict";
+          import {
+            attachQueueEvents,
+            createClient,
+            createQueue,
+            createLogger,
+            health,
+            shutdown,
+          } from "@oneunit/redis";
+
+          const PASSWORD = "smoke-password-marker";
+          const lines = [];
+          const logger = createLogger({
+            error: (m, extra) => lines.push(JSON.stringify({ m, extra })),
+            warn: (m, extra) => lines.push(JSON.stringify({ m, extra })),
+            info: (m, extra) => lines.push(JSON.stringify({ m, extra })),
+            debug: () => {},
+          });
+
+          // No requirepass server here, so AUTH fails against the plain one.
+          const client = createClient(
+            { url: `redis://:${PASSWORD}@127.0.0.1:6379`, connectTimeout: 500 },
+            logger,
+          );
+
+          const queue = createQueue({ name: "smoke-leak", connection: client });
+          const events = attachQueueEvents({ queue, logger });
+          events.emit(
+            "error",
+            Object.assign(new Error("WRONGPASS"), {
+              command: { name: "auth", args: [PASSWORD, ""] },
+            }),
+          );
+
+          await health(client, { timeout: 1500 });
+          await new Promise((r) => setTimeout(r, 300));
+
+          const dump = lines.join("\n");
+          assert.equal(dump.includes(PASSWORD), false, `logs leaked:\n${dump}`);
+
+          await events.close().catch(() => {});
+          await queue.close().catch(() => {});
+          await shutdown(client).catch(() => {});
+
+          console.log("no credentials in the log");
+          EOF
+          cd "$RUNNER_TEMP/consumer"
+          node leak.mjs
+
+      # Subpath exports are part of the published contract, so each one is
+      # imported rather than assumed to resolve.
+      - name: Verify subpath exports
+        working-directory: ${{ runner.temp }}/consumer
+        run: |
+          for subpath in client queue pipeline; do
+            node --input-type=module -e "
+              import('@oneunit/redis/$subpath').then(
+                () => console.log('  ok: @oneunit/redis/$subpath'),
+                (e) => { console.error('  FAILED: @oneunit/redis/$subpath', e.code); process.exit(1); },
+              );
+            "
+          done
+
+      # Examples ship in the tarball and are documented in the README, so one
+      # that cannot resolve its own import is a broken package.
+      - name: Verify shipped examples run
+        working-directory: ${{ runner.temp }}/consumer
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+          REDIS_SILENT: "true"
+        run: |
+          for example in standalone cache session pubsub queue-worker pipeline; do
+            node "node_modules/@oneunit/redis/examples/$example.js" > /dev/null
+            echo "  ok: $example.js"
+          done
+
+      # The published tarball must include the sources its own .js.map and
+      # .d.ts.map point at, or consumer stack traces and editor navigation
+      # break with no warning.
+      - name: Verify sourcemap targets ship
+        run: |
+          cd "$RUNNER_TEMP/consumer/node_modules/@oneunit/redis"
+          node --input-type=module -e '
+            import { existsSync, readFileSync, globSync } from "node:fs";
+            import { dirname, resolve } from "node:path";
+
+            // A source path in a map is relative to that map, not to the
+            // package root, so resolving against the wrong base reports every
+            // map as broken.
+            const maps = [...globSync("dist/**/*.js.map"), ...globSync("dist/**/*.d.ts.map")];
+            const missing = [];
+            for (const map of maps) {
+              const { sources = [] } = JSON.parse(readFileSync(map, "utf8"));
+              for (const source of sources) {
+                const target = resolve(dirname(map), source);
+                if (!existsSync(target)) missing.push(`${map} references ${source}`);
+              }
+            }
+            if (missing.length > 0) {
+              for (const m of missing) console.error(`::error::${m}, which is not published`);
+              process.exit(1);
+            }
+            console.log(`sourcemap targets OK (${maps.length} maps)`);
+          '
+
+  # Publishing is driven by a tag, never by a push to main. The tag is the
+  # release record: `git tag redis-v1.0.0 && git push origin redis-v1.0.0`.
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: [verify, publish-dry-run]
+    if: startsWith(github.ref, 'refs/tags/redis-v')
+
+    # id-token: write is what makes npm Trusted Publishing work: the runner
+    # exchanges this OIDC identity for a short-lived publish token, so there is
+    # no long-lived npm secret in this repo. Configure the trusted publisher on
+    # npmjs.com (package settings -> Trusted Publisher) with the repository
+    # "mayank040902/oneunit" and this workflow filename.
+    permissions:
+      contents: read
+      id-token: write
+
+    defaults:
+      run:
+        working-directory: packages/redis
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org/
+
+      - run: pnpm install --frozen-lockfile
+
+      # npm refuses to reuse a version number, so a typo in the tag would
+      # produce a failed release that cannot simply be retried. Fail here with
+      # a clear message instead.
+      - name: Tag must match the package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#redis-v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag: $TAG_VERSION, package.json: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      # prepublishOnly runs the build and the full test suite, so a failing test
+      # blocks the release before anything reaches the registry.
+      - name: Publish
+        run: pnpm publish --access public --no-git-checks
+        # Uncomment only if you are using an NPM_TOKEN secret instead of
+        # Trusted Publishing:
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Confirm it is live
+        run: |
+          PUBLISHED="$(npm view @oneunit/redis version)"
+          echo "published: $PUBLISHED"
+          if [ "$PUBLISHED" != "$TAG_VERSION" ]; then
+            echo "::error::registry reports $PUBLISHED, expected $TAG_VERSION"
+            exit 1
+          fi

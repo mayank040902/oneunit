@@ -1,4 +1,4 @@
-# @bootstrap-framework/database
+# @oneunit/database
 
 Standalone PostgreSQL client: pooling, parameterized queries, transactions, streaming, schema helpers, models, and migrations.
 
@@ -9,13 +9,13 @@ Package README: `packages/database/README.md`
 ## Install
 
 ```bash
-npm install @bootstrap-framework/database
+npm install @oneunit/database
 ```
 
 ## Quick start
 
 ```javascript
-import { createDatabase } from "@bootstrap-framework/database";
+import { createDatabase } from "@oneunit/database";
 
 const db = createDatabase();
 

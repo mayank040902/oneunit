@@ -11,3 +11,8 @@ coverage/
 !.env.example
 .npm-cache/
 .pnpm-store/
+
+# Agent worktrees: full working copies created inside the repo, at the root and
+# inside individual packages. They contain their own tsconfig.json files, which
+# breaks ESLint's tsconfig auto-discovery, and they must never be committed.
+**/.kilo/

@@ -11,12 +11,12 @@ npm install @bootstrap-framework/server
 Sibling packages are optional peers. Install them when you enable the matching plugin:
 
 ```bash
-npm install @bootstrap-framework/logger
+npm install @oneunit/logger
 npm install @bootstrap-framework/errors
 npm install @oneunit/auth
-npm install @bootstrap-framework/database
-npm install @bootstrap-framework/redis
-npm install @bootstrap-framework/kafka
+npm install @oneunit/database
+npm install @oneunit/redis
+npm install @oneunit/kafka
 npm install @bootstrap-framework/realtime
 ```
 
@@ -70,8 +70,8 @@ pnpm test
 Build or test a single package:
 
 ```bash
-pnpm --filter @bootstrap-framework/kafka build
-pnpm --filter @bootstrap-framework/kafka test
+pnpm --filter @oneunit/kafka build
+pnpm --filter @oneunit/kafka test
 ```
 
 ## Next

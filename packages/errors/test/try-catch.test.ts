@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   tryCatch,
   tryCatchAsync,
@@ -214,6 +214,13 @@ describe("withTimeout", () => {
   it("rejects with TimeoutError if promise takes too long", async () => {
     await expect(withTimeout(new Promise(r => setTimeout(r, 200)), 50)).rejects.toThrow("Operation timed out");
   });
+
+  it("clears the timer when the promise settles first", async () => {
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    await withTimeout(Promise.resolve("ok"), 5000);
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore();
+  });
 });
 
 describe("withRetry", () => {
@@ -263,6 +270,70 @@ describe("withRetry", () => {
       { maxAttempts: 5, delay: 10, shouldRetry: e => !(e instanceof ValidationError) }
     )).rejects.toThrow("validation fail");
     expect(attempts).toBe(1);
+  });
+
+  it("rejects instead of hanging when shouldRetry throws", async () => {
+    let attempts = 0;
+    await expect(withRetry(
+      async () => {
+        attempts++;
+        throw new Error("boom");
+      },
+      {
+        maxAttempts: 3,
+        delay: 1,
+        shouldRetry: () => { throw new Error("predicate exploded"); },
+      }
+    )).rejects.toThrow("predicate exploded");
+    expect(attempts).toBe(1);
+  });
+
+  it("runs at least one attempt when maxAttempts is below one", async () => {
+    let attempts = 0;
+    const result = await withRetry(async () => { attempts++; return "ok"; }, { maxAttempts: 0 });
+    expect(result).toBe("ok");
+    expect(attempts).toBe(1);
+  });
+
+  it("never rejects with undefined for non-finite options", async () => {
+    let attempts = 0;
+    await expect(
+      withRetry(async () => { attempts++; throw new Error("fail"); }, { maxAttempts: Number.NaN, delay: 1 })
+    ).rejects.toThrow("fail");
+    expect(attempts).toBe(1);
+
+    await expect(
+      withRetry(async () => { throw new Error("fail"); }, { maxAttempts: 3, delay: Number.NaN, backoff: Number.NaN })
+    ).rejects.toThrow("fail");
+  });
+});
+
+describe("errorFactory failures", () => {
+  it("tryCatch falls back to AppError when errorFactory throws", () => {
+    const result = tryCatch(
+      () => { throw new Error("fail"); },
+      () => { throw new Error("factory exploded"); }
+    );
+    expect(result.error).toBeInstanceOf(AppError);
+    expect(result.error?.message).toBe("fail");
+  });
+
+  it("tryCatchAsync falls back to AppError when errorFactory throws", async () => {
+    const result = await tryCatchAsync(
+      Promise.reject(new Error("fail")),
+      () => { throw new Error("factory exploded"); }
+    );
+    expect(result.error).toBeInstanceOf(AppError);
+    expect(result.error?.message).toBe("fail");
+  });
+
+  it("tryAll returns err when errorFactory throws", async () => {
+    const result = await tryAll(
+      [Promise.reject(new Error("fail"))],
+      () => { throw new Error("factory exploded"); }
+    );
+    expect(isErr(result)).toBe(true);
+    expect(result.error).toBeInstanceOf(AppError);
   });
 });
 

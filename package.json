@@ -1,34 +1,37 @@
 {
-  "name": "bootstrap-framework",
+  "name": "@oneunit",
   "version": "1.0.0",
   "private": true,
-  "description": "Production-ready Node.js framework packages published independently as @bootstrap-framework/*",
+  "description": "Production-ready Node.js packages published independently as @oneunit/*",
   "scripts": {
-    "build": "pnpm -r --filter \"./packages/*\" run build",
-    "typecheck": "pnpm -r --filter \"./packages/*\" run typecheck",
-    "test": "pnpm -r --filter \"./packages/*\" run test",
-    "lint": "eslint .",
+    "build": "pnpm -r run build",
+    "example:combined": "pnpm --filter @oneunit/combined-example start",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,md}\"",
-    "pack:check": "pnpm -r --filter \"./packages/*\" pack --dry-run",
-    "publish:packages": "pnpm -r --filter \"./packages/*\" publish --access public",
-    "example:combined": "pnpm --filter @bootstrap-framework/combined-example start"
+    "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,json,md}\"",
+    "lint": "eslint . --ignore-pattern '**/.kilo/**'",
+    "pack:check": "pnpm -r run pack:check",
+    "publish:packages": "pnpm -r publish --access public",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck"
   },
   "keywords": [
-    "bootstrap",
-    "framework",
+    "oneunit",
     "node",
-    "typescript"
+    "typescript",
+    "fastify",
+    "microservices",
+    "logging"
   ],
   "author": "mayank",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mayank040902/framework.git"
+    "url": "git+https://github.com/mayank040902/oneunit.git"
   },
   "bugs": {
-    "url": "https://github.com/mayank040902/framework/issues"
+    "url": "https://github.com/mayank040902/oneunit/issues"
   },
-  "homepage": "https://github.com/mayank040902/framework#readme",
+  "homepage": "https://github.com/mayank040902/oneunit#readme",
   "engines": {
     "node": ">=20"
   },
@@ -48,10 +51,11 @@
     "prettier": "^3.9.9",
     "tsx": "^4.23.15",
     "turbo": "^2.11.3",
-    "typescript": "^7.0.2",
+    "typescript": "^5.9.2",
     "typescript-eslint": "^8.70.1",
     "unplugin-swc": "^2.0.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "globals": "^14.0.0"
   },
   "packageManager": "pnpm@11.9.0"
 }

@@ -94,7 +94,7 @@
   "bugs": {
     "url": "https://github.com/mayank040902/oneunit/issues"
   },
-  "homepage": "https://github.com/mayank040902/oneunit/tree/main/packages/database#readme",
+  "homepage": "https://github.com/mayank040902/oneunit/tree/master/packages/database#readme",
   "dependencies": {
     "pg": "^8.22.0"
   },

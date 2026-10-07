@@ -1,10 +1,7 @@
-export {
-  healthResponse,
-  createHealthPlugin,
-} from "./health.js";
+export { createHealthPlugin } from "./health.js";
 
 export type {
-  HealthRouteOptions,
-  HealthCheckProvider,
-  BootstrapHealthOptions,
+    HealthRouteOptions,
+    HealthCheckProvider,
+    BootstrapHealthOptions,
 } from "./health.js";

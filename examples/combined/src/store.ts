@@ -26,13 +26,19 @@ export function createMemoryUserStore(): UserStore & { users: Map<string, Memory
     async create(input) {
       const id = randomUUID();
       const roles = Array.isArray(input.roles) ? input.roles as string[] : ["member"];
+      // Optional fields are omitted rather than set to `undefined`. Under
+      // exactOptionalPropertyTypes, `email?: string` does not accept
+      // `email: string | undefined`, so assigning the key unconditionally is a
+      // type error and is also not the same value at runtime: the key ends up
+      // present with an undefined value, which serialises differently and can
+      // surprise code that checks `"email" in user`.
       const user: MemoryUser = {
         id,
-        email: input.email as string | undefined,
-        username: input.username as string | undefined,
-        name: input.name as string | undefined,
         roles,
-        passwordHash: input.passwordHash as string | undefined,
+        ...(typeof input.email === "string" && { email: input.email }),
+        ...(typeof input.username === "string" && { username: input.username }),
+        ...(typeof input.name === "string" && { name: input.name }),
+        ...(typeof input.passwordHash === "string" && { passwordHash: input.passwordHash }),
       };
       users.set(id, user);
       return user;
@@ -64,9 +70,9 @@ export function createDatabaseUserStore(db: {
         : ["member"];
     return {
       id: row.id as string,
-      email: row.email as string | undefined,
       roles,
-      passwordHash: row.password_hash as string | undefined,
+      ...(typeof row.email === "string" && { email: row.email }),
+      ...(typeof row.password_hash === "string" && { passwordHash: row.password_hash }),
     };
   }
 

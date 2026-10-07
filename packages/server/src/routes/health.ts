@@ -1,44 +1,46 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
-import { createHealthResponse } from "../config/system-status.js";
+import { createHealthRoute, getHealthRegistry } from "../health/index.js";
 import { getSystemInfo } from "../lib/system.js";
-import type { HealthChecks } from "../lib/system-status.js";
-
-export const healthResponse = createHealthResponse("app", {
-  system: getSystemInfo(),
-  checks: {},
-});
+import type { HealthCheckResult } from "../health/types.js";
 
 export interface HealthRouteOptions {
-  path?: string;
-  serviceName?: string;
-  checks?: HealthChecks | HealthCheckProvider;
+    path?: string;
+    serviceName?: string;
+    checks?: Record<string, HealthCheckResult> | HealthCheckProvider;
 }
 
-export type HealthCheckProvider = (server: FastifyInstance) => HealthChecks | Promise<HealthChecks>;
+export type HealthCheckProvider = (server: FastifyInstance) => Record<string, HealthCheckResult> | Promise<Record<string, HealthCheckResult>>;
 
 export type BootstrapHealthOptions = HealthRouteOptions;
 
-export function createHealthPlugin(options: HealthRouteOptions = {}): FastifyPluginAsync {
-  const {
-    path = "/health",
-    serviceName = "app",
-    checks = {},
-  } = options;
+function convertToProviders(server: FastifyInstance, checks: Record<string, HealthCheckResult | { status: boolean }>): ReturnType<typeof getHealthRegistry> {
+    const registry = getHealthRegistry(server);
+    for (const [name, result] of Object.entries(checks)) {
+        const status = "status" in result && typeof result.status === "boolean"
+            ? (result.status ? "healthy" : "unhealthy")
+            : result.status;
+        registry.register({
+            name,
+            check: () => ({ ...result, status }),
+            critical: true,
+        });
+    }
+    return registry;
+}
 
-  return async (server) => {
-    server.get(path, async (_request, reply) => {
-      const resolvedChecks = typeof checks === "function"
-        ? await checks(server)
-        : checks;
-      const response = createHealthResponse(serviceName, {
-        system: getSystemInfo(),
-        checks: resolvedChecks,
-      });
-      const hasFailedCheck = Object.values(resolvedChecks).some((check) => !check.status);
-      if (hasFailedCheck) {
-        reply.code(503);
-      }
-      return response;
-    });
-  };
+export function createHealthPlugin(options: HealthRouteOptions = {}): FastifyPluginAsync {
+    const { path = "/health", serviceName = "app", checks = {}, includeDetails = false } = options;
+
+    return async (server: FastifyInstance) => {
+        let registry: ReturnType<typeof getHealthRegistry>;
+
+        if (typeof checks === "function") {
+            const resolvedChecks = await checks(server);
+            registry = convertToProviders(server, resolvedChecks);
+        } else {
+            registry = convertToProviders(server, checks);
+        }
+
+        await server.register(createHealthRoute(registry, { path, serviceName, includeDetails }));
+    };
 }

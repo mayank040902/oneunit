@@ -29,7 +29,7 @@ const { address, close } = await startServer(8080, {
 | :--- | :--- |
 | `serviceName` | Service name used in health and logs |
 | `host` / `port` | Listen address (`HOST` / `PORT` env override) |
-| `logger` | Fastify logger or `@bootstrap-framework/logger` plugin |
+| `logger` | Fastify logger or `@oneunit/logger` plugin |
 | `database` | Optional PostgreSQL plugin |
 | `kafka` | Optional Kafka plugin |
 | `redis` | Optional Redis plugin |

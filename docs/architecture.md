@@ -15,7 +15,7 @@ packages/
   database/    PostgreSQL pool, transactions, models, migrations
   redis/       ioredis client, BullMQ queues and workers
   kafka/       KafkaJS client, SSL/SASL, codec adapters
-  realtime/    WebSocket hub, Fastify plugin, Kafka bridge, E2EE
+  realtime/    WebSocket hub, transport adapter, Fastify plugin, backpressure, heartbeat, E2EE
 examples/
   combined/    One service that wires every package
 docs/          Architecture, security, guides
@@ -27,7 +27,7 @@ Per-package internals are documented alongside the code. `packages/auth/ARCHITEC
 
 ## Design principles
 
-1. **Independent publish.** Install `@bootstrap-framework/kafka` in any Node.js app without Fastify.
+1. **Independent publish.** Install `@oneunit/kafka` in any Node.js app without Fastify.
 2. **Optional peers.** Server plugins dynamically `import()` sibling packages. If a package is missing, the plugin logs a warning and disables itself.
 3. **Adapters over coupling.** Kafka accepts logger, config, and codec adapters. Redis accepts any `{ error, warn, info, debug }` logger. Auth adapters cover Express, Fastify, Koa, and uWebSockets.js.
 4. **Fail closed on secrets, fail open on extras.** Auth refuses to start without `secret`. Optional plugins (database, kafka, redis, realtime) skip when the package is not installed.
@@ -127,7 +127,9 @@ sequenceDiagram
     Route-->>Client: JSON response
 ```
 
-WebSocket clients join `RealtimeHub` channels. Kafka consumers can forward messages into the hub through `createKafkaBridge`.
+WebSocket clients join `RealtimeHub` channels. The realtime package holds no
+broker client: an adapter in the application consumes from Kafka, Redis, or
+NATS and calls `RealtimeHub.broadcast()`, which is the whole seam.
 
 ## Fastify decorations
 

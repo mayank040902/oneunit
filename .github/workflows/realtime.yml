@@ -1,0 +1,548 @@
+name: realtime
+
+# `paths` is not evaluated for tag pushes, which is what makes a release tag
+# reach the publish job below: tag realtime-v<version> and GitHub runs this
+# workflow, the verify and consumer-smoke jobs gate the publish, and the
+# publish job checks that the tag matches package.json before uploading.
+on:
+  push:
+    # `master` is the release branch, so a tag is cut from it and a push to it
+    # must be gated. `main` is kept in case the repository settles on it: a
+    # single-branch value here is a silent gate that can simply stop running.
+    branches: [main, master]
+    paths:
+      - "packages/realtime/**"
+      - ".github/workflows/realtime.yml"
+  pull_request:
+    paths:
+      - "packages/realtime/**"
+      - ".github/workflows/realtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the floor declared in package.json "engines".
+        node: ["20", "22", "24"]
+
+    defaults:
+      run:
+        working-directory: packages/realtime
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The suite imports ../src, so it does not depend on the build, but the
+      # build still runs first because a package that only typechecks is not a
+      # package that ships.
+      - name: Build
+        run: pnpm run build
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Pack check
+        run: pnpm run pack:check
+
+      - name: Audit
+        run: pnpm audit --audit-level high
+
+  publish-dry-run:
+    name: Consumer smoke test
+    runs-on: ubuntu-latest
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and pack
+        run: |
+          pnpm --filter @bootstrap-framework/realtime run build
+          pnpm --filter @bootstrap-framework/realtime pack --pack-destination "$RUNNER_TEMP"
+
+      # A published package is only correct if it works when installed, so this
+      # installs the real tarball into a clean project. It also catches anything
+      # the tests reach only through a relative path that npm does not ship.
+      #
+      # `ws` and `notepack.io` are deliberately absent from this line: they are
+      # runtime dependencies of the package, so installing them here as well would
+      # hide a dependency that is declared in a devDependency or simply forgotten.
+      - name: Install the tarball into a clean project
+        run: |
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y > /dev/null
+          npm pkg set type=module > /dev/null
+          npm install "$RUNNER_TEMP"/bootstrap-framework-realtime-*.tgz fastify @fastify/websocket tsx
+
+      # Asserts on what a consumer actually gets: the documented defaults, a
+      # real WebSocket round-trip through a real Fastify server, and the
+      # guarantees the README makes.
+      - name: Verify the public API
+        run: |
+          cat > "$RUNNER_TEMP/consumer/smoke.mjs" <<'EOF'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          import Fastify from "fastify";
+          import { WebSocket } from "ws";
+          import { decode } from "notepack.io";
+          import {
+            AuthorizationError,
+            CONNECTION_OPEN,
+            ConnectionLimitError,
+            MessageTooLargeError,
+            RealtimeError,
+            attachWebSocketAdapter,
+            createConnectionAdapter,
+            createRealtimeHub,
+            decryptWithSharedKey,
+            decodeMessage,
+            e2eeReady,
+            generateKeyPair,
+            isE2EEReady,
+            matchesPath,
+            matchesRealtimePath,
+            registerRealtime,
+            realtimePlugin,
+          } from "@bootstrap-framework/realtime";
+
+          const manifest = JSON.parse(
+            readFileSync(
+              new URL("./node_modules/@bootstrap-framework/realtime/package.json", import.meta.url),
+              "utf8",
+            ),
+          );
+
+          // Exports are part of the contract, so check their shapes rather than
+          // assuming they resolve.
+          for (const [name, fn] of Object.entries({
+            registerRealtime, realtimePlugin, createRealtimeHub,
+            attachWebSocketAdapter, createConnectionAdapter, matchesPath,
+            decodeMessage, matchesRealtimePath, e2eeReady, isE2EEReady,
+            generateKeyPair,
+          })) {
+            assert.equal(typeof fn, "function", `${name} is not a function`);
+          }
+
+          // The standalone adapter is a supported integration, so `ws` has to be
+          // a real dependency rather than something every consumer installs
+          // themselves. Importing the adapter subpath without Fastify or a
+          // peer-installed `ws` is what proves it.
+          const adapterSubpath = await import("@bootstrap-framework/realtime/adapter");
+          assert.equal(typeof adapterSubpath.attachWebSocketAdapter, "function");
+
+          // This package must stay broker-agnostic: an adapter in the
+          // application owns the consumer, so any bridge export or any broker
+          // subpath is a regression rather than a feature.
+          const root = await import("@bootstrap-framework/realtime");
+          assert.deepEqual(
+            Object.keys(root).filter((name) => /kafka|bridge|consumer|topic/i.test(name)),
+            [],
+            "a broker-shaped export reappeared",
+          );
+          assert.deepEqual(
+            Object.keys(manifest.exports).filter((subpath) => /kafka|bridge/i.test(subpath)),
+            [],
+            "a broker-shaped subpath reappeared",
+          );
+          assert.equal(
+            Object.keys(manifest.dependencies ?? {}).some((dep) => /kafka/i.test(dep)),
+            false,
+            "a broker runtime dependency reappeared",
+          );
+          assert.equal(
+            Object.keys(manifest.peerDependencies ?? {}).some((peer) => /kafka/i.test(peer)),
+            false,
+            "a broker peer dependency reappeared",
+          );
+
+          // Documented behaviour of the path matcher.
+          assert.equal(matchesRealtimePath("/ws/chat", "/ws"), true);
+          assert.equal(matchesRealtimePath("/wsx", "/ws"), false);
+
+          // A standalone hub: async membership, fan-out, raw frames, lifecycle.
+          const hub = await createRealtimeHub({
+            heartbeat: false,
+            limits: { maxClientsPerChannel: 2 },
+            backpressure: { maxBufferedBytes: 1024, maxConsecutiveDrops: 1 },
+          });
+          const frames = [];
+          const socket = {
+            readyState: CONNECTION_OPEN,
+            bufferedAmount: 0,
+            send(data) { frames.push(Buffer.from(data)); },
+            close() { this.readyState = 3; },
+          };
+
+          const client = await hub.join("room", { id: "c1", connection: socket });
+          await hub.join("room", { id: "c1", connection: socket });
+          assert.equal(hub.channelCount("room"), 1, "double join is idempotent");
+          assert.equal(await hub.broadcast("room", { type: "hello" }), 1);
+          assert.deepEqual(decodeMessage(frames[0]), { type: "hello" });
+
+          // A binary frame is notepack, a text frame is JSON, and the transport's
+          // binary flag is the only thing that tells them apart. Getting this
+          // wrong threw "trailing bytes" out of the notepack decoder.
+          const textFrame = Buffer.from('{"type":"ping"}', "utf8");
+          assert.deepEqual(decodeMessage(textFrame, false), { type: "ping" });
+          assert.deepEqual(decodeMessage(textFrame.toString(), false), { type: "ping" });
+          assert.throws(() => decodeMessage(textFrame));
+          assert.equal(decodeMessage(Buffer.from("not json", "utf8"), false), "not json");
+          assert.equal(await hub.sendRaw(client, '{"raw":true}'), true);
+          assert.equal(frames[1].toString(), '{"raw":true}');
+
+          // A client is only dropped once it has left every channel it is in.
+          await hub.join("other", { id: "c1", connection: socket });
+          assert.equal(await hub.leave("room", "c1"), true);
+          assert.equal(await hub.leave("room", "c1"), false, "leaving twice is safe");
+          assert.equal(hub.hasClient("c1"), true);
+          await hub.leave("other", "c1");
+          assert.equal(hub.hasClient("c1"), false);
+          assert.equal(hub.isClosed, false);
+
+          // Slow consumers are dropped, not buffered.
+          socket.readyState = CONNECTION_OPEN;
+          socket.bufferedAmount = 4096;
+          await hub.join("room", { id: "c1", connection: socket });
+          assert.equal(await hub.broadcast("room", { type: "dropped" }), 0);
+          assert.equal(hub.stats().messagesDropped, 1);
+
+          hub.close();
+          hub.close();
+          assert.equal(hub.isClosed, true, "close() is idempotent");
+          await assert.rejects(
+            () => hub.broadcast("room", { type: "late" }),
+            (error) => error instanceof RealtimeError && error.code === "CONNECTION_CLOSED",
+          );
+
+          // Limits and typed errors, on their own hub so the scenarios stay
+          // independent of the backpressure client above.
+          const fresh = () => ({
+            readyState: CONNECTION_OPEN,
+            bufferedAmount: 0,
+            send() {},
+            close() { this.readyState = 3; },
+          });
+          const limited = await createRealtimeHub({
+            heartbeat: false,
+            limits: { maxClientsPerChannel: 2 },
+          });
+
+          await limited.join("room", { id: "c1", connection: fresh() });
+          await limited.join("room", { id: "c2", connection: fresh() });
+          await assert.rejects(
+            () => limited.join("room", { id: "c3", connection: fresh() }),
+            (error) => error instanceof ConnectionLimitError && error.code === "CONNECTION_LIMIT",
+          );
+          await assert.rejects(
+            () => limited.broadcast("room", "x".repeat(100 * 1024)),
+            (error) => error instanceof MessageTooLargeError && error.code === "MESSAGE_TOO_LARGE",
+          );
+          await assert.rejects(
+            () => limited.join("", { connection: fresh() }),
+            (error) => error instanceof RealtimeError && error.code === "CHANNEL_ERROR",
+          );
+          assert.equal(limited.channelCount("room"), 2, "a refused join adds no member");
+          limited.close();
+
+          // Authorization is a hook, and a denial is a typed error.
+          const guarded = await createRealtimeHub({
+            heartbeat: false,
+            authorize: ({ action, channel }) => !(action === "join" && channel === "locked"),
+          });
+          await assert.rejects(
+            () => guarded.join("locked", { connection: fresh() }),
+            (error) => error instanceof AuthorizationError && error.action === "join",
+          );
+          assert.equal(guarded.channelCount("locked"), 0, "a denied join creates no channel");
+          guarded.close();
+
+          // libsodium readiness: the helpers throw a named error, not a
+          // "not ready yet" panic from deep inside the wrapper.
+          await e2eeReady();
+          assert.equal(isE2EEReady(), true);
+          const keyPair = generateKeyPair();
+          assert.equal(keyPair.publicKey.length, 32);
+          // A short ciphertext is a named RangeError rather than a libsodium
+          // panic on an empty slice.
+          assert.throws(
+            () => decryptWithSharedKey(Buffer.alloc(4), Buffer.alloc(32)),
+            (e) => e instanceof RangeError,
+          );
+
+          // E2EE is opt-in and never downgrades a member to plaintext.
+          const secure = await createRealtimeHub({ heartbeat: false, e2ee: true });
+          const peer = {
+            readyState: CONNECTION_OPEN,
+            send() {},
+            close() { this.readyState = 3; },
+          };
+          const secureClient = await secure.join("secure", { id: "p1", connection: peer });
+          assert.equal(Buffer.isBuffer(secure.e2eePublicKey), true);
+          assert.equal(await secure.broadcastEncrypted("secure", { type: "secret" }), 0,
+            "an unregistered key is skipped, not sent in plaintext");
+          secure.registerClientKey(peer, generateKeyPair().publicKey);
+          assert.equal(await secure.broadcastEncrypted("secure", { type: "secret" }), 1);
+          assert.equal(secureClient.id, "p1");
+          secure.close();
+
+          // A real server, a real upgrade, a real frame.
+          const app = Fastify({ logger: false });
+          let hubRef;
+          const live = await registerRealtime(app, {
+            attachConnections: false,
+            maxPayload: 4096,
+            heartbeat: false,
+            routes: async (server) => {
+              server.get("/ws/room", { websocket: true }, async (ws) => {
+                await hubRef.join("room", { id: "c1", connection: ws });
+                ws.on("close", () => hubRef.disconnect("c1"));
+              });
+            },
+          });
+          hubRef = live;
+
+          await app.listen({ port: 0, host: "127.0.0.1" });
+          const client2 = new WebSocket(`ws://127.0.0.1:${app.server.address().port}/ws/room`);
+          const received = new Promise((resolve) => {
+            client2.once("message", (data) => resolve(decode(data)));
+          });
+
+          await new Promise((resolve, reject) => {
+            client2.once("open", resolve);
+            client2.once("error", reject);
+          });
+
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          assert.equal(await live.broadcast("room", { type: "live" }), 1);
+          assert.deepEqual(await received, { type: "live" });
+
+          client2.close();
+          await app.close();
+          assert.equal(live.isClosed, true, "app.close() closes the hub");
+
+          // The adapter on a plain node:http server, which is what the package
+          // now sells: authentication before the handshake, so a refused peer
+          // never holds an open socket.
+          const { createServer } = await import("node:http");
+          const plain = createServer((_request, response) => response.end("ok"));
+          const plainHub = await createRealtimeHub({
+            heartbeat: false,
+            authenticate: ({ request }) => {
+              const url = new URL(request.url, "http://localhost");
+              if (url.searchParams.get("token") !== "smoke") {
+                throw new Error("invalid token");
+              }
+              return { user: "smoke" };
+            },
+          });
+          const attached = await attachWebSocketAdapter(plain, {
+            hub: plainHub,
+            path: "/ws",
+            channel: "plain",
+          });
+
+          await new Promise((resolve) => plain.listen(0, "127.0.0.1", resolve));
+          const plainPort = plain.address().port;
+
+          const refused = new WebSocket(`ws://127.0.0.1:${plainPort}/ws`);
+          const refusal = await new Promise((resolve) => {
+            refused.on("open", () => resolve("opened"));
+            refused.on("error", (error) => resolve(error.message));
+          });
+          assert.match(refusal, /401/, "a refused peer is answered before the handshake");
+          assert.equal(plainHub.clientCount(), 0, "a refused peer is not a client");
+
+          const accepted = new WebSocket(`ws://127.0.0.1:${plainPort}/ws?token=smoke`);
+          await new Promise((resolve, reject) => {
+            accepted.once("open", resolve);
+            accepted.once("error", reject);
+          });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          assert.equal(plainHub.channelCount("plain"), 1, "an accepted peer joins");
+          assert.equal(await plainHub.broadcast("plain", { type: "plain" }), 1);
+
+          // An upgrade outside the path is not claimed.
+          const wrongPath = new WebSocket(`ws://127.0.0.1:${plainPort}/nope`);
+          await new Promise((resolve) => {
+            wrongPath.on("open", resolve);
+            wrongPath.on("error", resolve);
+            wrongPath.on("close", resolve);
+          });
+          assert.equal(plainHub.channelCount("default"), 0);
+
+          accepted.terminate();
+          await attached.close();
+          plainHub.close();
+          await new Promise((resolve) => plain.close(resolve));
+
+          console.log("public API OK");
+          EOF
+          cd "$RUNNER_TEMP/consumer"
+          node smoke.mjs
+
+      # Subpath exports are part of the published contract, so each one is
+      # imported rather than assumed to resolve.
+      - name: Verify subpath exports
+        working-directory: ${{ runner.temp }}/consumer
+        run: |
+          for subpath in plugin hub adapter e2ee fastify; do
+            node --input-type=module -e "
+              import('@bootstrap-framework/realtime/$subpath').then(
+                () => console.log('  ok: @bootstrap-framework/realtime/$subpath'),
+                (e) => { console.error('  FAILED: @bootstrap-framework/realtime/$subpath', e.code); process.exit(1); },
+              );
+            "
+          done
+
+      # Examples ship in the tarball and are documented in the README, so one
+      # that cannot start is a broken package. Each is expected to keep running,
+      # so exit code 124 from `timeout` is the success case; anything else means
+      # it exited early, and the captured output says why.
+      - name: Verify shipped examples start
+        run: |
+          cd "$RUNNER_TEMP/consumer"
+          for example in chat standalone plugin-ws e2ee adapter; do
+            log="$RUNNER_TEMP/$example.log"
+            set +e
+            WS_TOKEN=smoke-token timeout 15 npx --no-install tsx \
+              "node_modules/@bootstrap-framework/realtime/examples/$example.ts" > "$log" 2>&1
+            status=$?
+            set -e
+            if [ "$status" -ne 124 ] && [ "$status" -ne 143 ]; then
+              echo "::error::$example exited with $status"
+              cat "$log"
+              exit 1
+            fi
+            echo "  started: $example.ts"
+          done
+
+      # The published tarball must include the sources its own .js.map and
+      # .d.ts.map point at, or consumer stack traces and editor navigation
+      # break with no warning.
+      - name: Verify sourcemap targets ship
+        run: |
+          cd "$RUNNER_TEMP/consumer/node_modules/@bootstrap-framework/realtime"
+          node --input-type=module -e '
+            import { existsSync, readFileSync, globSync } from "node:fs";
+            import { dirname, resolve } from "node:path";
+
+            // A source path in a map is relative to that map, not to the
+            // package root, so resolving against the wrong base reports every
+            // map as broken.
+            const maps = [...globSync("dist/**/*.js.map"), ...globSync("dist/**/*.d.ts.map")];
+            const missing = [];
+            for (const map of maps) {
+              const { sources = [] } = JSON.parse(readFileSync(map, "utf8"));
+              for (const source of sources) {
+                const target = resolve(dirname(map), source);
+                if (!existsSync(target)) missing.push(`${map} references ${source}`);
+              }
+            }
+            if (missing.length > 0) {
+              for (const m of missing) console.error(`::error::${m}, which is not published`);
+              process.exit(1);
+            }
+            console.log(`sourcemap targets OK (${maps.length} maps)`);
+          '
+
+  # Publishing is driven by a tag, never by a push to main. The tag is the
+  # release record: `git tag realtime-v2.0.0 && git push origin realtime-v2.0.0`.
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    needs: [verify, publish-dry-run]
+    if: startsWith(github.ref, 'refs/tags/realtime-v')
+
+    # id-token: write is what makes npm Trusted Publishing work: the runner
+    # exchanges this OIDC identity for a short-lived publish token, so there is
+    # no long-lived npm secret in this repo. Configure the trusted publisher on
+    # npmjs.com (package settings -> Trusted Publisher) with the repository
+    # "mayank040902/oneunit" and this workflow filename.
+    permissions:
+      contents: read
+      id-token: write
+
+    defaults:
+      run:
+        working-directory: packages/realtime
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          registry-url: https://registry.npmjs.org/
+
+      - run: pnpm install --frozen-lockfile
+
+      # npm refuses to reuse a version number, so a typo in the tag would
+      # produce a failed release that cannot simply be retried. Fail here with a
+      # clear message instead.
+      - name: Tag must match the package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#realtime-v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag: $TAG_VERSION, package.json: $PKG_VERSION"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      # prepublishOnly runs the whole verify chain, so a failing test blocks the
+      # release before anything reaches the registry.
+      - name: Publish
+        run: pnpm publish --access public --no-git-checks
+        # Uncomment only if you are using an NPM_TOKEN secret instead of
+        # Trusted Publishing:
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Confirm it is live
+        run: |
+          PUBLISHED="$(npm view @bootstrap-framework/realtime version)"
+          echo "published: $PUBLISHED"
+          if [ "$PUBLISHED" != "$TAG_VERSION" ]; then
+            echo "::error::registry reports $PUBLISHED, expected $TAG_VERSION"
+            exit 1
+          fi

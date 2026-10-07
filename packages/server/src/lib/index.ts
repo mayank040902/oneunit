@@ -25,7 +25,7 @@ export type {
     SystemInfo,
 } from "./system.js";
 
-export { collectMetadata } from "./collectMetadata.js";
+export { collectMetadata } from "./collect-metadata.js";
 
 export {
     authCookieOptions,

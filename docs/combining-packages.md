@@ -11,12 +11,12 @@ One Node.js process that:
 | Concern | Package |
 | :--- | :--- |
 | HTTP server | `@bootstrap-framework/server` |
-| Structured logs | `@bootstrap-framework/logger` |
+| Structured logs | `@oneunit/logger` |
 | Typed HTTP errors | `@bootstrap-framework/errors` |
 | JWT + RBAC + passwords | `@oneunit/auth` |
-| PostgreSQL | `@bootstrap-framework/database` |
-| Cache, sessions, jobs | `@bootstrap-framework/redis` |
-| Domain events | `@bootstrap-framework/kafka` |
+| PostgreSQL | `@oneunit/database` |
+| Cache, sessions, jobs | `@oneunit/redis` |
+| Domain events | `@oneunit/kafka` |
 | WebSocket fan-out | `@bootstrap-framework/realtime` |
 
 Workers can reuse the same packages without Fastify: `createDatabase`, `createClient`, `createWorker`, `createKafkaClient`.
@@ -26,12 +26,12 @@ Workers can reuse the same packages without Fastify: `createDatabase`, `createCl
 ```bash
 npm install \
   @bootstrap-framework/server \
-  @bootstrap-framework/logger \
+  @oneunit/logger \
   @bootstrap-framework/errors \
   @oneunit/auth \
-  @bootstrap-framework/database \
-  @bootstrap-framework/redis \
-  @bootstrap-framework/kafka \
+  @oneunit/database \
+  @oneunit/redis \
+  @oneunit/kafka \
   @bootstrap-framework/realtime \
   @fastify/cors \
   @fastify/helmet \
@@ -104,8 +104,8 @@ Pass the Fastify logger (already a Pino logger when the logger plugin is on) int
 Standalone workers:
 
 ```javascript
-import { createLogger } from "@bootstrap-framework/logger";
-import { createKafkaClient, createLoggerAdapter } from "@bootstrap-framework/kafka";
+import { createLogger } from "@oneunit/logger";
+import { createKafkaClient, createLoggerAdapter } from "@oneunit/kafka";
 
 const logger = createLogger({ mode: "production", childBindings: { service: "worker" } });
 const kafka = createKafkaClient(createLoggerAdapter(logger), { brokers: process.env.KAFKA_BROKERS });
@@ -130,7 +130,7 @@ Use Redis as `refreshStore`:
 
 ```javascript
 import { createAuth } from "@oneunit/auth";
-import { createClient } from "@bootstrap-framework/redis";
+import { createClient } from "@oneunit/redis";
 
 const redis = createClient({ url: process.env.REDIS_URL });
 
@@ -158,25 +158,33 @@ implements neither, `auth.refresh()` and `auth.logout()` throw
 
 Use Redis as a session cache keyed by `session:${userId}` after login.
 
-## Kafka + realtime
+## Broker + realtime
+
+`@bootstrap-framework/realtime` owns no broker client, so the adapter belongs to
+the application. It consumes from the broker and calls `broadcast` on the hub;
+replacing Kafka with Redis or NATS changes this block and nothing in the realtime
+package. `examples/combined/src/index.ts` is a working version.
 
 ```javascript
-import { createKafkaBridge } from "@bootstrap-framework/realtime";
+import type { BroadcastTarget } from "@bootstrap-framework/realtime";
 
-const bridge = createKafkaBridge(server.kafka, server.realtime, server.log, {
-  groupId: "realtime-bridge",
-  topics: ["user-events"],
-  handlers: {
-    "user-events": async (payload) => {
-      server.realtime.broadcast("events", payload.message);
-    },
+const hub: BroadcastTarget = server.realtime;
+const consumer = await server.kafka.getConsumer("api-realtime");
+
+await consumer.subscribe({ topic: "user-events", fromBeginning: false });
+await consumer.run({
+  // `broadcast` is async because authorization may be.
+  eachMessage: async ({ message }) => {
+    await hub.broadcast("events", JSON.parse(message.value.toString()));
   },
 });
 
-await bridge.start();
+server.addHook("onClose", async () => {
+  await consumer.disconnect();
+});
 ```
 
-HTTP handlers can also `server.kafka.send("user-events", event)` and `server.realtime.broadcast("events", event)` in the same request.
+HTTP handlers can also `server.kafka.send("user-events", event)` and `await server.realtime.broadcast("events", event)` in the same request.
 
 ## Redis + kafka workers
 

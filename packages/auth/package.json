@@ -1,6 +1,6 @@
 {
   "name": "@oneunit/auth",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Framework-agnostic authentication: JWT, generic RBAC, password hashing, and social OAuth. Works standalone or with Express, Fastify, Koa, and uWebSockets.js.",
   "type": "module",
   "main": "./dist/index.js",
@@ -68,13 +68,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mayank040902/framework.git",
+    "url": "git+https://github.com/mayank040902/oneunit.git",
     "directory": "packages/auth"
   },
   "bugs": {
-    "url": "https://github.com/mayank040902/framework/issues"
+    "url": "https://github.com/mayank040902/oneunit/issues"
   },
-  "homepage": "https://github.com/mayank040902/framework/tree/master/packages/auth#readme",
+  "homepage": "https://github.com/mayank040902/oneunit/tree/master/packages/auth#readme",
   "dependencies": {
     "jsonwebtoken": "^9.0.2"
   },
