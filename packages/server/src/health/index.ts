@@ -20,7 +20,7 @@ export function getHealthRegistry(server: FastifyInstance): HealthRegistry {
 export { createHealthRegistry } from "./registry.js";
 export { createHealthRoute } from "./route.js";
 export { createHealthProvider, createDatabaseHealthProvider, createRedisHealthProvider, createKafkaHealthProvider } from "./provider.js";
-export { registerSystemHealthProvider } from "../plugins/core/system-health.js";
+export { registerSystemHealthProvider, type SystemHealthOptions } from "../plugins/core/system-health.js";
 
 export type {
     HealthStatus,

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import fp from "fastify-plugin";
 
 export interface CsrfPluginOptions {
     cookieOpts?: {
@@ -24,9 +25,18 @@ async function csrfPlugin(
     server: FastifyInstance,
     options: CsrfPluginOptions = {},
 ): Promise<void> {
-    const mod = await import("@fastify/csrf-protection") as unknown as { default: (opts: CsrfPluginOptions) => unknown };
+    let mod: { default: (opts: CsrfPluginOptions) => unknown };
+    try {
+        mod = await import("@fastify/csrf-protection") as unknown as { default: (opts: CsrfPluginOptions) => unknown };
+    } catch {
+        server.log?.warn?.("@fastify/csrf-protection not installed, skipping csrf plugin");
+        return;
+    }
     await server.register(mod.default as unknown as Parameters<FastifyInstance["register"]>[0], options);
 }
 
-export default csrfPlugin;
+export default fp(csrfPlugin, {
+    name: "csrf",
+    fastify: "5.x",
+});
 export { csrfPlugin };

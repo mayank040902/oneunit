@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import fp from "fastify-plugin";
 
 export interface LoggerPluginOptions {
     useHttpLogger?: boolean;
@@ -53,5 +54,8 @@ async function loggerPlugin(
     server.decorate("logger", logger);
 }
 
-export default loggerPlugin;
+export default fp(loggerPlugin, {
+    name: "logger",
+    fastify: "5.x",
+});
 export { loggerPlugin };

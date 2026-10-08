@@ -9,7 +9,13 @@ const requestContextPlugin: FastifyPluginAsync<RequestContextPluginOptions> = as
     server: FastifyInstance,
     options: RequestContextPluginOptions = {},
 ): Promise<void> => {
-    const mod = await import("@fastify/request-context") as unknown as { default: FastifyPluginAsync<RequestContextPluginOptions> };
+    let mod: { default: FastifyPluginAsync<RequestContextPluginOptions> };
+    try {
+        mod = await import("@fastify/request-context") as unknown as { default: FastifyPluginAsync<RequestContextPluginOptions> };
+    } catch {
+        server.log?.warn?.("@fastify/request-context not installed, skipping request-context plugin");
+        return;
+    }
     await server.register(mod.default, options);
 };
 

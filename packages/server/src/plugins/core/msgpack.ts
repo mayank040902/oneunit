@@ -1,34 +1,9 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
-import {
-  encode,
-  decode,
-  Encoder,
-  Decoder,
-  ExtensionCodec,
-  type EncoderOptions,
-  type DecoderOptions,
-  type ExtensionCodecType,
-} from "@msgpack/msgpack";
+import fp from "fastify-plugin";
 
 export interface MsgpackPluginOptions {
   enableBuiltin?: boolean;
   extensions?: Array<{ type: number; encode: unknown; decode: unknown }>;
-}
-
-function createExtensionCodec(
-  extensions?: Array<{ type: number; encode: unknown; decode: unknown }>,
-): ExtensionCodec<unknown> {
-  const codec = new ExtensionCodec<unknown>();
-  if (extensions) {
-    for (const ext of extensions) {
-      codec.register({
-        type: ext.type,
-        encode: ext.encode as (input: unknown, context: unknown) => Uint8Array | ((dataPos: number) => Uint8Array) | null,
-        decode: ext.decode as (data: Uint8Array, extensionType: number, context: unknown) => unknown,
-      });
-    }
-  }
-  return codec;
 }
 
 async function msgpackPlugin(
@@ -37,10 +12,32 @@ async function msgpackPlugin(
 ): Promise<void> {
   const { enableBuiltin = true, extensions = [] } = options;
 
-  const codec = createExtensionCodec(extensions);
+  let msgpack: {
+    encode: (data: unknown) => Uint8Array;
+    decode: (data: Uint8Array | Buffer) => unknown;
+    Encoder: new (opts: Record<string, unknown>) => { encode: (data: unknown) => Uint8Array };
+    Decoder: new (opts: Record<string, unknown>) => { decode: (data: Uint8Array | Buffer) => unknown };
+    ExtensionCodec: new () => { register: (ext: Record<string, unknown>) => void };
+  };
 
-  const encoder = new Encoder({ extensionCodec: codec, context: undefined });
-  const decoder = new Decoder({ extensionCodec: codec, context: undefined });
+  try {
+    msgpack = await import("@msgpack/msgpack") as unknown as typeof msgpack;
+  } catch {
+    server.log?.warn?.("msgpack package not installed, skipping msgpack plugin");
+    return;
+  }
+
+  const codec = new msgpack.ExtensionCodec();
+  for (const ext of extensions) {
+    codec.register({
+      type: ext.type,
+      encode: ext.encode as (input: unknown, context: unknown) => Uint8Array | ((dataPos: number) => Uint8Array) | null,
+      decode: ext.decode as (data: Uint8Array, extensionType: number, context: unknown) => unknown,
+    });
+  }
+
+  const encoder = new msgpack.Encoder({ extensionCodec: codec, context: undefined });
+  const decoder = new msgpack.Decoder({ extensionCodec: codec, context: undefined });
 
   server.addContentTypeParser(
     "application/msgpack",
@@ -91,5 +88,8 @@ async function msgpackPlugin(
   });
 }
 
-export default msgpackPlugin;
-export { msgpackPlugin, encode, decode, Encoder, Decoder, ExtensionCodec };
+export default fp(msgpackPlugin, {
+  name: "msgpack",
+  fastify: "5.x",
+});
+export { msgpackPlugin };

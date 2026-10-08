@@ -19,11 +19,20 @@ async function multipartPlugin(
     server: FastifyInstance,
     options: MultipartPluginOptions = {},
 ): Promise<void> {
-    // Import the fastify-plugin wrapped version
-    const mod = await import("@fastify/multipart") as unknown as {
+    let mod: {
         'module.exports': Parameters<FastifyInstance["register"]>[0];
         default: unknown;
     };
+    try {
+        // Import the fastify-plugin wrapped version
+        mod = await import("@fastify/multipart") as unknown as {
+            'module.exports': Parameters<FastifyInstance["register"]>[0];
+            default: unknown;
+        };
+    } catch {
+        server.log?.warn?.("@fastify/multipart not installed, skipping multipart plugin");
+        return;
+    }
     const plugin = mod['module.exports'] ?? mod.default;
     await server.register(plugin as Parameters<FastifyInstance["register"]>[0], options);
 }

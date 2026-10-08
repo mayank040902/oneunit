@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import fp from "fastify-plugin";
 
 export interface UnderPressurePluginOptions {
     maxEventLoopDelay?: number;
@@ -16,9 +17,18 @@ async function underPressurePlugin(
     server: FastifyInstance,
     options: UnderPressurePluginOptions = {},
 ): Promise<void> {
-    const mod = await import("@fastify/under-pressure") as unknown as { default: (opts: UnderPressurePluginOptions) => unknown };
+    let mod: { default: (opts: UnderPressurePluginOptions) => unknown };
+    try {
+        mod = await import("@fastify/under-pressure") as unknown as { default: (opts: UnderPressurePluginOptions) => unknown };
+    } catch {
+        server.log?.warn?.("@fastify/under-pressure not installed, skipping under-pressure plugin");
+        return;
+    }
     await server.register(mod.default as unknown as Parameters<FastifyInstance["register"]>[0], options);
 }
 
-export default underPressurePlugin;
+export default fp(underPressurePlugin, {
+    name: "under-pressure",
+    fastify: "5.x",
+});
 export { underPressurePlugin };

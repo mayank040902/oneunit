@@ -141,85 +141,109 @@ They should not modify server internals.
 # 3. Package Structure
 
 ```text
-src/
-├── server.ts
-├── index.ts
-├── bootstrap.ts
-│
-├── config/
-│   ├── env.ts
-│   ├── env-services.ts
-│   ├── load-env.ts
-│   └── index.ts
-│
-├── plugins/
-│   ├── index.ts
+packages/server/
+├── src/                  # TypeScript framework source
+│   ├── server.ts         # Executable / CLI server entry point
+│   ├── index.ts          # Package public root export
+│   ├── bootstrap.ts      # Core orchestration and lifecycle
 │   │
-│   ├── core/
-│   │   ├── logger.ts
-│   │   ├── errors.ts
-│   │   ├── response-management.ts
-│   │   ├── msgpack.ts
-│   │   └── system-health.ts
+│   ├── config/           # Environment and service configuration
+│   │   ├── env.ts
+│   │   ├── env-services.ts
+│   │   ├── load-env.ts
+│   │   └── index.ts
 │   │
-│   ├── http/
-│   │   ├── cors.ts
-│   │   ├── helmet.ts
-│   │   ├── cookie.ts
-│   │   ├── compress.ts
-│   │   ├── rate-limit.ts
-│   │   ├── request-context.ts
-│   │   ├── multipart.ts
-│   │   └── zod.ts
+│   ├── plugins/          # Builtin and modular plugins
+│   │   ├── index.ts      # Plugin registry and ordering orchestration
+│   │   │
+│   │   ├── core/         # Framework primitives
+│   │   │   ├── logger.ts
+│   │   │   ├── errors.ts
+│   │   │   ├── response-management.ts
+│   │   │   ├── msgpack.ts
+│   │   │   └── system-health.ts
+│   │   │
+│   │   ├── http/         # HTTP middleware
+│   │   │   ├── cors.ts
+│   │   │   ├── helmet.ts
+│   │   │   ├── cookie.ts
+│   │   │   ├── compress.ts
+│   │   │   ├── rate-limit.ts
+│   │   │   ├── request-context.ts
+│   │   │   ├── multipart.ts
+│   │   │   └── zod.ts
+│   │   │
+│   │   ├── security/     # Security plugins
+│   │   │   └── csrf.ts
+│   │   │
+│   │   ├── performance/  # Backpressure and performance
+│   │   │   └── under-pressure.ts
+│   │   │
+│   │   ├── infrastructure/ # External infrastructure adapters
+│   │   │   ├── database.ts
+│   │   │   ├── redis.ts
+│   │   │   └── kafka.ts
+│   │   │
+│   │   ├── realtime/     # Realtime & WebSocket runtime
+│   │   │   └── realtime.ts
+│   │   │
+│   │   └── documentation/ # OpenAPI & Swagger documentation
+│   │       ├── swagger.ts
+│   │       └── swagger-ui.ts
 │   │
-│   ├── security/
-│   │   └── csrf.ts
+│   ├── hooks/            # Fastify request and server hooks
+│   │   ├── index.ts
+│   │   ├── request.ts
+│   │   └── server.ts
 │   │
-│   ├── performance/
-│   │   └── under-pressure.ts
+│   ├── health/           # Health registry and providers
+│   │   ├── index.ts
+│   │   ├── registry.ts
+│   │   ├── provider.ts
+│   │   ├── route.ts
+│   │   └── types.ts
 │   │
-│   ├── infrastructure/
-│   │   ├── database.ts
-│   │   ├── redis.ts
-│   │   └── kafka.ts
+│   ├── routes/           # Builtin routes
+│   │   ├── index.ts
+│   │   └── health.ts
 │   │
-│   ├── realtime/
-│   │   └── realtime.ts
+│   ├── lib/              # Shared library utilities
+│   │   ├── index.ts
+│   │   ├── formatter.ts
+│   │   ├── system.ts
+│   │   ├── system-status.ts
+│   │   ├── collect-metadata.ts
+│   │   └── cookies.ts
 │   │
-│   └── documentation/
-│       ├── swagger.ts
-│       └── swagger-ui.ts
+│   └── types/            # TypeScript declarations
+│       ├── index.ts
+│       ├── bootstrap.ts
+│       ├── plugins.ts
+│       ├── health.ts
+│       ├── hooks.ts
+│       └── fastify-symbols.d.ts
 │
-├── hooks/
-│   ├── index.ts
-│   ├── request.ts
-│   └── server.ts
+├── test/                 # Test suites organized by subsystem
+│   ├── bootstrap/        # Minimal & comprehensive startup tests
+│   ├── failure/          # Startup failure, cleanup & fault recovery
+│   ├── health/           # Health providers, registry & endpoint
+│   ├── hooks/            # Request and server lifecycle hooks
+│   ├── lifecycle/        # Server lifecycle & graceful shutdown
+│   ├── plugins/          # Plugin registry & subsystem test suites
+│   ├── types/            # Type compilation fixtures
+│   └── unit/             # Isolated unit tests for config, lib & exports
 │
-├── health/
-│   ├── index.ts
-│   ├── registry.ts
-│   ├── provider.ts
-│   ├── route.ts
-│   └── types.ts
+├── examples/             # Runnable TypeScript & JavaScript usage examples
+│   ├── README.md
+│   ├── ts/               # Topic-organized TypeScript examples
+│   └── js/               # Plain JavaScript examples
 │
-├── routes/
-│   ├── index.ts
-│   └── health.ts
-│
-├── lib/
-│   ├── index.ts
-│   ├── formatter.ts
-│   ├── system.ts
-│   ├── system-status.ts
-│   ├── collect-metadata.ts
-│   └── cookies.ts
-│
-└── types/
-    ├── index.ts
-    ├── bootstrap.ts
-    ├── plugins.ts
-    ├── health.ts
-    └── hooks.ts
+├── dist/                 # Emitted JavaScript, declarations & source maps
+├── ARCHITECTURE.md
+├── CONTRIBUTING.md
+├── README.md
+├── CHANGELOG.md
+└── package.json
 ```
 
 ---
@@ -1367,32 +1391,80 @@ The application should not need to manually initialize Fastify, logger, health, 
 
 # 43. Testing Architecture
 
-Tests reside in `test/`.
-
-Currently:
+Tests reside in `test/`, structured to reflect the package subsystems:
 
 ```text
 test/
-└── bootstrap.test.ts   – bootstrap integration tests
+├── bootstrap/             – Bootstrap integration tests
+│   ├── comprehensive.test.ts
+│   └── minimal-startup.test.ts
+├── failure/               – Startup failure, cleanup & fault recovery
+│   ├── graceful-shutdown.test.ts
+│   ├── partial-startup.test.ts
+│   ├── shutdown-idempotency.test.ts
+│   ├── startup-cleanup.test.ts
+│   └── startup-failure.test.ts
+├── health/                – Health subsystem, providers & endpoint
+│   ├── debug-health-methods.test.ts
+│   ├── endpoint.test.ts
+│   ├── provider-registry.test.ts
+│   └── registry.test.ts
+├── hooks/                 – Fastify request and server lifecycle hooks
+│   ├── configure.test.ts
+│   └── request-context-isolation.test.ts
+├── lifecycle/             – Server lifecycle, port binding & signal shutdown
+│   ├── graceful-shutdown.test.ts
+│   └── lifecycle.test.ts
+├── plugins/               – Plugin system & individual builtin plugins
+│   ├── core/              – Core framework plugins (errors, response-management)
+│   ├── documentation/     – Documentation plugins (swagger, swagger-ui)
+│   ├── http/              – HTTP plugins (multipart, outbound-http, rate-limit, validation)
+│   ├── infrastructure/    – Infrastructure lifecycle & client management
+│   ├── performance/       – Performance plugins (under-pressure)
+│   ├── realtime/          – Realtime / WebSocket plugin
+│   ├── security/          – Security plugins (csrf)
+│   ├── application.test.ts
+│   ├── configuration.test.ts
+│   ├── configured.test.ts
+│   ├── default.test.ts
+│   ├── dependency-handling.test.ts
+│   ├── disabled.test.ts
+│   ├── encapsulation.test.ts
+│   ├── optional-dependency.test.ts
+│   └── ordering.test.ts
+├── types/                 – TypeScript declaration & compile validation
+│   └── compile-fixtures.test.ts
+└── unit/                  – Deterministic unit tests for config, lib & exports
+    ├── config/
+    │   └── env.test.ts
+    ├── lib/
+    │   ├── collect-metadata.test.ts
+    │   ├── cookies.test.ts
+    │   ├── formatter.test.ts
+    │   └── system-status.test.ts
+    ├── built-package.test.ts
+    ├── public-api.test.ts
+    └── public-exports.test.ts
 ```
 
 Tests use real Fastify instances via Vitest.
 
-Testing should cover:
+Testing covers:
 
 ```text
 configuration
-plugins
-plugin ordering
-plugin lifecycle
-hooks
-health
-bootstrap
-startup failure
-shutdown
-custom extensions
+plugins & plugin categories (core, http, security, performance, infrastructure, realtime, docs)
+plugin ordering & encapsulation
+plugin lifecycle & dependency handling
+request & server hooks
+health registry, providers, & endpoint
+bootstrap (minimal & comprehensive)
+startup failure & resource cleanup
+lifecycle & graceful shutdown
+custom extensions (plugins, extraPlugins, configure)
 HTTP behavior (injection)
-public API
+public API & package exports
+TypeScript type compilation
 ```
 
 ---
@@ -1428,7 +1500,7 @@ External infrastructure should be tested separately using isolated services.
 The package must pass:
 
 ```bash
-npm run typecheck
+pnpm typecheck
 # → tsc -p tsconfig.json --noEmit
 ```
 
@@ -1441,11 +1513,20 @@ Available scripts:
 ```json
 {
   "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -w -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsc -w -p tsconfig.json"
+    "example:basic": "npm run build && tsx examples/ts/basic.ts",
+    "example:basic:ts": "npm run build && tsx examples/ts/basic.ts",
+    "example:basic:js": "npm run build && node examples/js/basic.js",
+    "example:plugins": "npm run build && tsx examples/ts/plugins.ts",
+    "example:hooks": "npm run build && tsx examples/ts/hooks.ts",
+    "example:custom": "npm run build && tsx examples/ts/custom.ts",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build && npm test",
+    "pack:check": "npm pack --dry-run"
   }
 }
 ```

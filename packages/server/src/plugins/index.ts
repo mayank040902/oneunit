@@ -80,12 +80,12 @@ export const DEFAULT_BUILTIN_PLUGINS: BuiltinPluginsOptions = {
     cookie: true,
     compress: true,
     rateLimit: { max: 1000, timeWindow: "1 minute" },
-    zod: false,
+    zod: true,
     responseManagement: true,
     logger: { useHttpLogger: true },
-    database: { logQueries: false },
-    kafka: { autoConnectProducer: false },
-    redis: { healthCheck: false },
+    database: false,
+    kafka: false,
+    redis: false,
     realtime: false,
     errorHandler: { includeStack: false, logErrors: true },
     msgpack: { enableBuiltin: true },
@@ -176,17 +176,17 @@ export const OPTIONAL_PLUGINS: PluginSpec[] = [
     {
         key: "database",
         specifier: "./infrastructure/database.js",
-        defaults: { logQueries: false },
+        defaults: false,
     },
     {
         key: "kafka",
         specifier: "./infrastructure/kafka.js",
-        defaults: { autoConnectProducer: false },
+        defaults: false,
     },
     {
         key: "redis",
         specifier: "./infrastructure/redis.js",
-        defaults: { healthCheck: false },
+        defaults: false,
     },
     {
         key: "realtime",
@@ -206,9 +206,9 @@ export const OPTIONAL_PLUGINS: PluginSpec[] = [
     },
 ];
 
-async function loadModule(specifier: string): Promise<{ default?: unknown } | null> {
+async function loadModule(specifier: string): Promise<Record<string, unknown> | null> {
     try {
-        return await import(specifier) as { default?: unknown };
+        return await import(specifier) as Record<string, unknown>;
     } catch {
         return null;
     }
@@ -233,15 +233,24 @@ export async function registerOptionalPlugin(
     const mod = await loadModule(spec.specifier);
 
     if (!mod) {
-        if (config !== undefined && config !== true) {
-            throw new Error(`Missing optional dependency "${spec.specifier}"`);
+        // Infrastructure plugins must fail if explicitly enabled but dependency missing
+        const infrastructureKeys = ["database", "redis", "kafka", "realtime"];
+        if (infrastructureKeys.includes(spec.key)) {
+            throw new Error(`Missing required dependency for ${spec.key} plugin. Install the peer dependency or disable the plugin.`);
         }
+        // For other optional plugins, if explicitly configured (not just default true), warn and skip
+        if (config !== undefined && config !== true) {
+            server.log?.warn?.(`Optional plugin "${spec.key}" not installed, skipping`);
+            return;
+        }
+        // If enabled by default but dependency missing, skip gracefully (many @fastify/* peers are optional)
         return;
     }
 
     // For fastify plugins, the fastify-plugin wrapped version is typically at module.exports
     // Fall back to default export for compatibility
-    const plugin = (mod['module.exports'] ?? mod.default ?? mod) as Parameters<FastifyInstance["register"]>[0];
+    const moduleExports = (mod as Record<string, unknown>)["module.exports"];
+    const plugin = (moduleExports ?? mod.default ?? mod) as Parameters<FastifyInstance["register"]>[0];
     await server.register(plugin, pluginOptions);
 }
 
@@ -336,9 +345,10 @@ export async function registerHealthPlugin(
     server: FastifyInstance,
     _options: BuiltinPluginsOptions = {},
 ): Promise<void> {
-    // 7. Health: system health provider
-    const { registerSystemHealthProvider } = await import("./core/system-health.js");
-    registerSystemHealthProvider(server);
+    // System health provider is already registered in bootstrap.ts via
+    // registerSystemHealthProvider(server, { disabled: ... })
+    // which respects the health: false option.
+    // No re-registration here to prevent duplicate providers.
 }
 
 export async function registerDocumentationPlugins(

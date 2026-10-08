@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createBootstrapServer,
   type BootstrapServerOptions,
-} from "../../src/bootstrap.js";
+} from "../../../src/bootstrap.js";
 import { z } from "zod";
 
 const apps: FastifyInstance[] = [];

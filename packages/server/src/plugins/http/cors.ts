@@ -16,7 +16,13 @@ async function corsPlugin(
     server: FastifyInstance,
     options: CorsPluginOptions = {},
 ): Promise<void> {
-    const mod = await import("@fastify/cors") as unknown as { default: (opts: CorsPluginOptions) => unknown };
+    let mod: { default: (opts: CorsPluginOptions) => unknown };
+    try {
+        mod = await import("@fastify/cors") as unknown as { default: (opts: CorsPluginOptions) => unknown };
+    } catch {
+        server.log?.warn?.("@fastify/cors not installed, skipping CORS plugin");
+        return;
+    }
     await server.register(mod.default as unknown as Parameters<FastifyInstance["register"]>[0], options);
 }
 

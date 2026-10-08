@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import fp from "fastify-plugin";
 import { getHealthRegistry, createDatabaseHealthProvider } from "../../health/index.js";
 
 export interface DatabasePluginOptions {
@@ -55,7 +56,7 @@ async function databasePlugin(
         };
         createDatabase = dbModule.createDatabase;
     } catch (err) {
-        server.log.warn({ err }, "database package not installed, database plugin disabled");
+        server.log?.warn?.({ err }, "database package not installed, skipping database plugin");
         return;
     }
 
@@ -107,5 +108,8 @@ async function databasePlugin(
     });
 }
 
-export default databasePlugin;
+export default fp(databasePlugin, {
+    name: "database",
+    fastify: "5.x",
+});
 export { databasePlugin };

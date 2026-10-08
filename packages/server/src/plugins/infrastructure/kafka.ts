@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import fp from "fastify-plugin";
 import { getHealthRegistry, createKafkaHealthProvider } from "../../health/index.js";
 
 export interface KafkaPluginOptions {
@@ -59,7 +60,7 @@ async function kafkaPlugin(
         };
         createKafkaClient = kafkaModule.createKafkaClient;
     } catch (err) {
-        server.log.warn({ err }, "kafka package not installed, kafka plugin disabled");
+        server.log?.warn?.({ err }, "kafka package not installed, skipping kafka plugin");
         return;
     }
 
@@ -116,5 +117,8 @@ async function kafkaPlugin(
     });
 }
 
-export default kafkaPlugin;
+export default fp(kafkaPlugin, {
+    name: "kafka",
+    fastify: "5.x",
+});
 export { kafkaPlugin };

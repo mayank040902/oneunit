@@ -24,7 +24,7 @@ export interface SwaggerUIPluginOptions {
 
 let swaggerUIModule: FastifyPluginCallback<SwaggerUIPluginOptions> | null = null;
 
-async function loadSwaggerUIModule(): Promise<FastifyPluginCallback<SwaggerUIPluginOptions>> {
+async function loadSwaggerUIModule(): Promise<FastifyPluginCallback<SwaggerUIPluginOptions> | null> {
     if (swaggerUIModule) {
         return swaggerUIModule;
     }
@@ -37,7 +37,17 @@ async function swaggerUIPlugin(
     server: FastifyInstance,
     options: SwaggerUIPluginOptions = {},
 ): Promise<void> {
-    const plugin = await loadSwaggerUIModule();
+    let plugin: FastifyPluginCallback<SwaggerUIPluginOptions> | null;
+    try {
+        plugin = await loadSwaggerUIModule();
+    } catch {
+        server.log?.warn?.("@fastify/swagger-ui not installed, skipping swagger-ui plugin");
+        return;
+    }
+    if (!plugin) {
+        server.log?.warn?.("@fastify/swagger-ui not installed, skipping swagger-ui plugin");
+        return;
+    }
     await server.register(plugin, options);
 }
 

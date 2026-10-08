@@ -17,7 +17,7 @@ export interface RateLimitPluginOptions {
 
 let cachedPlugin: unknown = null;
 
-async function loadRateLimitPlugin() {
+async function loadRateLimitPlugin(): Promise<unknown> {
     if (cachedPlugin) return cachedPlugin;
     const mod = await import("@fastify/rate-limit");
     cachedPlugin = mod.default;
@@ -35,7 +35,13 @@ async function rateLimitPlugin(
     server: FastifyInstance,
     options: RateLimitPluginOptions = {},
 ): Promise<void> {
-    const plugin = await loadRateLimitPlugin();
+    let plugin: unknown;
+    try {
+        plugin = await loadRateLimitPlugin();
+    } catch {
+        server.log?.warn?.("@fastify/rate-limit not installed, skipping rate-limit plugin");
+        return;
+    }
     
     // Default to global limiting with per-route key generator
     const pluginOptions = {

@@ -20,7 +20,13 @@ async function helmetPlugin(
     server: FastifyInstance,
     options: HelmetPluginOptions = {},
 ): Promise<void> {
-    const mod = await import("@fastify/helmet") as unknown as { default: (opts: HelmetPluginOptions) => unknown };
+    let mod: { default: (opts: HelmetPluginOptions) => unknown };
+    try {
+        mod = await import("@fastify/helmet") as unknown as { default: (opts: HelmetPluginOptions) => unknown };
+    } catch {
+        server.log?.warn?.("@fastify/helmet not installed, skipping helmet plugin");
+        return;
+    }
     await server.register(mod.default as unknown as Parameters<FastifyInstance["register"]>[0], options);
 }
 

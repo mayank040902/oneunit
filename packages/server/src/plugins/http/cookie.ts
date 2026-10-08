@@ -11,7 +11,13 @@ async function cookiePlugin(
     server: FastifyInstance,
     options: CookiePluginOptions = {},
 ): Promise<void> {
-    const mod = await import("@fastify/cookie") as unknown as { default: (opts: CookiePluginOptions) => unknown };
+    let mod: { default: (opts: CookiePluginOptions) => unknown };
+    try {
+        mod = await import("@fastify/cookie") as unknown as { default: (opts: CookiePluginOptions) => unknown };
+    } catch {
+        server.log?.warn?.("@fastify/cookie not installed, skipping cookie plugin");
+        return;
+    }
     await server.register(mod.default as unknown as Parameters<FastifyInstance["register"]>[0], options);
 }
 

@@ -193,15 +193,65 @@ Builtin plugins register in this deterministic order:
 
 Application plugins and `configure()` run after all builtins.
 
+## Subpath exports
+
+`@oneunit/server` provides dedicated subpath exports:
+
+| Export | Description |
+| :--- | :--- |
+| `@oneunit/server` | Root export: bootstrap functions, plugins, hooks, config, health, and types |
+| `@oneunit/server/bootstrap` | Core bootstrap functions (`createBootstrapServer`, `startBootstrapServer`, `createServer`, `startServer`) |
+| `@oneunit/server/config` | Environment & service configuration (`serviceConfig`, `nodeEnv`, `loadEnv`, `envBool`, etc.) |
+| `@oneunit/server/hooks` | Lifecycle hook helpers (`registerHooks`, `registerRequestHooks`, `registerServerHooks`) |
+| `@oneunit/server/plugins` | Builtin plugin exports, registry utilities, and plugin option types |
+| `@oneunit/server/routes` | Builtin framework routes (`createHealthPlugin`) |
+| `@oneunit/server/lib` | Shared utilities (`getSystemInfo`, `getSystemStatus`, `formatBytes`, `formatTime`, `timestamp`, `cookies`, `collectMetadata`) |
+
 ## Examples
 
-See [`examples/ts/`](./examples/ts/) for runnable TypeScript examples:
+Executable examples are located in [`examples/`](./examples/). See [`examples/README.md`](./examples/README.md) for full documentation.
 
-- [`basic.ts`](./examples/ts/basic.ts) — minimal server
-- [`plugins.ts`](./examples/ts/plugins.ts) — builtin plugin configuration
-- [`hooks.ts`](./examples/ts/hooks.ts) — lifecycle hooks
-- [`custom.ts`](./examples/ts/custom.ts) — custom plugins and `configure()`
-- [`auth.ts`](./examples/ts/auth.ts) — authentication plugin pattern
+### TypeScript Examples
+
+Run with `npx tsx` or using package scripts:
+
+| Example | Command | Purpose |
+| :--- | :--- | :--- |
+| `examples/ts/basic/server.ts` | `npx tsx examples/ts/basic/server.ts` | Minimal server startup using `startServer` |
+| `examples/ts/plugins/server.ts` | `npx tsx examples/ts/plugins/server.ts` | Custom application plugin registration |
+| `examples/ts/hooks/server.ts` | `npx tsx examples/ts/hooks/server.ts` | Request and server lifecycle hooks |
+| `examples/ts/configure/server.ts` | `npx tsx examples/ts/configure/server.ts` | Post-plugin configuration hook |
+| `examples/ts/health/server.ts` | `npx tsx examples/ts/health/server.ts` | Health route and provider monitoring |
+| `examples/ts/infrastructure/server.ts` | `npx tsx examples/ts/infrastructure/server.ts` | Optional infrastructure configuration |
+| `examples/ts/graceful-shutdown/server.ts` | `npx tsx examples/ts/graceful-shutdown/server.ts` | Opt-in graceful shutdown via `gracefulShutdown: true` |
+
+### JavaScript Examples
+
+Run with `node`:
+
+```bash
+node examples/js/basic/server.js
+```
+
+Or run package scripts:
+
+```bash
+pnpm example:basic      # Runs basic TypeScript example
+pnpm example:basic:js   # Runs basic JavaScript example
+pnpm example:plugins    # Runs plugins example
+pnpm example:hooks      # Runs hooks example
+pnpm example:custom     # Runs custom configuration example
+```
+
+## Development
+
+```bash
+pnpm typecheck   # Typecheck with tsc --noEmit
+pnpm build       # Compile TypeScript to dist/
+pnpm test        # Run Vitest test suite
+pnpm test:watch  # Run Vitest in watch mode
+pnpm pack:check  # Validate package contents via npm pack --dry-run
+```
 
 ## License
 

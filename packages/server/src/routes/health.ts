@@ -7,6 +7,7 @@ export interface HealthRouteOptions {
     path?: string;
     serviceName?: string;
     checks?: Record<string, HealthCheckResult> | HealthCheckProvider;
+    includeDetails?: boolean;
 }
 
 export type HealthCheckProvider = (server: FastifyInstance) => Record<string, HealthCheckResult> | Promise<Record<string, HealthCheckResult>>;

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import fp from "fastify-plugin";
 import { getHealthRegistry, createRedisHealthProvider } from "../../health/index.js";
 
 export interface RedisPluginOptions {
@@ -42,7 +43,7 @@ async function redisPlugin(
         health = redisModule.health;
         shutdown = redisModule.shutdown;
     } catch (err) {
-        server.log.warn({ err }, "redis package not installed, redis plugin disabled");
+        server.log?.warn?.({ err }, "redis package not installed, skipping redis plugin");
         return;
     }
 
@@ -76,5 +77,8 @@ async function redisPlugin(
     });
 }
 
-export default redisPlugin;
+export default fp(redisPlugin, {
+    name: "redis",
+    fastify: "5.x",
+});
 export { redisPlugin };
