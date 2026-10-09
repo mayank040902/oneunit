@@ -1,0 +1,1 @@
+export { createKafkaAdapter } from './adapter.js';
