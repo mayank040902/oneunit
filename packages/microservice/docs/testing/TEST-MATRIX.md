@@ -1,9 +1,10 @@
 # Test Matrix — @oneunit/microservice
-
+ 
 **Package Version:** 1.0.0
 **Date:** 2026-10-09
 **Test Framework:** Vitest 1.6.1
 **Coverage Provider:** v8
+**Total Tests:** 1070
 
 ---
 
@@ -49,69 +50,71 @@
 ---
 
 ## Identity & Authorization
-
+ 
 | Feature | Implementation | Existing Tests | Missing Cases | Test Level | External Req | Result |
 |---------|---------------|----------------|---------------|------------|--------------|--------|
 | Service Identity | `src/identity/service-identity.ts` | 14 tests ✅ | — | Unit | None | ✅ |
 | Credentials | `src/identity/credentials.ts` | 25 tests ✅ | — | Unit | None | ✅ |
-| Authentication | `src/identity/authentication.ts` | 21 tests ✅ | — | Unit + 🔒 | None | ✅ |
-| Authorization | `src/identity/authorization.ts` | 34 tests ✅ | — | Unit + 🔒 | None | ✅ |
+| Authentication | `src/identity/authentication.ts` | 49 tests ✅ | — | Unit + 🔒 | None | ✅ |
+| Authorization | `src/identity/authorization.ts` | 78 tests ✅ | — | Unit + 🔒 | None | ✅ |
 
 ---
 
 ## Security & Cryptography
-
+ 
 | Feature | Implementation | Existing Tests | Missing Cases | Test Level | External Req | Result |
 |---------|---------------|----------------|---------------|------------|--------------|--------|
-| Encryption | `src/security/encryption.ts` | 42 tests ✅ | — | Unit + 🔒 | None | ✅ |
-| Key Exchange | `src/security/key-exchange.ts` | 29 tests ✅ | — | Unit + 🔒 | None | ✅ |
-| Signing | `src/security/signing.ts` | 37 tests ✅ | — | Unit + 🔒 | None | ✅ |
-| Key Provider | `src/security/key-provider.ts` | 28 tests ✅ | — | Unit | None | ✅ |
+| Encryption | `src/security/encryption.ts` | 65 tests ✅ | — | Unit + 🔒 | None | ✅ |
+| Key Exchange | `src/security/key-exchange.ts` | 60 tests ✅ | — | Unit + 🔒 | None | ✅ |
+| Signing | `src/security/signing.ts` | 52 tests ✅ | — | Unit + 🔒 | None | ✅ |
+| Key Provider | `src/security/key-provider.ts` | 46 tests ✅ | — | Unit | None | ✅ |
 | Key Rotation | `src/security/key-rotation.ts` | 26 tests ✅ | — | Unit | None | ✅ |
-| Replay Protection | `src/security/replay-protection.ts` | 30 tests ✅ | — | Unit + 🔒 | None | ✅ |
+| Replay Protection | `src/security/replay-protection.ts` | 53 tests ✅ | — | Unit + 🔒 | None | ✅ |
 | Crypto Types | `src/security/crypto-types.ts` | 21 tests ✅ | — | Unit | None | ✅ |
 
 ---
 
 ## Registry & Discovery
-
+ 
 | Feature | Implementation | Existing Tests | Missing Cases | Test Level | External Req | Result |
 |---------|---------------|----------------|---------------|------------|--------------|--------|
-| Registry (Memory) | `src/registry/registry.ts` | 0 tests ⚠️ | Register, discover, lease | Unit | None | ⚠️ |
-| Discovery | `src/registry/discovery.ts` | 0 tests ⚠️ | Query, filter | Unit | None | ⚠️ |
-| Health | `src/registry/health.ts` | 0 tests ⚠️ | Health metadata | Unit | None | ⚠️ |
-| Leases | `src/registry/leases.ts` | 0 tests ⚠️ | Renewal, expiration | Unit | None | ⚠️ |
-| Redis Backend | `src/registry/redis/` | 0 tests ⚠️ | All drivers, failover | Unit + 📦 | Redis | ⚠️ |
+| Registry (Memory) | `src/registry/registry.ts` | 25 tests ✅ | Redis backend integration | Unit | None | ✅ |
+| Discovery | `src/registry/discovery.ts` | 28 tests ✅ | Query, filter | Unit | None | ✅ |
+| Health | `src/registry/health.ts` | 15 tests ✅ | Health metadata | Unit | None | ✅ |
+| Leases | `src/registry/leases.ts` | 30 tests ✅ | Renewal, expiration | Unit | None | ✅ |
+| Redis Backend | `src/registry/redis/` | 2 tests 🔄 | All drivers, failover | Unit + 📦 | Redis | 🔄 |
 
 ---
 
 ## Transport Layer
-
+ 
 | Feature | Implementation | Existing Tests | Missing Cases | Test Level | External Req | Result |
 |---------|---------------|----------------|---------------|------------|--------------|--------|
-| Base Transport | `src/transport/transport.ts` | 0 tests ⚠️ | Interface | Unit | None | ⚠️ |
+| Base Transport | `src/transport/transport.ts` | 12 tests ✅ | Interface compliance | Unit | None | ✅ |
 | Transport Manager | `src/transport/manager.ts` | 0 tests ⚠️ | Routing, muxing | Unit | None | ⚠️ |
 | Capabilities | `src/transport/capabilities.ts` | 0 tests ⚠️ | Capability matching | Unit | None | ⚠️ |
+| TCP Framing | `src/transport/tcp/` | 18 tests ✅ | Framing, backpressure, TLS | Unit + 🔒 + 📦 | None | ✅ |
+| UDP | `src/transport/udp/` | 14 tests ✅ | Packet validation, rate limit | Unit + 🔒 + 📦 | None | ✅ |
 
 ---
 
 ## Observability
-
+ 
 | Feature | Implementation | Existing Tests | Missing Cases | Test Level | External Req | Result |
 |---------|---------------|----------------|---------------|------------|--------------|--------|
 | Logger | `src/observability/logger.ts` | 0 tests ⚠️ | Levels, redaction | Unit | None | ⚠️ |
-| Metrics | `src/observability/metrics.ts` | 0 tests ⚠️ | Counters, histograms | Unit | None | ⚠️ |
-| Tracing | `src/observability/tracing.ts` | 0 tests ⚠️ | Span creation, W3C | Unit | None | ⚠️ |
-| Audit | `src/observability/audit.ts` | 0 tests ⚠️ | Audit events | Unit | None | ⚠️ |
+| Metrics | `src/observability/metrics.ts` | 22 tests ✅ | Counters, histograms | Unit | None | ✅ |
+| Tracing | `src/observability/tracing.ts` | 28 tests ✅ | Span creation, W3C | Unit | None | ✅ |
+| Audit | `src/observability/audit.ts` | 18 tests ✅ | Audit events | Unit | None | ✅ |
 
 ---
 
 ## Internal Utilities
-
+ 
 | Feature | Implementation | Existing Tests | Missing Cases | Test Level | External Req | Result |
 |---------|---------------|----------------|---------------|------------|--------------|--------|
-| IDs | `src/internal/ids.ts` | 0 tests ⚠️ | UUID generation | Unit | None | ⚠️ |
-| Shutdown | `src/internal/shutdown.ts` | 0 tests ⚠️ | Signal handling | Unit | None | ⚠️ |
+| IDs | `src/internal/ids.ts` | 14 tests ✅ | UUID generation | Unit | None | ✅ |
+| Shutdown | `src/internal/shutdown.ts` | 21 tests ✅ | Signal handling | Unit | None | ✅ |
 
 ---
 
@@ -135,10 +138,10 @@
 ---
 
 ## Adapters — Messaging
-
+ 
 | Feature | Implementation | Existing Tests | Missing Cases | Test Level | External Req | Result |
 |---------|---------------|----------------|---------------|------------|--------------|--------|
-| Kafka Adapter (Main) | `src/adapters/messaging/kafka/adapter.ts` | 0 tests ⚠️ | Driver selection | Unit | None | ⚠️ |
+| Kafka Adapter (Main) | `src/adapters/messaging/kafka/adapter.ts` | 15 tests 🔄 | Driver selection, integration | Unit | None | 🔄 |
 | Kafka Driver Resolver | `src/adapters/messaging/kafka/driver-resolver.ts` | 0 tests ⚠️ | Explicit/auto selection | Unit | None | ⚠️ |
 | Kafka KafkaJS Driver | `src/adapters/messaging/kafka/kafkajs/adapter.ts` | 0 tests ⚠️ | Producer/consumer | Unit + 📦 | Kafka | ⚠️ |
 | Kafka OneUnit Driver | `src/adapters/messaging/kafka/oneunit/adapter.ts` | 0 tests ⚠️ | Producer/consumer | Unit + 📦 | Kafka | ⚠️ |
@@ -159,7 +162,7 @@
 ---
 
 ## Summary Statistics
-
+ 
 | Category | Files | Tested Files | Coverage |
 |----------|-------|--------------|----------|
 | Core | 6 | 4 | 67% |
@@ -167,16 +170,16 @@
 | Contracts | 5 | 5 | 100% |
 | Identity | 4 | 4 | 100% |
 | Security | 7 | 7 | 100% |
-| Registry | 5 | 0 | 0% |
-| Transport | 3 | 0 | 0% |
-| Observability | 4 | 0 | 0% |
-| Internal | 2 | 0 | 0% |
+| Registry | 5 | 4 | 80% |
+| Transport | 5 | 3 | 60% |
+| Observability | 4 | 3 | 75% |
+| Internal | 2 | 2 | 100% |
 | RPC Adapters | 3 | 0 | 0% |
 | Network Adapters | 2 | 0 | 0% |
-| Kafka Adapters | 4 | 0 | 0% |
+| Kafka Adapters | 4 | 1 | 25% |
 | NATS Adapter | 1 | 0 | 0% |
 | Redis Registry | 5 | 0 | 0% |
-| **Total** | **53** | **22** | **~42%** |
+| **Total** | **55** | **35** | **~64%** |
 
 ---
 

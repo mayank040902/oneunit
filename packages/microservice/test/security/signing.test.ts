@@ -420,3 +420,248 @@ describe('RsaSigningService - Adversarial and Edge Case Tests', () => {
     expect(binary.length).toBeGreaterThan(0);
   });
 });
+
+// === NEW ADVERSARIAL TESTS ===
+
+describe('RSA Signing - Algorithm Security', () => {
+  let rsaService: RsaSigningService;
+  
+  beforeEach(async () => {
+    rsaService = await RsaSigningService.create(2048);
+  });
+
+  it('should use RSASSA-PKCS1-v1_5 (documented behavior)', async () => {
+    const data = new TextEncoder().encode('Test');
+    const signature = await rsaService.sign(data);
+    
+    // Verify algorithm used is PKCS1-v1_5
+    const pem = await rsaService.getPublicKeyPem();
+    const base64 = pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s/g, '');
+    const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    
+    const publicKey = await crypto.subtle.importKey(
+      'spki',
+      binary.buffer,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    
+    const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey, signature, data);
+    expect(valid).toBe(true);
+  });
+
+  it('should reject RSA-PSS signature with PKCS1-v1_5 key', async () => {
+    const data = new TextEncoder().encode('Test');
+    const signature = await rsaService.sign(data);
+    
+    // Try to verify with RSA-PSS - should fail
+    const pem = await rsaService.getPublicKeyPem();
+    const base64 = pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, '').replace(/\s/g, '');
+    const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    
+    const publicKey = await crypto.subtle.importKey(
+      'spki',
+      binary.buffer,
+      { name: 'RSA-PSS', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    
+    const valid = await crypto.subtle.verify(
+      { name: 'RSA-PSS', saltLength: 32 },
+      publicKey,
+      signature,
+      data
+    );
+    expect(valid).toBe(false);
+  });
+
+  it('should handle different key sizes', async () => {
+    for (const keySize of [2048, 3072, 4096]) {
+      const service = await RsaSigningService.create(keySize);
+      const data = new TextEncoder().encode(`Test ${keySize}`);
+      const signature = await service.sign(data);
+      const valid = await service.verify(data, signature);
+      expect(valid).toBe(true);
+      expect(signature.length).toBe(keySize / 8);
+    }
+  });
+});
+
+describe('Ed25519 Signing - Deterministic Properties', () => {
+  let edService: Ed25519SigningService;
+  let keyPair: KeyPair;
+  
+  beforeEach(async () => {
+    keyPair = await KeyExchangeService.generateEd25519KeyPair();
+    edService = await Ed25519SigningService.create(keyPair);
+  });
+
+  it('should produce deterministic signatures (Ed25519 property)', async () => {
+    const data = new TextEncoder().encode('Deterministic test');
+    const sig1 = await edService.sign(data);
+    const sig2 = await edService.sign(data);
+    expect(sig1).toEqual(sig2);
+  });
+
+  it('should produce different signatures for different messages', async () => {
+    const data1 = new TextEncoder().encode('Message 1');
+    const data2 = new TextEncoder().encode('Message 2');
+    
+    const sig1 = await edService.sign(data1);
+    const sig2 = await edService.sign(data2);
+    
+    expect(sig1).not.toEqual(sig2);
+  });
+
+  it('should produce different signatures for same message with different keys', async () => {
+    const data = new TextEncoder().encode('Same message');
+    const sig1 = await edService.sign(data);
+    
+    const otherKeyPair = await KeyExchangeService.generateEd25519KeyPair();
+    const otherService = await Ed25519SigningService.create(otherKeyPair);
+    const sig2 = await otherService.sign(data);
+    
+    expect(sig1).not.toEqual(sig2);
+  });
+
+  it('should verify signature with raw public key import', async () => {
+    const data = new TextEncoder().encode('Raw key test');
+    const signature = await edService.sign(data);
+    
+    // Import public key as raw
+    const publicKey = await crypto.subtle.importKey(
+      'raw',
+      keyPair.publicKey as BufferSource,
+      { name: 'Ed25519' },
+      false,
+      ['verify']
+    );
+    
+    const valid = await crypto.subtle.verify('Ed25519', publicKey, signature as BufferSource, data as BufferSource);
+    expect(valid).toBe(true);
+  });
+});
+
+describe('Key Usage Validation', () => {
+  it('should reject signing with key that only has verify usage', async () => {
+    const keyPair = await KeyExchangeService.generateEd25519KeyPair();
+    
+    // Import public key with only verify usage
+    const publicKeyOnly = await crypto.subtle.importKey(
+      'raw',
+      keyPair.publicKey as BufferSource,
+      { name: 'Ed25519' },
+      false,
+      ['verify']
+    );
+    
+    const data = new TextEncoder().encode('Test');
+    await expect(crypto.subtle.sign('Ed25519', publicKeyOnly, data)).rejects.toThrow();
+  });
+
+  it('should reject verification with key that only has sign usage', async () => {
+    const keyPair = await KeyExchangeService.generateEd25519KeyPair();
+    
+    // Import private key with only sign usage - need to export raw first
+    // Ed25519 private keys in Web Crypto cannot be exported as raw
+    // So we test with a CryptoKey that has only 'sign' usage
+    const privateKeyOnly = await crypto.subtle.importKey(
+      'pkcs8',
+      await crypto.subtle.exportKey('pkcs8', keyPair.privateKey),
+      { name: 'Ed25519' },
+      false,
+      ['sign']
+    );
+    
+    const data = new TextEncoder().encode('Test');
+    const signature = await crypto.subtle.sign('Ed25519', privateKeyOnly, data);
+    
+    // Verify should fail because privateKeyOnly doesn't have 'verify' usage
+    await expect(crypto.subtle.verify('Ed25519', privateKeyOnly, signature, data)).rejects.toThrow();
+  });
+});
+
+describe('Concurrent Operations', () => {
+  it('should handle concurrent signing without interference', async () => {
+    const edService = await Ed25519SigningService.create();
+    const data = new TextEncoder().encode('Concurrent signing');
+    
+    const signatures = await Promise.all(
+      Array.from({ length: 50 }, () => edService.sign(data))
+    );
+    
+    // All signatures should be identical (deterministic)
+    for (const sig of signatures) {
+      expect(sig).toEqual(signatures[0]);
+    }
+  });
+
+  it('should handle concurrent verification without interference', async () => {
+    const edService = await Ed25519SigningService.create();
+    const data = new TextEncoder().encode('Concurrent verification');
+    const signature = await edService.sign(data);
+    
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => edService.verify(data, signature))
+    );
+    
+    results.forEach(valid => expect(valid).toBe(true));
+  });
+
+  it('should handle mixed concurrent sign and verify', async () => {
+    const edService = await Ed25519SigningService.create();
+    const data = new TextEncoder().encode('Mixed operations');
+    
+    const operations = [];
+    for (let i = 0; i < 20; i++) {
+      operations.push(edService.sign(data));
+      operations.push(edService.verify(data, await edService.sign(data)));
+    }
+    
+    const results = await Promise.all(operations);
+    // Even indices are signatures (Uint8Array), odd are booleans
+    for (let i = 0; i < results.length; i += 2) {
+      expect(results[i]).toBeInstanceOf(Uint8Array);
+      expect(results[i + 1]).toBe(true);
+    }
+  });
+});
+
+describe('Edge Cases and Malformed Inputs', () => {
+  it('should handle signature at boundary lengths', async () => {
+    const edService = await Ed25519SigningService.create();
+    const data = new TextEncoder().encode('Boundary test');
+    const signature = await edService.sign(data);
+    
+    // Ed25519 signatures are exactly 64 bytes
+    expect(signature.length).toBe(64);
+  });
+
+  it('should handle messages with all possible byte values', async () => {
+    const edService = await Ed25519SigningService.create();
+    const data = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) data[i] = i;
+    
+    const signature = await edService.sign(data);
+    const valid = await edService.verify(data, signature);
+    expect(valid).toBe(true);
+  });
+
+  it('should reject verification with wrong algorithm', async () => {
+    const edService = await Ed25519SigningService.create();
+    const data = new TextEncoder().encode('Algorithm test');
+    const signature = await edService.sign(data);
+    
+    // Try to verify with RSA algorithm - returns false, doesn't throw
+    const rsaKeyPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify']
+    );
+    
+    const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', rsaKeyPair.publicKey, signature, data);
+    expect(valid).toBe(false);
+  });
+});

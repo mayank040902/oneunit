@@ -75,6 +75,8 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
         else resolve();
       });
     });
+
+    this.started = true;
   }
 
   async close(): Promise<void> {
@@ -88,6 +90,8 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
         this.server.close(resolve);
       });
     }
+
+    this.started = false;
   }
 
   async healthCheck(): Promise<TransportHealth> {

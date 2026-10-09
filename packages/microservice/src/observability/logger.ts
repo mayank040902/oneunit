@@ -5,16 +5,32 @@ export interface LoggerConfig {
   pretty?: boolean;
   serviceId?: string;
   instanceId?: string;
+  redactSecrets?: boolean;
 }
 
+const VALID_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
+
+const DEFAULT_REDACT_PATHS = [
+  'password', 'token', 'apiKey', 'secret', 'key', 'authorization',
+  'email', 'phone', 'creditCard', 'ssn',
+  '*.password', '*.token', '*.apiKey', '*.secret', '*.key',
+  '*.authorization', '*.password.*',
+];
+
 export function createLogger(config: LoggerConfig = {}): Logger {
+  const level = VALID_LEVELS.has(config.level ?? 'info') ? (config.level ?? 'info') : 'info';
+
   const options: LoggerOptions = {
-    level: config.level ?? 'info',
+    level,
     base: {
       serviceId: config.serviceId,
       instanceId: config.instanceId,
     },
   };
+
+  if (config.redactSecrets !== false) {
+    options.redact = DEFAULT_REDACT_PATHS;
+  }
 
   if (config.pretty) {
     options.transport = {

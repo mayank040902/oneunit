@@ -40,12 +40,14 @@ export class ConnectTransport extends BaseTransport implements RpcClient, RpcSer
     }
     
     this.client = createPromiseClient(serviceDefinitions, this.config.transport);
+    this.started = true;
   }
 
   async close(): Promise<void> {
     if (this.client) {
       await this.client.close();
     }
+    this.started = false;
   }
 
   async healthCheck(): Promise<TransportHealth> {

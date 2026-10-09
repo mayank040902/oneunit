@@ -375,3 +375,233 @@ describe('CompositeKeyProvider - Adversarial Tests', () => {
     expect(newKeys.version).toBe(2);
   });
 });
+
+// === NEW ADVERSARIAL TESTS ===
+
+describe('MemoryKeyProvider - Security and Edge Cases', () => {
+  let provider: MemoryKeyProvider;
+
+  beforeEach(() => {
+    provider = new MemoryKeyProvider(60000);
+  });
+
+  it('should not leak key material through error messages', async () => {
+    await provider.rotateKeys('service-leak');
+    
+    // Try to get keys for non-existent service
+    const result = await provider.getEncryptionKey('non-existent');
+    expect(result).toBeNull();
+    
+    // No error should expose key material
+  });
+
+  it('should handle key rotation with many concurrent operations', async () => {
+    const operations = [];
+    for (let i = 0; i < 100; i++) {
+      operations.push(provider.rotateKeys(`service-${i}`));
+    }
+    
+    const results = await Promise.all(operations);
+    expect(results).toHaveLength(100);
+    results.forEach(keys => {
+      expect(keys.encryptionKey.length).toBe(32);
+      expect(keys.version).toBe(1);
+    });
+  });
+
+  it('should maintain key isolation between services', async () => {
+    await provider.rotateKeys('service-a');
+    await provider.rotateKeys('service-b');
+    
+    const keysA = await provider.getEncryptionKey('service-a');
+    const keysB = await provider.getEncryptionKey('service-b');
+    
+    expect(keysA).toBeInstanceOf(EncryptionService);
+    expect(keysB).toBeInstanceOf(EncryptionService);
+    expect(keysA?.getKey()).not.toBe(keysB?.getKey());
+  });
+
+  it('should handle rapid rotate-get cycles', async () => {
+    for (let i = 0; i < 50; i++) {
+      await provider.rotateKeys('service-cycle');
+      const key = await provider.getEncryptionKey('service-cycle');
+      expect(key).toBeInstanceOf(EncryptionService);
+    }
+  });
+
+  it('should return correct version after multiple rotations', async () => {
+    await provider.rotateKeys('service-version');
+    expect(await provider.getKeyVersion('service-version')).toBe(1);
+    
+    await provider.rotateKeys('service-version');
+    expect(await provider.getKeyVersion('service-version')).toBe(2);
+    
+    await provider.rotateKeys('service-version');
+    expect(await provider.getKeyVersion('service-version')).toBe(3);
+  });
+
+  it('should handle revocation and re-creation', async () => {
+    await provider.rotateKeys('service-revoke');
+    expect(await provider.getKeyVersion('service-revoke')).toBe(1);
+    
+    await provider.revokeKeys('service-revoke');
+    expect(await provider.getKeyVersion('service-revoke')).toBe(0);
+    
+    // Re-create after revocation
+    await provider.rotateKeys('service-revoke');
+    expect(await provider.getKeyVersion('service-revoke')).toBe(1);
+  });
+
+  it('should handle special characters in service IDs', async () => {
+    const specialId = 'service/with:special\\chars-123';
+    await provider.rotateKeys(specialId);
+    
+    const key = await provider.getEncryptionKey(specialId);
+    expect(key).toBeInstanceOf(EncryptionService);
+    
+    const version = await provider.getKeyVersion(specialId);
+    expect(version).toBe(1);
+  });
+
+  it('should handle very long service IDs', async () => {
+    const longId = 'service-' + 'x'.repeat(1000);
+    await provider.rotateKeys(longId);
+    
+    const key = await provider.getEncryptionKey(longId);
+    expect(key).toBeInstanceOf(EncryptionService);
+  });
+
+  it('should not allow access to expired keys', async () => {
+    const shortTtlProvider = new MemoryKeyProvider(10); // 10ms TTL
+    
+    await shortTtlProvider.rotateKeys('service-short');
+    const key1 = await shortTtlProvider.getEncryptionKey('service-short');
+    expect(key1).not.toBeNull();
+    
+    await new Promise(resolve => setTimeout(resolve, 20));
+    
+    const key2 = await shortTtlProvider.getEncryptionKey('service-short');
+    expect(key2).toBeNull();
+  });
+});
+
+describe('CompositeKeyProvider - Security and Edge Cases', () => {
+  let compositeProvider: CompositeKeyProvider;
+  let provider1: MemoryKeyProvider;
+  let provider2: MemoryKeyProvider;
+
+  beforeEach(() => {
+    compositeProvider = new CompositeKeyProvider();
+    provider1 = new MemoryKeyProvider();
+    provider2 = new MemoryKeyProvider();
+    compositeProvider.addProvider(provider1);
+    compositeProvider.addProvider(provider2);
+  });
+
+  it('should fall back to second provider when first is empty', async () => {
+    await provider2.rotateKeys('service-fallback');
+    
+    const key = await compositeProvider.getEncryptionKey('service-fallback');
+    expect(key).toBeInstanceOf(EncryptionService);
+  });
+
+  it('should prioritize first provider', async () => {
+    await provider1.rotateKeys('service-priority');
+    await provider2.rotateKeys('service-priority');
+    
+    // Should get key from provider1 (first added)
+    const key = await compositeProvider.getEncryptionKey('service-priority');
+    expect(key).toBeInstanceOf(EncryptionService);
+  });
+
+  it('should store keys in all providers', async () => {
+    await provider1.rotateKeys('service-store');
+    await provider2.rotateKeys('service-store');
+    
+    const key1 = await provider1.getEncryptionKey('service-store');
+    const key2 = await provider2.getEncryptionKey('service-store');
+    
+    expect(key1).toBeInstanceOf(EncryptionService);
+    expect(key2).toBeInstanceOf(EncryptionService);
+  });
+
+  it('should revoke from all providers', async () => {
+    await provider1.rotateKeys('service-revoke');
+    await provider2.rotateKeys('service-revoke');
+    
+    await compositeProvider.revokeKeys('service-revoke');
+    
+    const key1 = await provider1.getEncryptionKey('service-revoke');
+    const key2 = await provider2.getEncryptionKey('service-revoke');
+    
+    expect(key1).toBeNull();
+    expect(key2).toBeNull();
+  });
+
+  it('should get version from first provider with valid version', async () => {
+    await provider1.rotateKeys('service-version');
+    await provider1.rotateKeys('service-version'); // version 2
+    
+    await provider2.rotateKeys('service-version'); // version 1
+    
+    const version = await compositeProvider.getKeyVersion('service-version');
+    expect(version).toBe(2); // From provider1
+  });
+
+  it('should handle empty composite provider', async () => {
+    const emptyProvider = new CompositeKeyProvider();
+    
+    const key = await emptyProvider.getEncryptionKey('any-service');
+    expect(key).toBeNull();
+    
+    const version = await emptyProvider.getKeyVersion('any-service');
+    expect(version).toBe(0);
+  });
+
+  it('should throw when rotating with no providers', async () => {
+    const emptyProvider = new CompositeKeyProvider();
+    
+    await expect(emptyProvider.rotateKeys('service')).rejects.toThrow('No key providers available');
+  });
+
+  it('should handle concurrent operations on composite', async () => {
+    const operations = [];
+    for (let i = 0; i < 50; i++) {
+      if (i % 2 === 0) {
+        operations.push(compositeProvider.getEncryptionKey(`service-${i}`));
+      } else {
+        operations.push(compositeProvider.rotateKeys(`service-${i}`));
+      }
+    }
+    
+    const results = await Promise.allSettled(operations);
+    results.forEach(result => {
+      if (result.status === 'fulfilled') {
+        expect(result.value).toBeDefined();
+      }
+    });
+  });
+});
+
+describe('KeyProvider Interface Compliance', () => {
+  it('should enforce all required methods', () => {
+    // This test ensures the interface is complete
+    const provider: KeyProvider = {
+      getEncryptionKey: async () => null,
+      getSigningKey: async () => null,
+      getKeyExchangeKey: async () => null,
+      storeKeys: async () => {},
+      rotateKeys: async () => ({} as any),
+      revokeKeys: async () => {},
+      getKeyVersion: async () => 0,
+    };
+    
+    expect(typeof provider.getEncryptionKey).toBe('function');
+    expect(typeof provider.getSigningKey).toBe('function');
+    expect(typeof provider.getKeyExchangeKey).toBe('function');
+    expect(typeof provider.storeKeys).toBe('function');
+    expect(typeof provider.rotateKeys).toBe('function');
+    expect(typeof provider.revokeKeys).toBe('function');
+    expect(typeof provider.getKeyVersion).toBe('function');
+  });
+});

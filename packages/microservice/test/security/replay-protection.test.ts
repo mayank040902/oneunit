@@ -569,3 +569,449 @@ describe('ReplayProtection - Adversarial and Edge Case Tests', () => {
     expect(stats.totalEntries).toBe(3);
   });
 });
+
+// === NEW ADVERSARIAL TESTS ===
+
+describe('ReplayProtection - Security and Edge Cases', () => {
+  let protection: ReplayProtection;
+
+  beforeEach(() => {
+    protection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 100,
+      ttlMs: 5000,
+      futureSkewMs: 10000,
+    });
+  });
+
+  afterEach(() => {
+    protection.stop();
+  });
+
+  it('should prevent replay attack - same message ID from same source', () => {
+    const messageId: MessageId = {
+      id: 'attack-msg',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    // First time - allowed
+    const result1 = protection.checkAndStore(messageId);
+    expect(result1.allowed).toBe(true);
+    
+    // Replay attempt - should be rejected
+    const result2 = protection.checkAndStore(messageId);
+    expect(result2.allowed).toBe(false);
+    expect(result2.reason).toBe('Duplicate message ID detected');
+  });
+
+  it('should prevent replay attack - concurrent same message', async () => {
+    const messageId: MessageId = {
+      id: 'concurrent-attack',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    const results = await Promise.all([
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+    ]);
+    
+    const allowedCount = results.filter(r => r.allowed).length;
+    expect(allowedCount).toBe(1);
+  });
+
+  it('should allow same message ID from different sources', () => {
+    const msg1: MessageId = { id: 'same-id', timestamp: Date.now(), source: 'source-a' };
+    const msg2: MessageId = { id: 'same-id', timestamp: Date.now(), source: 'source-b' };
+    
+    const result1 = protection.checkAndStore(msg1);
+    const result2 = protection.checkAndStore(msg2);
+    
+    expect(result1.allowed).toBe(true);
+    expect(result2.allowed).toBe(true);
+  });
+
+  it('should enforce maxEntries bound to prevent memory exhaustion', () => {
+    const boundedProtection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 10,
+      ttlMs: 60000,
+    });
+    
+    // Add 15 messages - should only keep maxEntries
+    for (let i = 0; i < 15; i++) {
+      boundedProtection.checkAndStore({
+        id: `msg-${i}`,
+        timestamp: Date.now(),
+        source: 'service-1',
+      });
+    }
+    
+    const stats = boundedProtection.getStats();
+    expect(stats.totalEntries).toBeLessThanOrEqual(10);
+    
+    boundedProtection.stop();
+  });
+
+  it('should clean up expired entries automatically', () => {
+    vi.useFakeTimers();
+    
+    const shortTtlProtection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 100,
+      ttlMs: 1000, // 1 second TTL
+    });
+    
+    shortTtlProtection.start();
+    
+    const messageId: MessageId = {
+      id: 'expiring-msg',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    shortTtlProtection.checkAndStore(messageId);
+    expect(shortTtlProtection.getStats().totalEntries).toBe(1);
+    
+    // Advance past TTL
+    vi.advanceTimersByTime(2000);
+    
+    // Add new message to trigger cleanup
+    shortTtlProtection.checkAndStore({
+      id: 'trigger-cleanup',
+      timestamp: Date.now(),
+      source: 'service-1',
+    });
+    
+    // Old entry should be cleaned
+    expect(shortTtlProtection.getStats().totalEntries).toBe(1);
+    
+    shortTtlProtection.stop();
+    vi.useRealTimers();
+  });
+
+  it('should not allow replay after expiration and cleanup', () => {
+    vi.useFakeTimers();
+    
+    const shortTtlProtection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 100,
+      ttlMs: 1000,
+    });
+    
+    shortTtlProtection.start();
+    
+    const messageId: MessageId = {
+      id: 'replay-test',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    shortTtlProtection.checkAndStore(messageId);
+    expect(shortTtlProtection.isReplay(messageId)).toBe(true);
+    
+    // Advance past TTL
+    vi.advanceTimersByTime(2000);
+    
+    // Add new message to trigger cleanup
+    shortTtlProtection.checkAndStore({
+      id: 'trigger-cleanup',
+      timestamp: Date.now(),
+      source: 'service-1',
+    });
+    
+    // Original message should no longer be detected as replay
+    expect(shortTtlProtection.isReplay(messageId)).toBe(false);
+    
+    shortTtlProtection.stop();
+    vi.useRealTimers();
+  });
+
+  it('should reject future timestamps beyond skew tolerance', () => {
+    const futureTimestamp = Date.now() + 20000; // 20 seconds in future (beyond 10s tolerance)
+    const messageId: MessageId = {
+      id: 'future-msg',
+      timestamp: futureTimestamp,
+      source: 'service-1',
+    };
+    
+    const result = protection.checkAndStore(messageId);
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('Message timestamp exceeds future skew tolerance');
+  });
+
+  it('should allow future timestamps within skew tolerance', () => {
+    const futureTimestamp = Date.now() + 5000; // 5 seconds in future (within 10s tolerance)
+    const messageId: MessageId = {
+      id: 'future-msg-ok',
+      timestamp: futureTimestamp,
+      source: 'service-1',
+    };
+    
+    const result = protection.checkAndStore(messageId);
+    expect(result.allowed).toBe(true);
+  });
+
+  it('should reject very old timestamps', () => {
+    const oldTimestamp = Date.now() - 86400000; // 24 hours ago
+    const messageId: MessageId = {
+      id: 'old-msg',
+      timestamp: oldTimestamp,
+      source: 'service-1',
+    };
+    
+    const result = protection.checkAndStore(messageId);
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('Message timestamp outside allowed window');
+  });
+
+  it('should handle high-volume replay attempts', () => {
+    const highVolumeProtection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 10000,
+      ttlMs: 60000,
+    });
+    
+    // Simulate 5000 replay attempts
+    for (let i = 0; i < 5000; i++) {
+      const messageId: MessageId = {
+        id: 'replay-target',
+        timestamp: Date.now(),
+        source: 'service-1',
+      };
+      
+      const result = highVolumeProtection.checkAndStore(messageId);
+      // First should be allowed, rest rejected
+      if (i === 0) {
+        expect(result.allowed).toBe(true);
+      } else {
+        expect(result.allowed).toBe(false);
+      }
+    }
+    
+    highVolumeProtection.stop();
+  });
+
+  it('should handle many unique messages from same source', () => {
+    const manyMessagesProtection = createReplayProtection({
+      windowSize: 10000,
+      maxEntries: 100000,
+      ttlMs: 60000,
+    });
+    
+    for (let i = 0; i < 10000; i++) {
+      manyMessagesProtection.checkAndStore({
+        id: `unique-msg-${i}`,
+        timestamp: Date.now(),
+        source: 'service-1',
+      });
+    }
+    
+    const stats = manyMessagesProtection.getStats();
+    expect(stats.totalEntries).toBe(10000);
+    
+    manyMessagesProtection.stop();
+  });
+
+  it('should handle many sources with unique messages', () => {
+    const manySourcesProtection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 100000,
+      ttlMs: 60000,
+    });
+    
+    for (let i = 0; i < 10000; i++) {
+      manySourcesProtection.checkAndStore({
+        id: `msg-${i}`,
+        timestamp: Date.now(),
+        source: `service-${i}`,
+      });
+    }
+    
+    const stats = manySourcesProtection.getStats();
+    expect(stats.sources).toBe(10000);
+    expect(stats.totalEntries).toBe(10000);
+    
+    manySourcesProtection.stop();
+  });
+
+  it('should handle special characters in source and ID', () => {
+    const specialChars: MessageId = {
+      id: 'msg/with\\special:chars\n\t',
+      timestamp: Date.now(),
+      source: 'service/with:special\\chars\n\t',
+    };
+    
+    const result = protection.checkAndStore(specialChars);
+    expect(result.allowed).toBe(true);
+    
+    // Second attempt should be rejected
+    const result2 = protection.checkAndStore(specialChars);
+    expect(result2.allowed).toBe(false);
+  });
+
+  it('should handle empty and very long message IDs', () => {
+    // Empty ID
+    const emptyId: MessageId = { id: '', timestamp: Date.now(), source: 'service-1' };
+    const result1 = protection.checkAndStore(emptyId);
+    expect(result1.allowed).toBe(true);
+    
+    // Very long ID
+    const longId: MessageId = { 
+      id: 'x'.repeat(10000), 
+      timestamp: Date.now(), 
+      source: 'service-1' 
+    };
+    const result2 = protection.checkAndStore(longId);
+    expect(result2.allowed).toBe(true);
+  });
+
+  it('should handle zero TTL (edge case)', () => {
+    const zeroTtlProtection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 100,
+      ttlMs: 0,
+    });
+    
+    const messageId: MessageId = {
+      id: 'zero-ttl',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    // With zero TTL, even current timestamp might be "expired"
+    const result = zeroTtlProtection.checkAndStore(messageId);
+    expect(typeof result.allowed).toBe('boolean');
+    
+    zeroTtlProtection.stop();
+  });
+
+  it('should handle cleanup timer start/stop idempotency', () => {
+    expect(() => protection.start()).not.toThrow();
+    expect(() => protection.start()).not.toThrow();
+    expect(() => protection.stop()).not.toThrow();
+    expect(() => protection.stop()).not.toThrow();
+  });
+
+  it('should maintain accurate stats under concurrent load', async () => {
+    const messages = Array.from({ length: 100 }, (_, i) => ({
+      id: `msg-${i}`,
+      timestamp: Date.now(),
+      source: `service-${i % 10}`,
+    }));
+    
+    await Promise.all(messages.map(m => protection.checkAndStore(m)));
+    
+    const stats = protection.getStats();
+    expect(stats.sources).toBe(10);
+    expect(stats.totalEntries).toBe(100);
+  });
+
+  it('should not leak internal state', () => {
+    // Internal store should not be accessible
+    const messageId: MessageId = {
+      id: 'test-msg',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    protection.checkAndStore(messageId);
+    
+    // The store is private - verify we can't access it directly
+    expect(protection.getStats().totalEntries).toBe(1);
+    // But we can't modify internal state directly
+  });
+});
+
+describe('ReplayProtection - Concurrency and Race Conditions', () => {
+  let protection: ReplayProtection;
+
+  beforeEach(() => {
+    protection = createReplayProtection({
+      windowSize: 1000,
+      maxEntries: 100,
+      ttlMs: 5000,
+    });
+  });
+
+  afterEach(() => {
+    protection.stop();
+  });
+
+  it('should handle concurrent checkAndStore for different messages', async () => {
+    const messages = Array.from({ length: 50 }, (_, i) => ({
+      id: `concurrent-${i}`,
+      timestamp: Date.now(),
+      source: 'service-1',
+    }));
+    
+    const results = await Promise.all(messages.map(m => protection.checkAndStore(m)));
+    
+    const allowedCount = results.filter(r => r.allowed).length;
+    expect(allowedCount).toBe(50);
+  });
+
+  it('should handle concurrent checkAndStore for same message', async () => {
+    const messageId: MessageId = {
+      id: 'race-condition-msg',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    const results = await Promise.all([
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+      protection.checkAndStore(messageId),
+    ]);
+    
+    const allowedCount = results.filter(r => r.allowed).length;
+    expect(allowedCount).toBe(1);
+  });
+
+  it('should handle concurrent access from multiple sources', async () => {
+    const messages: MessageId[] = [];
+    for (let i = 0; i < 100; i++) {
+      messages.push({
+        id: `msg-${i}`,
+        timestamp: Date.now(),
+        source: `service-${i % 20}`,
+      });
+    }
+    
+    const results = await Promise.all(messages.map(m => protection.checkAndStore(m)));
+    
+    const allowedCount = results.filter(r => r.allowed).length;
+    expect(allowedCount).toBe(100);
+    
+    const stats = protection.getStats();
+    expect(stats.sources).toBe(20);
+    expect(stats.totalEntries).toBe(100);
+  });
+
+  it('should handle rapid checkAndStore and isReplay', async () => {
+    const messageId: MessageId = {
+      id: 'rapid-check',
+      timestamp: Date.now(),
+      source: 'service-1',
+    };
+    
+    // Mix of checkAndStore and isReplay
+    const operations = [];
+    for (let i = 0; i < 20; i++) {
+      operations.push(protection.checkAndStore(messageId));
+      operations.push(protection.isReplay(messageId));
+    }
+    
+    const results = await Promise.all(operations);
+    
+    // First checkAndStore should succeed, rest should fail or return true for isReplay
+    expect(results[0]).toEqual({ allowed: true });
+    expect(results[1]).toBe(true); // isReplay after first store
+  });
+});

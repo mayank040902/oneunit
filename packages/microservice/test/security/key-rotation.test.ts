@@ -387,3 +387,271 @@ describe('KeyRotationManager - Adversarial and Edge Case Tests', () => {
     expect(policy.maxVersions).toBe(3);
   });
 });
+
+// === NEW ADVERSARIAL TESTS ===
+
+describe('KeyRotationManager - Security and Edge Cases', () => {
+  let provider: MemoryKeyProvider;
+  let manager: KeyRotationManager;
+  let policy: KeyRotationPolicy;
+
+  beforeEach(async () => {
+    provider = new MemoryKeyProvider();
+    await provider.rotateKeys('service-1');
+    await provider.rotateKeys('service-2');
+    
+    policy = {
+      intervalMs: 1000,
+      gracePeriodMs: 500,
+      maxVersions: 3,
+      autoRotate: true,
+    };
+    
+    manager = new KeyRotationManager(provider, policy);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('should track running state correctly after start/stop', () => {
+    expect(manager.isRunning()).toBe(false);
+    
+    manager.start('service-1');
+    expect(manager.isRunning()).toBe(true);
+    
+    manager.stop('service-1');
+    expect(manager.isRunning()).toBe(false);
+  });
+
+  it('should track running state with multiple services', () => {
+    expect(manager.isRunning()).toBe(false);
+    
+    manager.start('service-1');
+    expect(manager.isRunning()).toBe(true);
+    
+    manager.start('service-2');
+    expect(manager.isRunning()).toBe(true);
+    
+    manager.stop('service-1');
+    expect(manager.isRunning()).toBe(true); // service-2 still running
+    
+    manager.stop('service-2');
+    expect(manager.isRunning()).toBe(false);
+  });
+
+  it('should handle rotation failure gracefully', async () => {
+    // Try to rotate non-existent service (should work - creates new keys)
+    const newKeys = await manager.rotate('brand-new-service');
+    expect(newKeys.version).toBe(1);
+  });
+
+  it('should emit events with correct structure', async () => {
+    const listener = vi.fn();
+    manager.addListener(listener);
+    
+    await manager.rotate('service-1');
+    
+    expect(listener).toHaveBeenCalledTimes(1);
+    const event = listener.mock.calls[0][0];
+    
+    expect(event.serviceId).toBe('service-1');
+    expect(typeof event.oldVersion).toBe('number');
+    expect(typeof event.newVersion).toBe('number');
+    expect(event.newVersion).toBeGreaterThan(event.oldVersion);
+    expect(typeof event.rotatedAt).toBe('number');
+  });
+
+  it('should handle listener errors without stopping other listeners', async () => {
+    const errorListener = vi.fn(() => { throw new Error('Listener error'); });
+    const goodListener1 = vi.fn();
+    const goodListener2 = vi.fn();
+    
+    manager.addListener(errorListener);
+    manager.addListener(goodListener1);
+    manager.addListener(goodListener2);
+    
+    await manager.rotate('service-1');
+    
+    expect(errorListener).toHaveBeenCalledTimes(1);
+    expect(goodListener1).toHaveBeenCalledTimes(1);
+    expect(goodListener2).toHaveBeenCalledTimes(1);
+  });
+
+  it('should cleanup timers properly on stop', () => {
+    vi.useFakeTimers();
+    
+    manager.start('service-1');
+    manager.start('service-2');
+    expect(manager.isRunning()).toBe(true);
+    
+    manager.stop('service-1');
+    manager.stop('service-2');
+    expect(manager.isRunning()).toBe(false);
+    
+    // Advancing time should not cause errors
+    vi.advanceTimersByTime(10000);
+    
+    vi.useRealTimers();
+  });
+
+  it('should not start duplicate timers for same service', () => {
+    vi.useFakeTimers();
+    
+    manager.start('service-dup');
+    manager.start('service-dup');
+    manager.start('service-dup');
+    
+    expect(manager.isRunning()).toBe(true);
+    
+    vi.useRealTimers();
+  });
+
+  it('should handle concurrent manual rotations', async () => {
+    const results = await Promise.all([
+      manager.rotate('service-1'),
+      manager.rotate('service-1'),
+      manager.rotate('service-1'),
+    ]);
+    
+    results.forEach(keys => {
+      expect(keys.version).toBeGreaterThan(0);
+    });
+  });
+
+  it('should handle rotateAll with mixed success/failure', async () => {
+    vi.useFakeTimers();
+    
+    manager.start('service-1');
+    manager.start('non-existent-service');
+    
+    const results = await manager.rotateAll();
+    
+    expect(results.has('service-1')).toBe(true);
+    // non-existent-service should also work (creates new keys)
+    expect(results.has('non-existent-service')).toBe(true);
+    
+    vi.useRealTimers();
+  });
+
+  it('should update policy dynamically', () => {
+    const newPolicy = { intervalMs: 500, maxVersions: 5 };
+    manager.setPolicy(newPolicy);
+    
+    expect(manager.getPolicy().intervalMs).toBe(500);
+    expect(manager.getPolicy().maxVersions).toBe(5);
+    // Other values should remain
+    expect(manager.getPolicy().gracePeriodMs).toBe(policy.gracePeriodMs);
+    expect(manager.getPolicy().autoRotate).toBe(policy.autoRotate);
+  });
+
+  it('should handle rapid start/stop cycles', () => {
+    for (let i = 0; i < 20; i++) {
+      manager.start('service-rapid');
+      expect(manager.isRunning()).toBe(true);
+      manager.stop('service-rapid');
+    }
+    expect(manager.isRunning()).toBe(false);
+  });
+
+  it('should handle rotation during active timer', async () => {
+    vi.useFakeTimers();
+    
+    manager.start('service-1');
+    
+    // Advance time to trigger automatic rotation
+    vi.advanceTimersByTime(2000);
+    
+    // Manual rotation should also work
+    const manualResult = await manager.rotate('service-1');
+    expect(manualResult.version).toBeGreaterThan(1);
+    
+    vi.useRealTimers();
+  });
+
+  it('should handle stop of non-existent service', () => {
+    expect(() => manager.stop('non-existent')).not.toThrow();
+    expect(manager.isRunning()).toBe(false);
+  });
+
+  it('should return correct policy copy', () => {
+    const policyCopy = manager.getPolicy();
+    
+    expect(policyCopy).toEqual(policy);
+    // Should be a copy, not reference
+    policyCopy.intervalMs = 999999;
+    expect(manager.getPolicy().intervalMs).not.toBe(999999);
+  });
+
+  it('should handle zero interval (edge case)', () => {
+    const zeroIntervalManager = createKeyRotationManager(provider, { intervalMs: 0 });
+    
+    vi.useFakeTimers();
+    zeroIntervalManager.start('service-zero');
+    
+    // Should not throw
+    expect(() => zeroIntervalManager.stop('service-zero')).not.toThrow();
+    
+    vi.useRealTimers();
+  });
+});
+
+describe('KeyRotationManager - Concurrency and Race Conditions', () => {
+  let provider: MemoryKeyProvider;
+  let manager: KeyRotationManager;
+
+  beforeEach(async () => {
+    provider = new MemoryKeyProvider();
+    await provider.rotateKeys('service-concurrent');
+    
+    manager = new KeyRotationManager(provider, {
+      intervalMs: 1000,
+      gracePeriodMs: 500,
+      maxVersions: 3,
+      autoRotate: true,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('should handle concurrent rotations on different services', async () => {
+    const results = await Promise.all([
+      manager.rotate('service-a'),
+      manager.rotate('service-b'),
+      manager.rotate('service-c'),
+    ]);
+    
+    results.forEach(keys => {
+      expect(keys.version).toBeGreaterThan(0);
+    });
+  });
+
+  it('should handle concurrent start/stop', () => {
+    vi.useFakeTimers();
+    
+    const operations = [];
+    for (let i = 0; i < 10; i++) {
+      operations.push(() => manager.start(`service-${i}`));
+      operations.push(() => manager.stop(`service-${i}`));
+    }
+    
+    operations.forEach(op => expect(op).not.toThrow());
+    
+    vi.useRealTimers();
+  });
+
+  it('should handle listener add/remove during rotation', async () => {
+    const listener = vi.fn();
+    manager.addListener(listener);
+    
+    await manager.rotate('service-1');
+    expect(listener).toHaveBeenCalledTimes(1);
+    
+    manager.removeListener(listener);
+    
+    await manager.rotate('service-1');
+    expect(listener).toHaveBeenCalledTimes(1); // Not called again
+  });
+});

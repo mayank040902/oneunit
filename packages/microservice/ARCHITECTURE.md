@@ -95,6 +95,10 @@ The package **integrates** established communication technologies. It is **not a
 
 The package remains independent of application frameworks (Fastify, Express, uWebSockets, etc.). Framework-specific hosting integrations, if needed, are supplied as separate optional packages.
 
+**Logger ownership:** the application owns the concrete logger and its configuration. The core defines a framework-owned logger contract and accepts an injected logger; it must not create a second logger or require Pino at runtime. Concrete logger integrations (for example, a Pino adapter) are optional.
+
+**Infrastructure driver ownership:** Kafka and Redis clients are optional integrations. The core defines capability-level contracts and coordinates lifecycle, while adapters own client-specific behavior and dependencies. The core must remain importable when unused optional drivers are not installed.
+
 ### 1.2 Non-negotiable Kafka boundary
 
 > **The Kafka broker/cluster is external infrastructure.**  
@@ -160,6 +164,7 @@ Driver selection is independent of broker health. The package never embeds, laun
 8. **Adapters are independently testable and optional.** Core imports must not fail because an unused optional dependency is absent.
 9. **Document real guarantees.** Never imply delivery, ordering, or exactly-once semantics that a transport cannot provide.
 10. **Keep public APIs small, explicit, and versionable.** Prefer composition over hidden global state or import-time side effects.
+11. **Invert infrastructure dependencies.** The core owns contracts, not concrete logger/Kafka/Redis implementations. Applications provide a logger; optional adapters own concrete client dependencies and driver-specific behavior.
 
 ---
 
@@ -288,6 +293,8 @@ packages/microservice/
 │   │   ├── manager.ts
 │   │   └── capabilities.ts
 │   ├── adapters/
+│   │   ├── logger/             # Optional concrete logger adapters, if shipped in this package
+│   │   │   └── pino/           # Must not be imported by the core entry point
 │   │   ├── rpc/
 │   │   │   ├── trpc/
 │   │   │   ├── grpc/
@@ -299,7 +306,7 @@ packages/microservice/
 │   │       ├── kafka/          # Driver selection + thin adapters
 │   │       └── nats/
 │   ├── observability/
-│   │   ├── logger.ts
+│   │   ├── logger.ts          # Framework-owned logger contract; no concrete logger dependency
 │   │   ├── metrics.ts
 │   │   ├── tracing.ts
 │   │   └── audit.ts
@@ -441,7 +448,7 @@ await app.start();
 await app.close();
 ```
 
-Do not copy this snippet into implementation without deciding the real public types, dependency-injection strategy, and adapter installation model. Avoid hidden global state and implicit startup on import.
+Do not copy this snippet into implementation without deciding the real public types, dependency-injection strategy, and adapter installation model. Avoid hidden global state and implicit startup on import. The application supplies its logger through the composition root or dependency-injection mechanism; the core must not create a concrete logger implicitly.
 
 ### 8.2 Public versus internal exports
 
@@ -1319,7 +1326,17 @@ Retries should be based on the operation’s semantics, the error, the deadline,
 
 ## 23. Observability and auditing
 
-### 23.1 Structured logs
+### 23.1 Logger ownership and contract
+
+The application owns the concrete logger instance, logger configuration, output destinations, log levels, serializers, redaction rules, and any logging transports. `@oneunit/microservice` defines only the logger contract required by framework components and receives an implementation through application configuration or dependency injection.
+
+Core code must not instantiate Pino, create a second logger, or import a concrete logger implementation from the main entry point. The core logger contract must not expose Pino-specific types or methods. It should provide only the structured logging levels and contextual fields the framework actually needs; optional capabilities such as child loggers must be modeled explicitly rather than assumed.
+
+A concrete adapter (for example, a Pino adapter) may translate the framework contract to a user-provided logger. It must accept the existing logger instance rather than silently creating or configuring one. The adapter may live in a separate package or an explicitly isolated subpath. Choose one packaging strategy and ensure core imports do not load the adapter.
+
+If no logger is provided, behavior must follow an explicit documented policy (for example, a no-op logger or a startup validation error). Do not silently discard security-relevant audit events. Logger failures must not unexpectedly corrupt transport state or prevent cleanup; define and test the policy for logging failures.
+
+### 23.2 Structured logs
 
 Use structured fields rather than parsing free-form messages. Recommended common fields:
 
@@ -1330,9 +1347,9 @@ Use structured fields rather than parsing free-form messages. Recommended common
 - Error category, retry attempt
 - Topic/subject or method name only when safe
 
-Never log credentials, full authorization headers, private keys, plaintext secrets, or unrestricted payloads. Use Pino or a compatible logger interface.
+Never log credentials, full authorization headers, private keys, plaintext secrets, raw cryptographic key material, or unrestricted payloads. Redaction is owned by the application logger configuration unless the framework explicitly implements and tests a separate redaction layer. The framework must not claim secrets are redacted merely because a logger adapter exists.
 
-### 23.2 Metrics
+### 23.3 Metrics
 
 Recommended metric families:
 
@@ -1349,11 +1366,11 @@ Recommended metric families:
 
 Do not put message IDs, user IDs, arbitrary subjects, raw URLs, or exception messages in metric labels — this creates high cardinality and can leak sensitive data. Use logs/traces for individual operations.
 
-### 23.3 Distributed tracing
+### 23.4 Distributed tracing
 
 Use standard trace context where supported. Create spans around outbound calls, inbound handler execution, publishing, and consuming. Propagate context through RPC metadata, Kafka headers supported by the selected driver, NATS headers, and custom protocols only when the mapping is documented. Avoid creating duplicate spans when an underlying client already instruments the same operation unless the layering is deliberate.
 
-### 23.4 Audit events
+### 23.5 Audit events
 
 Audit security-sensitive events such as identity enrollment/revocation, credential rotation, authorization denial, policy changes, registry integrity failures, and security configuration changes. Audit records should be structured, access-controlled, and retained according to operational policy. Audit logging is not the same as debug logging and must not contain secret material.
 
@@ -1496,12 +1513,15 @@ Acknowledgment timing must be explicit. If the application acknowledges before i
 
 ### 26.1 Core dependencies
 
-| Package | Purpose |
-|---|---|
-| `zod` | Runtime configuration and application-schema validation |
-| `pino` | Structured logging, if the package owns the logger implementation |
-| `jose` | Only if JWT/JOSE functionality is implemented |
-| Node.js built-ins | Networking, cryptographic primitives, UUID generation where suitable |
+| Package | Purpose | Core policy |
+|---|---|---|
+| `zod` | Runtime configuration and application-schema validation | Keep only if production core code uses it |
+| `jose` | JWT/JOSE functionality | Keep only if implemented core functionality imports it at runtime; otherwise place it with the relevant optional integration |
+| Node.js built-ins | Networking, cryptographic primitives, UUID generation where suitable | Preferred where sufficient |
+| `pino` | Concrete structured logger implementation | **Not a core dependency.** Use only in a separately installed adapter or as a development dependency when tests/tooling require it |
+| `pino-pretty` | Human-readable development log formatting | Development tooling only unless a separately distributed runtime integration explicitly requires it |
+
+The logger contract is framework-owned and implementation-agnostic. Do not move Pino to `devDependencies` until all production imports and runtime paths have been removed from core. If an optional Pino adapter is published separately, that adapter owns its dependency declaration.
 
 ### 26.2 RPC dependencies
 
@@ -1523,9 +1543,9 @@ Acknowledgment timing must be explicit. If the application acknowledges before i
 | `ioredis` | Optional alternative Redis client with Sentinel/Cluster support | Optional / peer |
 | `redis` (node-redis) | Optional official Node.js Redis client | Optional / peer |
 
-Keep both Kafka clients optional at the core-package level. Users must be able to choose KafkaJS even when `@oneunit/kafka` is installed, and choose `@oneunit/kafka` when it is installed and supported. Optional `auto` mode may help select an available driver, but explicit selection takes precedence. Do not silently switch drivers after initialization or connection errors. The core must remain importable without either Kafka client when the Kafka adapter is not used.
+Keep both Kafka clients optional at the core-package level; prefer adapter-owned runtime dependencies or separately published adapters when that produces a cleaner installation. The core contracts must not import concrete Kafka client types in ways that force those packages into core installation. Users must be able to choose KafkaJS even when `@oneunit/kafka` is installed, and choose `@oneunit/kafka` when it is installed and supported. Optional `auto` mode may help select an available driver, but explicit selection takes precedence. Do not silently switch drivers after initialization or connection errors. The core must remain importable without either Kafka client when the Kafka adapter is not used.
 
-Similarly, keep all Redis clients optional. Users must be able to choose ioredis or node-redis even when `@oneunit/redis` is installed. Optional `auto` mode may help select an available driver, but explicit selection takes precedence. Do not silently switch drivers after initialization or connection errors. The core must remain importable without any Redis client when the Redis registry backend is not used.
+Similarly, keep all Redis clients optional; adapter-owned runtime dependencies or separately published adapters are preferred when they isolate driver dependencies cleanly. The core registry contracts must not import concrete Redis client types in ways that force those packages into core installation. Users must be able to choose ioredis or node-redis even when `@oneunit/redis` is installed. Optional `auto` mode may help select an available driver, but explicit selection takes precedence. Do not silently switch drivers after initialization or connection errors. The core must remain importable without any Redis client when the Redis registry backend is not used.
 
 ### 26.4 Development dependencies
 
@@ -1539,6 +1559,9 @@ Before publishing, verify version compatibility, peer dependency ranges, ESM exp
 
 ### 27.1 Unit tests
 
+- Logger contract injection, level/context mapping, missing-logger policy, and logging-failure behavior
+- Core entry-point import without Pino, Kafka clients, or Redis clients installed
+- Optional adapter loading only when selected; no import-time external connections
 - Configuration parsing and invalid configuration rejection
 - Envelope validation and serialization
 - Registry registration, renewal, and expiration
@@ -1551,6 +1574,7 @@ Before publishing, verify version compatibility, peer dependency ranges, ESM exp
 
 ### 27.2 Adapter tests
 
+- Concrete logger adapter mapping against an application-provided logger instance
 - Native client/server interoperability
 - Authentication and authorization
 - Cancellation, deadlines, and timeouts
@@ -1647,7 +1671,9 @@ Runbooks should identify diagnostic signals, safe remediation, expected recovery
 
 ### 30.1 Dependency ownership
 
-The core should depend only on small, necessary abstractions and utilities. Heavy protocol clients should be optional, peer dependencies, or separately published adapter packages if that gives consumers a cleaner installation and avoids incompatible dependency trees. Make this decision based on actual workspace and npm distribution constraints rather than assuming one pattern fits every integration.
+The core should depend only on small, necessary abstractions and utilities. Heavy protocol clients and concrete logger implementations should be optional, adapter-owned dependencies, peer dependencies, or separately published adapter packages if that gives consumers a cleaner installation and avoids incompatible dependency trees. Make this decision based on actual workspace and npm distribution constraints rather than assuming one pattern fits every integration.
+
+The application supplies its logger. Pino is not required to install or import the core package. Kafka and Redis drivers are not required unless the corresponding adapter is selected. Do not classify a package as development-only while production adapter code still imports it at runtime. Validate the final dependency graph using the packed artifact and a clean consumer installation.
 
 `@oneunit/kafka` remains the preferred and authoritative OneUnit-native integration, but KafkaJS is a supported alternate driver for standalone environments or explicit selection. Do not use KafkaJS as a hidden parallel client when `@oneunit/kafka` is available and selected. Any peer/optional dependency strategy and auto-selection behavior must be tested in a clean consumer install.
 
@@ -1663,7 +1689,7 @@ The core should depend only on small, necessary abstractions and utilities. Heav
 
 ### 30.3 Release gates
 
-A release candidate should pass: clean install, lint, formatting check, typecheck, unit tests, integration tests required for the release, build, examples, package export tests, and tarball inspection. Test the packed artifact, not only workspace symlinks. Review peer dependency warnings and optional dependency behavior. Never publish as a side effect of a generic test or build command.
+A release candidate should pass: clean install, lint, formatting check, typecheck, unit tests, integration tests required for the release, build, examples, package export tests, and tarball inspection. Test the packed artifact, not only workspace symlinks. Review peer dependency warnings and optional dependency behavior. Include a clean consumer smoke test that imports the core without Pino, Kafka, or Redis drivers, then separate tests that install and load each optional adapter. Never publish as a side effect of a generic test or build command.
 
 ---
 
@@ -1744,6 +1770,7 @@ Record and maintain these decisions:
 | ADR-008 | Distribution: mandatory, optional, and separately distributed adapters |
 | ADR-009 | End-to-end encryption: threat model, metadata visibility, and key distribution |
 | ADR-010 | Observability: trace propagation, metric conventions, and audit requirements |
+| ADR-011 | Logger ownership: application-provided logger contract, optional concrete adapters, and no mandatory Pino runtime dependency |
 
 ---
 
@@ -1755,6 +1782,10 @@ Before merging a significant change, reviewers should confirm:
 
 - [ ] The change respects the package’s stated scope and non-goals.
 - [ ] Core code does not import optional adapter dependencies accidentally.
+- [ ] Core defines a logger contract and receives an application-owned logger; no concrete logger is created implicitly.
+- [ ] Pino is not a mandatory core runtime dependency, and its adapter (if present) is isolated and optional.
+- [ ] Kafka and Redis client dependencies are isolated to the relevant optional adapters.
+- [ ] Core entry-point imports are tested without unused optional dependencies installed.
 - [ ] Native protocol semantics are preserved and limitations are documented.
 - [ ] No framework-specific assumptions have leaked into the core.
 - [ ] Resource usage is bounded and overload behavior is explicit.
@@ -1797,7 +1828,9 @@ Before merging a significant change, reviewers should confirm:
 - [ ] Implement shared configuration and validation.
 - [ ] Define contracts, common errors, and capability interfaces.
 - [ ] Implement application lifecycle and shutdown.
-- [ ] Configure logging and initial tests.
+- [ ] Define the framework-owned logger contract and inject the application-provided logger.
+- [ ] Add an optional concrete logger adapter only if needed; verify core does not instantiate Pino.
+- [ ] Add logger contract, redaction-policy, and optional-dependency import tests.
 
 ### Phase 2 — Identity and security
 
@@ -1846,7 +1879,8 @@ Before merging a significant change, reviewers should confirm:
 - [ ] Add metrics and distributed tracing.
 - [ ] Implement audit logging.
 - [ ] Test failure recovery and graceful shutdown.
-- [ ] Review dependency boundaries and optional installation.
+- [ ] Review dependency boundaries and optional installation for logger, Kafka, and Redis.
+- [ ] Verify core imports and installs without Pino or unused Kafka/Redis drivers.
 - [ ] Perform security and reliability reviews.
 - [ ] Validate resource limits and backpressure under load.
 
@@ -1864,6 +1898,10 @@ Before merging a significant change, reviewers should confirm:
 ## 37. Definition of done
 
 - [ ] The core works without requiring every adapter.
+- [ ] The core defines an implementation-agnostic logger contract and uses an application-provided logger.
+- [ ] Pino and `pino-pretty` are not mandatory core runtime dependencies.
+- [ ] Core import and installation work without unused Kafka and Redis drivers.
+- [ ] Optional logger/Kafka/Redis adapters declare their own runtime dependencies correctly.
 - [ ] Enabled adapters can start and stop independently.
 - [ ] RPC adapters preserve their native contracts.
 - [ ] Kafka integration supports `@oneunit/kafka` and KafkaJS as optional, explicitly selectable alternatives.
@@ -1883,7 +1921,7 @@ Before merging a significant change, reviewers should confirm:
 
 ## Final design principle
 
-`@oneunit/microservice` is the shared communication API and integration layer for OneUnit services. The core owns lifecycle, common contracts, identity, authorization, configuration, observability, and integration conventions. Adapters preserve native protocol behavior.
+`@oneunit/microservice` is the shared communication API and integration layer for OneUnit services. The core owns lifecycle, common contracts, identity, authorization, configuration, observability conventions, and integration coordination. Applications own concrete logger configuration and provide a logger through the framework contract. Concrete logger, Kafka, and Redis implementations live behind optional adapter boundaries. Adapters preserve native protocol behavior.
 
 **Kafka is an integration, not infrastructure owned by this package.** The Kafka broker/cluster remains external. `@oneunit/kafka` and KafkaJS are both optional driver choices. `@oneunit/kafka` is convenient in the existing OneUnit environment, but it is not mandatory; users may choose KafkaJS instead, including when the OneUnit package is installed. The package exposes one stable messaging API over separate adapters, preserves native client differences, and never silently changes drivers after a configuration or connection failure.
 

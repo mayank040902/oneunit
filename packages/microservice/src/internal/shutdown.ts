@@ -58,9 +58,11 @@ export class ShutdownManager extends EventEmitter {
         timeout,
       ]);
       
+      this.shuttingDown = false;
       this.completed = true;
       this.emit('shutdown:completed');
     } catch (err) {
+      this.shuttingDown = false;
       this.emit('shutdown:error', err);
       throw err;
     }
@@ -125,6 +127,9 @@ export async function gracefulShutdown(
         new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Timeout')), remaining)),
       ]);
     } catch (err) {
+      if ((err as Error).message === 'Timeout') {
+        throw new Error('Shutdown timeout exceeded');
+      }
       errors.push(err as Error);
       console.error(`Failed to stop ${service.name}:`, err);
     }

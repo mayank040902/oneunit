@@ -23,7 +23,8 @@ export function generateTraceId(): string {
 }
 
 export function generateSpanId(): string {
-  return crypto.randomUUID().slice(0, 16);
+  const uuid = crypto.randomUUID();
+  return uuid.replace(/-/g, '').slice(0, 16);
 }
 
 export function generateLeaseId(): string {
@@ -31,7 +32,8 @@ export function generateLeaseId(): string {
 }
 
 export function generateKeyId(): string {
-  return `key-${crypto.randomUUID().slice(0, 12)}`;
+  const uuid = crypto.randomUUID();
+  return `key-${uuid.replace(/-/g, '').slice(0, 12)}`;
 }
 
 export function generateSessionId(): string {

@@ -72,6 +72,7 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
     });
 
     this.server.start();
+    this.started = true;
   }
 
   async close(): Promise<void> {
@@ -83,6 +84,7 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
     if (this.client) {
       this.client.close();
     }
+    this.started = false;
   }
 
   async healthCheck(): Promise<TransportHealth> {

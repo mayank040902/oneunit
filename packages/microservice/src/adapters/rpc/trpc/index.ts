@@ -29,6 +29,9 @@ export class TrpcTransport extends BaseTransport implements RpcClient, RpcServer
   }
 
   async start(): Promise<void> {
+    if (this.started) {
+      return;
+    }
     const { initTRPC } = await import('@trpc/server');
     const { createHTTPServer } = await import('@trpc/server/adapters/standalone');
     
@@ -41,12 +44,14 @@ export class TrpcTransport extends BaseTransport implements RpcClient, RpcServer
     });
 
     await this.server.listen(this.config.endpoint);
+    this.started = true;
   }
 
   async close(): Promise<void> {
     if (this.server) {
       await this.server.close();
     }
+    this.started = false;
   }
 
   async healthCheck(): Promise<TransportHealth> {
