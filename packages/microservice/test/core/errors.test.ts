@@ -37,7 +37,7 @@ describe('Core Errors', () => {
         'Test error message',
         'INVALID_ARGUMENT',
         true,
-        { field: 'email', reason: 'invalid format' }
+        { details: { field: 'email', reason: 'invalid format' } }
       );
 
       expect(error.code).toBe('TEST_ERROR');
@@ -101,7 +101,7 @@ describe('Core Errors', () => {
       // TypeScript compiles this as const, runtime check not possible
       // But we can verify the values match categories
       const keys = Object.keys(ErrorCodes);
-      expect(keys).toHaveLength(12);
+      expect(keys).toHaveLength(20);
     });
   });
 
@@ -166,7 +166,7 @@ describe('Core Errors', () => {
         'wrapped error',
         'TRANSPORT',
         true,
-        { original: originalError.message }
+        { details: { original: originalError.message } }
       );
 
       try {

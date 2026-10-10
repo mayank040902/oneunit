@@ -1,6 +1,6 @@
 import { BaseTransport, TransportConfig } from '@/transport/transport';
 import { TransportCapabilities, TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
-import { connect, NatsConnection, Subscription } from 'nats.ws';
+import { connect, NatsConnection, Subscription } from 'nats';
 import { NatsAdapterConfig } from '@/config/schema.js';
 
 export class NatsTransport extends BaseTransport implements MessagePublisher, MessageSubscriber {

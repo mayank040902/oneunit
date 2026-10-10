@@ -1,4 +1,5 @@
 import { TransportCapabilities, TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
+import { Logger } from '@/observability/logger';
 
 export type KafkaDriver = 'oneunit' | 'kafkajs' | 'auto';
 
@@ -33,5 +34,5 @@ export interface KafkaDriverAdapter {
 }
 
 export interface KafkaDriverModule {
-  createAdapter(config: KafkaAdapterConfig): Promise<KafkaDriverAdapter>;
+  createAdapter(config: KafkaAdapterConfig, logger?: Logger): Promise<KafkaDriverAdapter>;
 }

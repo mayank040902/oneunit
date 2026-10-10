@@ -86,7 +86,7 @@ export class LifecycleManager extends EventEmitter {
             `Failed to start transport: ${name}`,
             'TRANSPORT',
             false,
-            { transport: name, originalError: err }
+            { details: { transport: name, originalError: err instanceof Error ? err.message : String(err) } }
           );
         }
       }
@@ -146,7 +146,7 @@ export class LifecycleManager extends EventEmitter {
         `Errors during shutdown: ${errors.map(e => e.message).join(', ')}`,
         'INTERNAL',
         false,
-        { errors }
+        { details: { errors: errors.map(e => e.message) } }
       );
     }
   }

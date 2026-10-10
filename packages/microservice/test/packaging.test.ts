@@ -62,7 +62,7 @@ describe('package.json contract', () => {
   it('declares a test script', () => {
     expect(pkg.scripts?.test).toBe('vitest run');
     expect(pkg.scripts?.typecheck).toBe('tsc --noEmit');
-    expect(pkg.scripts?.build).toBe('tsc');
+    expect(pkg.scripts?.build).toBe('tsc && tsc-alias');
   });
 });
 

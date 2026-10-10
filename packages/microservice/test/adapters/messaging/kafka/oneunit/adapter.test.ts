@@ -71,12 +71,15 @@ describe('OneUnit Kafka Driver Adapter', () => {
   it('should initialize client and producer on creation', async () => {
     adapter = await createKafkaAdapter(makeConfig(), (await import('@oneunit/kafka')) as any);
 
-    expect(mockCreateKafkaClient).toHaveBeenCalledWith({
-      brokers: ['localhost:9092'],
-      clientId: 'test-client',
-      ssl: undefined,
-      sasl: undefined,
-    });
+    expect(mockCreateKafkaClient).toHaveBeenCalledWith(
+      {
+        brokers: ['localhost:9092'],
+        clientId: 'test-client',
+        ssl: undefined,
+        sasl: undefined,
+      },
+      expect.any(Object)
+    );
     expect(mockGetProducer).toHaveBeenCalledWith({});
   });
 
@@ -92,16 +95,19 @@ describe('OneUnit Kafka Driver Adapter', () => {
       },
     }), (await import('@oneunit/kafka')) as any);
 
-    expect(mockCreateKafkaClient).toHaveBeenCalledWith({
-      brokers: ['localhost:9092'],
-      clientId: 'test-client',
-      ssl: true,
-      sasl: {
-        mechanism: 'scram-sha-256',
-        username: 'user',
-        password: 'pass',
+    expect(mockCreateKafkaClient).toHaveBeenCalledWith(
+      {
+        brokers: ['localhost:9092'],
+        clientId: 'test-client',
+        ssl: true,
+        sasl: {
+          mechanism: 'scram-sha-256',
+          username: 'user',
+          password: 'pass',
+        },
       },
-    });
+      expect.any(Object)
+    );
   });
 
   it('should pass producer config to getProducer', async () => {

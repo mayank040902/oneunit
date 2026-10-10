@@ -1,14 +1,16 @@
-import { BaseTransport, TransportConfig } from '@/transport/transport';
+import { BaseTransport } from '@/transport/transport';
 import { TransportCapabilities, TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
 import { KafkaAdapterConfig, KafkaDriver, KafkaDriverAdapter } from './types.js';
 import { resolveKafkaDriver } from './driver-resolver.js';
+import { Logger } from '@/observability/logger.js';
 
 export class KafkaTransport extends BaseTransport implements MessagePublisher, MessageSubscriber {
   private config: KafkaAdapterConfig;
+  private logger?: Logger;
   private driverAdapter: KafkaDriverAdapter | null = null;
   private resolvedDriver: KafkaDriver = 'kafkajs';
 
-  constructor(config: KafkaAdapterConfig) {
+  constructor(config: KafkaAdapterConfig, logger?: Logger) {
     super({
       name: 'kafka',
       capabilities: {
@@ -21,12 +23,13 @@ export class KafkaTransport extends BaseTransport implements MessagePublisher, M
       },
     });
     this.config = config;
+    this.logger = logger;
   }
 
   async start(): Promise<void> {
-    const resolved = await resolveKafkaDriver(this.config);
+    const resolved = await resolveKafkaDriver(this.config, this.logger);
     this.resolvedDriver = resolved.driver;
-    this.driverAdapter = await resolved.module.createAdapter(this.config);
+    this.driverAdapter = await resolved.module.createAdapter(this.config, this.logger);
     await this.driverAdapter.start();
   }
 
@@ -78,6 +81,6 @@ export class KafkaTransport extends BaseTransport implements MessagePublisher, M
   }
 }
 
-export function createKafkaTransport(config: KafkaAdapterConfig): KafkaTransport {
-  return new KafkaTransport(config);
+export function createKafkaTransport(config: KafkaAdapterConfig, logger?: Logger): KafkaTransport {
+  return new KafkaTransport(config, logger);
 }

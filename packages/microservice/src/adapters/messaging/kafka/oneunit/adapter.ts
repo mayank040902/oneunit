@@ -1,8 +1,9 @@
 import { KafkaAdapterConfig, KafkaDriverAdapter } from '../types.js';
+import { Logger } from '@/observability/logger.js';
 
 export interface OneUnitKafkaModule {
   KafkaClient: new (config: any) => OneUnitKafkaClient;
-  createKafkaClient: (config: any) => Promise<OneUnitKafkaClient>;
+  createKafkaClient: (config: any, options?: { logger?: Logger }) => Promise<OneUnitKafkaClient>;
 }
 
 export interface OneUnitKafkaClient {
@@ -21,13 +22,14 @@ export interface OneUnitKafkaConsumer {
 
 export async function createKafkaAdapter(
   config: KafkaAdapterConfig,
-  oneUnitKafka: OneUnitKafkaModule
+  oneUnitKafka: OneUnitKafkaModule,
+  logger?: Logger
 ): Promise<KafkaDriverAdapter> {
   const client = await oneUnitKafka.createKafkaClient({
     brokers: config.brokers,
     clientId: config.clientId,
     ...(config.security && { ssl: config.security.ssl, sasl: config.security.sasl }),
-  });
+  }, { logger });
 
   const producer = await client.getProducer(config.producer);
 
@@ -91,7 +93,7 @@ export async function createKafkaAdapter(
             await payload.ack();
           }
         } catch (err) {
-          console.error(`Error processing message from ${fullTopic}:`, err);
+          logger?.error(`Error processing message from ${fullTopic}`, { error: err });
           if (!options.autoAck && payload.nak) {
             await payload.nak();
           }

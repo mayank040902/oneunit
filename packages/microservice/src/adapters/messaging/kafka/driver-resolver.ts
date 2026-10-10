@@ -1,27 +1,28 @@
 import { KafkaDriver, KafkaAdapterConfig, KafkaDriverAdapter, KafkaDriverModule } from './types.js';
+import { Logger } from '@/observability/logger.js';
 
 export interface ResolvedDriver {
   driver: KafkaDriver;
   module: KafkaDriverModule;
 }
 
-export async function resolveKafkaDriver(config: KafkaAdapterConfig): Promise<ResolvedDriver> {
+export async function resolveKafkaDriver(config: KafkaAdapterConfig, logger?: Logger): Promise<ResolvedDriver> {
   const requestedDriver = config.driver ?? 'auto';
 
   if (requestedDriver === 'oneunit') {
-    return await loadOneUnitDriver();
+    return await loadOneUnitDriver(logger);
   }
 
   if (requestedDriver === 'kafkajs') {
-    return await loadKafkaJSDriver();
+    return await loadKafkaJSDriver(logger);
   }
 
   // Auto mode: try oneunit first, then kafkajs
   try {
-    return await loadOneUnitDriver();
+    return await loadOneUnitDriver(logger);
   } catch (oneUnitError) {
     try {
-      return await loadKafkaJSDriver();
+      return await loadKafkaJSDriver(logger);
     } catch (kafkaJSError) {
       const oneUnitMsg = oneUnitError instanceof Error ? oneUnitError.message : String(oneUnitError);
       const kafkaJSMsg = kafkaJSError instanceof Error ? kafkaJSError.message : String(kafkaJSError);
@@ -32,7 +33,7 @@ export async function resolveKafkaDriver(config: KafkaAdapterConfig): Promise<Re
   }
 }
 
-async function loadOneUnitDriver(): Promise<ResolvedDriver> {
+async function loadOneUnitDriver(logger?: Logger): Promise<ResolvedDriver> {
   let oneUnitModule: any;
   try {
     oneUnitModule = await import('@oneunit/kafka');
@@ -58,12 +59,12 @@ async function loadOneUnitDriver(): Promise<ResolvedDriver> {
   return {
     driver: 'oneunit',
     module: {
-      createAdapter: (cfg) => createKafkaAdapter(cfg, oneUnitModule),
+      createAdapter: (cfg) => createKafkaAdapter(cfg, oneUnitModule, logger),
     },
   };
 }
 
-async function loadKafkaJSDriver(): Promise<ResolvedDriver> {
+async function loadKafkaJSDriver(logger?: Logger): Promise<ResolvedDriver> {
   let kafkajsModule: any;
   try {
     kafkajsModule = await import('kafkajs');
@@ -88,7 +89,7 @@ async function loadKafkaJSDriver(): Promise<ResolvedDriver> {
   return {
     driver: 'kafkajs',
     module: {
-      createAdapter: (cfg) => createKafkaAdapter(cfg),
+      createAdapter: (cfg) => createKafkaAdapter(cfg, logger),
     },
   };
 }

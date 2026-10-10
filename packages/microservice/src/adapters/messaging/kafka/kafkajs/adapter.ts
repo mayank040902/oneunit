@@ -1,7 +1,8 @@
 import { Kafka, Producer, Consumer, EachMessagePayload } from 'kafkajs';
 import { KafkaAdapterConfig, KafkaDriverAdapter } from '../types.js';
+import { Logger } from '@/observability/logger.js';
 
-export async function createKafkaAdapter(config: KafkaAdapterConfig): Promise<KafkaDriverAdapter> {
+export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Logger): Promise<KafkaDriverAdapter> {
   const kafkaConfig: any = {
     brokers: config.brokers,
     clientId: config.clientId,
@@ -39,17 +40,20 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig): Promise<Ka
     async start(): Promise<void> {
       producer = kafka.producer(config.producer);
       await producer.connect();
+      logger?.info('Kafka producer connected', { clientId: config.clientId });
     },
 
     async close(): Promise<void> {
       if (producer) {
         await producer.disconnect();
         producer = null;
+        logger?.info('Kafka producer disconnected');
       }
       for (const consumer of consumers.values()) {
         await consumer.disconnect();
       }
       consumers.clear();
+      logger?.info('Kafka consumers disconnected');
     },
 
     async healthCheck() {
@@ -74,6 +78,7 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig): Promise<Ka
           headers: options.headers,
         }],
       });
+      logger?.debug('Message published', { topic: fullTopic });
     },
 
     async subscribe(topic: string, handler: (message: unknown, context: any) => Promise<void>, options: any = {}) {
@@ -95,12 +100,13 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig): Promise<Ka
               headers: message.headers,
             });
           } catch (err) {
-            console.error(`Error processing message from ${fullTopic}:`, err);
+            logger?.error(`Error processing message from ${fullTopic}`, { error: err });
           }
         },
       });
       
       consumers.set(topic, consumer);
+      logger?.info('Kafka consumer subscribed', { topic: fullTopic, groupId });
     },
 
     async unsubscribe(topic: string): Promise<void> {
@@ -108,6 +114,7 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig): Promise<Ka
       if (consumer) {
         await consumer.disconnect();
         consumers.delete(topic);
+        logger?.info('Kafka consumer unsubscribed', { topic });
       }
     },
   };
