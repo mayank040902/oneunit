@@ -21,11 +21,13 @@ export class KeyRotationManager {
   private policy: KeyRotationPolicy;
   private listeners: KeyRotationListener[] = [];
   private rotationTimers: Map<string, NodeJS.Timeout> = new Map();
+  private managedServices: Set<string> = new Set();
   private running = false;
 
   constructor(provider: KeyProvider, policy: KeyRotationPolicy) {
     this.provider = provider;
     this.policy = policy;
+    this.applyRetentionPolicy();
   }
 
   addListener(listener: KeyRotationListener): void {
@@ -38,7 +40,14 @@ export class KeyRotationManager {
   }
 
   start(serviceId: string): void {
-    if (this.rotationTimers.has(serviceId)) return;
+    if (this.managedServices.has(serviceId)) return;
+    this.managedServices.add(serviceId);
+
+    // Automatic rotation is opt-in: with
+    // autoRotate disabled the service is
+    // tracked for manual rotation and
+    // rotateAll, but no timer is scheduled.
+    if (!this.policy.autoRotate) return;
 
     const timer = setInterval(async () => {
       try {
@@ -53,6 +62,8 @@ export class KeyRotationManager {
   }
 
   stop(serviceId: string): void {
+    this.managedServices.delete(serviceId);
+
     const timer = this.rotationTimers.get(serviceId);
     if (timer) {
       clearInterval(timer);
@@ -89,7 +100,7 @@ export class KeyRotationManager {
   async rotateAll(): Promise<Map<string, ServiceKeys>> {
     const results = new Map<string, ServiceKeys>();
     
-    for (const serviceId of this.rotationTimers.keys()) {
+    for (const serviceId of this.managedServices) {
       try {
         const keys = await this.rotate(serviceId);
         results.set(serviceId, keys);
@@ -111,6 +122,17 @@ export class KeyRotationManager {
 
   setPolicy(policy: Partial<KeyRotationPolicy>): void {
     this.policy = { ...this.policy, ...policy };
+    this.applyRetentionPolicy();
+  }
+
+  private applyRetentionPolicy(): void {
+    // The retention policy (grace period and
+    // retained version bound) is enforced by
+    // the provider when keys are rotated.
+    this.provider.setRetentionPolicy?.({
+      gracePeriodMs: this.policy.gracePeriodMs,
+      maxVersions: this.policy.maxVersions,
+    });
   }
 }
 

@@ -1,14 +1,24 @@
 import { RedisAdapterConfig } from './types.js';
 import { Logger } from '@/observability/logger.js';
-import Redis from 'ioredis';
+import { RedisPipeline } from './types.js';
 
 export interface RedisClient {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, options?: { mode?: 'EX' | 'PX' | 'EXAT' | 'PXAT'; ttlMs?: number }): Promise<void>;
   del(key: string): Promise<void>;
-  keys(pattern: string): Promise<string[]>;
+  scan(cursor: string, ...args: unknown[]): Promise<[string, string[]]>;
   quit(): Promise<void>;
-  multi(): any;
+  multi(): RedisPipeline;
+}
+
+interface OneUnitRedisClient {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, mode: string, ttlSeconds: number): Promise<void>;
+  set(key: string, value: string): Promise<void>;
+  del(key: string): Promise<void>;
+  scan(cursor: string, ...args: string[]): Promise<[string, string[]]>;
+  quit(): Promise<void>;
+  multi(): RedisPipeline;
 }
 
 export interface RedisClientConfig {
@@ -21,7 +31,9 @@ let redisInitializationError: Error | null = null;
 
 export function isRedisAvailable(): boolean {
   try {
-    require.resolve('@oneunit/redis');
+    // Synchronous ESM resolution check. require.resolve is
+    // not part of the ESM module system and is not used here.
+    import.meta.resolve('@oneunit/redis');
     return true;
   } catch {
     return false;
@@ -52,7 +64,7 @@ export async function createRedisClient(config: RedisClientConfig): Promise<Redi
       password: redisConfig.password,
       db: redisConfig.db,
       tls: redisConfig.tls ? {} : undefined,
-    }, logger)) as any;
+    }, logger)) as unknown as OneUnitRedisClient;
 
     const keyPrefix = redisConfig.keyPrefix ?? 'microservice:';
 
@@ -77,8 +89,8 @@ export async function createRedisClient(config: RedisClientConfig): Promise<Redi
         await client.del(`${keyPrefix}${key}`);
       },
 
-      async keys(pattern: string): Promise<string[]> {
-        return client.keys(`${keyPrefix}${pattern}`);
+      async scan(cursor: string, ...args: unknown[]): Promise<[string, string[]]> {
+        return client.scan(cursor, ...args as string[]);
       },
 
       async quit(): Promise<void> {
@@ -86,7 +98,7 @@ export async function createRedisClient(config: RedisClientConfig): Promise<Redi
         cachedRedisClient = null;
       },
 
-      multi(): any {
+      multi(): RedisPipeline {
         return client.multi();
       },
     };

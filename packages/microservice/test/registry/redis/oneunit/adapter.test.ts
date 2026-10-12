@@ -7,14 +7,15 @@ const mockOneUnitRedisClient = {
   get: vi.fn().mockResolvedValue(null),
   set: vi.fn().mockResolvedValue(undefined),
   del: vi.fn().mockResolvedValue(undefined),
-  keys: vi.fn().mockResolvedValue([]),
+  scan: vi.fn().mockResolvedValue(['0', []]),
+  eval: vi.fn().mockResolvedValue('renewed'),
   quit: vi.fn().mockResolvedValue(undefined),
   multi: vi.fn().mockReturnThis(),
-  get: vi.fn().mockResolvedValue(null),
   exec: vi.fn().mockResolvedValue([]),
 };
 
 const mockOneUnitModule = {
+  createClient: vi.fn().mockResolvedValue(mockOneUnitRedisClient),
   createRedisClient: vi.fn().mockResolvedValue(mockOneUnitRedisClient),
   RedisClient: vi.fn(() => mockOneUnitRedisClient),
 };
@@ -56,10 +57,12 @@ describe('OneUnit Redis Driver Adapter', () => {
     mockOneUnitRedisClient.get.mockResolvedValue(null);
     mockOneUnitRedisClient.set.mockResolvedValue(undefined);
     mockOneUnitRedisClient.del.mockResolvedValue(undefined);
-    mockOneUnitRedisClient.keys.mockResolvedValue([]);
+    mockOneUnitRedisClient.scan.mockResolvedValue(['0', []]);
+    mockOneUnitRedisClient.eval.mockResolvedValue('renewed');
     mockOneUnitRedisClient.quit.mockResolvedValue(undefined);
     mockOneUnitRedisClient.multi.mockReturnThis();
     mockOneUnitRedisClient.exec.mockResolvedValue([]);
+    mockOneUnitModule.createClient.mockResolvedValue(mockOneUnitRedisClient);
     mockOneUnitModule.createRedisClient.mockResolvedValue(mockOneUnitRedisClient);
     mockOneUnitModule.RedisClient.mockClear();
   });
@@ -80,7 +83,7 @@ describe('OneUnit Redis Driver Adapter', () => {
 
   it('should create redis client on creation', async () => {
     store = await createRedisStore(makeConfig(), mockOneUnitModule);
-    expect(mockOneUnitModule.createRedisClient).toHaveBeenCalledWith({
+    expect(mockOneUnitModule.createClient).toHaveBeenCalledWith({
       host: 'localhost',
       port: 6379,
       password: undefined,
@@ -141,7 +144,7 @@ describe('OneUnit Redis Driver Adapter', () => {
     const instance1 = makeInstance({ serviceId: 'svc-1', instanceId: 'inst-1' });
     const instance2 = makeInstance({ serviceId: 'svc-2', instanceId: 'inst-2' });
     
-    mockOneUnitRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockOneUnitRedisClient.multi.mockReturnThis();
     mockOneUnitRedisClient.get.mockReturnThis();
     mockOneUnitRedisClient.exec.mockResolvedValueOnce([
@@ -152,7 +155,7 @@ describe('OneUnit Redis Driver Adapter', () => {
     const results = await store.query({});
 
     expect(results).toHaveLength(2);
-    expect(mockOneUnitRedisClient.keys).toHaveBeenCalledWith('microservice:registry:*');
+    expect(mockOneUnitRedisClient.scan).toHaveBeenCalledWith('0', 'MATCH', 'microservice:registry:*', 'COUNT', 100);
   });
 
   it('should filter by serviceId in query', async () => {
@@ -161,7 +164,7 @@ describe('OneUnit Redis Driver Adapter', () => {
     const instance1 = makeInstance({ serviceId: 'svc-1', instanceId: 'inst-1' });
     const instance2 = makeInstance({ serviceId: 'svc-2', instanceId: 'inst-2' });
     
-    mockOneUnitRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockOneUnitRedisClient.multi.mockReturnThis();
     mockOneUnitRedisClient.get.mockReturnThis();
     mockOneUnitRedisClient.exec.mockResolvedValueOnce([
@@ -181,7 +184,7 @@ describe('OneUnit Redis Driver Adapter', () => {
     const instance1 = makeInstance({ status: 'healthy' });
     const instance2 = makeInstance({ status: 'unhealthy' });
     
-    mockOneUnitRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockOneUnitRedisClient.multi.mockReturnThis();
     mockOneUnitRedisClient.get.mockReturnThis();
     mockOneUnitRedisClient.exec.mockResolvedValueOnce([
@@ -201,7 +204,7 @@ describe('OneUnit Redis Driver Adapter', () => {
     const instance1 = makeInstance({ capabilities: ['test', 'rpc'] });
     const instance2 = makeInstance({ capabilities: ['test'] });
     
-    mockOneUnitRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockOneUnitRedisClient.multi.mockReturnThis();
     mockOneUnitRedisClient.get.mockReturnThis();
     mockOneUnitRedisClient.exec.mockResolvedValueOnce([
@@ -221,7 +224,7 @@ describe('OneUnit Redis Driver Adapter', () => {
     const instance1 = makeInstance({ leaseExpiresAt: Date.now() + 60000 });
     const instance2 = makeInstance({ leaseExpiresAt: Date.now() - 1000 }); // expired
     
-    mockOneUnitRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockOneUnitRedisClient.multi.mockReturnThis();
     mockOneUnitRedisClient.get.mockReturnThis();
     mockOneUnitRedisClient.exec.mockResolvedValueOnce([
@@ -242,7 +245,7 @@ describe('OneUnit Redis Driver Adapter', () => {
       makeInstance({ instanceId: `inst-${i}` })
     );
     
-    mockOneUnitRedisClient.keys.mockResolvedValueOnce(instances.map((_, i) => `microservice:registry:lease-${i}`));
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', [instances.map((_, i) => `microservice:registry:lease-${i}`)]]);
     mockOneUnitRedisClient.multi.mockReturnThis();
     mockOneUnitRedisClient.get.mockReturnThis();
     mockOneUnitRedisClient.exec.mockResolvedValueOnce(
@@ -261,13 +264,112 @@ describe('OneUnit Redis Driver Adapter', () => {
     expect(mockOneUnitRedisClient.del).toHaveBeenCalledWith('microservice:registry:lease-1');
   });
 
+  it('should renew a lease atomically via server-side script', async () => {
+    store = await createRedisStore(makeConfig(), mockOneUnitModule);
+    mockOneUnitRedisClient.eval.mockResolvedValueOnce('renewed');
+
+    const result = await store.renew('lease-1', 30000);
+
+    expect(result).toBe('renewed');
+    expect(mockOneUnitRedisClient.eval).toHaveBeenCalledWith(
+      expect.stringContaining("redis.call('GET', KEYS[1])"),
+      1,
+      'microservice:registry:lease-1',
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+    );
+  });
+
+  it('should report not-found when renewing a missing lease', async () => {
+    store = await createRedisStore(makeConfig(), mockOneUnitModule);
+    mockOneUnitRedisClient.eval.mockResolvedValueOnce('not-found');
+
+    const result = await store.renew('missing-lease', 30000);
+
+    expect(result).toBe('not-found');
+  });
+
+  it('should report expired when renewing an expired lease', async () => {
+    store = await createRedisStore(makeConfig(), mockOneUnitModule);
+    mockOneUnitRedisClient.eval.mockResolvedValueOnce('expired');
+
+    const result = await store.renew('lease-1', 30000);
+
+    expect(result).toBe('expired');
+  });
+
+  it('should update health on the canonical record', async () => {
+    store = await createRedisStore(makeConfig(), mockOneUnitModule);
+
+    const instance = makeInstance();
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1']]);
+    mockOneUnitRedisClient.multi.mockReturnThis();
+    mockOneUnitRedisClient.get.mockReturnThis();
+    mockOneUnitRedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(true);
+    expect(mockOneUnitRedisClient.set).toHaveBeenCalledWith(
+      'microservice:registry:lease-1',
+      expect.stringContaining('"status":"degraded"'),
+      'EX',
+      expect.any(Number),
+    );
+  });
+
+  it('should return false when updating health for an unknown instance', async () => {
+    store = await createRedisStore(makeConfig(), mockOneUnitModule);
+
+    const instance = makeInstance({ serviceId: 'svc-other' });
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1']]);
+    mockOneUnitRedisClient.multi.mockReturnThis();
+    mockOneUnitRedisClient.get.mockReturnThis();
+    mockOneUnitRedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(false);
+    expect(mockOneUnitRedisClient.set).not.toHaveBeenCalled();
+  });
+
+  it('should return false when updating health with no keys', async () => {
+    store = await createRedisStore(makeConfig(), mockOneUnitModule);
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', []]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(false);
+  });
+
+  it('should filter by serviceName in query', async () => {
+    store = await createRedisStore(makeConfig(), mockOneUnitModule);
+
+    const instance1 = makeInstance({ serviceName: 'service-a' });
+    const instance2 = makeInstance({ serviceName: 'service-b' });
+
+    mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
+    mockOneUnitRedisClient.multi.mockReturnThis();
+    mockOneUnitRedisClient.get.mockReturnThis();
+    mockOneUnitRedisClient.exec.mockResolvedValueOnce([
+      [null, JSON.stringify(instance1)],
+      [null, JSON.stringify(instance2)],
+    ]);
+
+    const results = await store.query({ serviceName: 'service-a' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].serviceName).toBe('service-a');
+  });
+
   it('should pass TLS configuration to client', async () => {
     store = await createRedisStore(makeConfig({ tls: {} }), mockOneUnitModule);
-    expect(mockOneUnitModule.createRedisClient).toHaveBeenCalledWith(expect.objectContaining({ tls: {} }));
+    expect(mockOneUnitModule.createClient).toHaveBeenCalledWith(expect.objectContaining({ tls: {} }));
   });
 
   it('should pass password and db configuration to client', async () => {
     store = await createRedisStore(makeConfig({ password: 'secret', db: 1 }), mockOneUnitModule);
-    expect(mockOneUnitModule.createRedisClient).toHaveBeenCalledWith(expect.objectContaining({ password: 'secret', db: 1 }));
+    expect(mockOneUnitModule.createClient).toHaveBeenCalledWith(expect.objectContaining({ password: 'secret', db: 1 }));
   });
 });

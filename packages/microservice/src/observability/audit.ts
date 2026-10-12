@@ -90,7 +90,7 @@ export class InMemoryAuditLogger implements AuditLogger {
   }
 }
 
-export function createAuditLogger(type: 'memory' = 'memory', options?: { maxEvents?: number }): AuditLogger {
+export function createAuditLogger(_type: 'memory' = 'memory', options?: { maxEvents?: number }): AuditLogger {
   return new InMemoryAuditLogger(options?.maxEvents);
 }
 

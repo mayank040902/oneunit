@@ -54,6 +54,17 @@ export interface MessagePublisher {
   publish(topic: string, message: unknown, options?: PublishOptions): Promise<void>;
 }
 
+// Point-to-point addressing over a named
+// transport. Transports that can deliver a
+// message directly to a destination service
+// implement this interface; the transport
+// manager routes send() through it instead
+// of assuming every transport can address
+// a destination.
+export interface PointToPointTransport {
+  send(destination: string, message: unknown): Promise<void>;
+}
+
 export interface MessageSubscriber {
   subscribe(topic: string, handler: MessageHandler, options?: SubscribeOptions): Promise<void>;
   unsubscribe(topic: string): Promise<void>;

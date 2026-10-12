@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { loadConfig, buildConfigFromEnv } from '../../src/config/loader.js';
-import { MicroserviceConfig } from '../../src/config/schema.js';
+import { loadConfig, buildConfigFromEnv, mergeConfig } from '../../src/config/loader.js';
+import { MicroserviceConfig, ServiceCredentials } from '../../src/config/schema.js';
 
 describe('Config Loader', () => {
   const originalEnv = { ...process.env };
@@ -204,6 +204,92 @@ describe('Config Loader', () => {
       expect(() => loadConfig(path)).toThrow('Failed to load config');
 
       fs.unlinkSync(path);
+    });
+  });
+
+  describe('mergeConfig', () => {
+    function makeBase(): MicroserviceConfig {
+      const originalRootKey = process.env.CRYPTO_ROOT_KEY;
+      process.env.CRYPTO_ROOT_KEY = 'a'.repeat(32);
+      const base = buildConfigFromEnv() as MicroserviceConfig;
+      if (originalRootKey === undefined) {
+        delete process.env.CRYPTO_ROOT_KEY;
+      } else {
+        process.env.CRYPTO_ROOT_KEY = originalRootKey;
+      }
+      return base;
+    }
+
+    it('should deep-merge plain objects field by field', () => {
+      const base = makeBase();
+      const merged = mergeConfig(base, { service: { name: 'merged-service' } });
+
+      expect(merged.service.name).toBe('merged-service');
+      expect(merged.service.id).toBe(base.service.id);
+      expect(merged.service.endpoints).toEqual(base.service.endpoints);
+      expect(merged.service.capabilities).toEqual(base.service.capabilities);
+    });
+
+    it('should merge nested adapter sections', () => {
+      const base = makeBase();
+      const merged = mergeConfig(base, {
+        adapters: { kafka: { enabled: true, driver: 'kafkajs' } },
+      });
+
+      expect(merged.adapters.kafka.enabled).toBe(true);
+      expect(merged.adapters.kafka.driver).toBe('kafkajs');
+      // Untouched adapter fields keep their defaults
+      expect(merged.adapters.kafka.clientId).toBe(base.adapters.kafka.clientId);
+      expect(merged.adapters.tcp.enabled).toBe(base.adapters.tcp.enabled);
+    });
+
+    it('should replace arrays wholesale', () => {
+      const base = makeBase();
+      const merged = mergeConfig(base, {
+        service: { capabilities: ['rpc'] },
+      });
+
+      expect(merged.service.capabilities).toEqual(['rpc']);
+    });
+
+    it('should replace credentials wholesale', () => {
+      const base = makeBase();
+      const credentials: ServiceCredentials = {
+        type: 'x509',
+        certificate: 'cert',
+        privateKey: 'key',
+        issuedAt: 1,
+        issuer: 'issuer',
+      };
+      const baseWithCredentials: MicroserviceConfig = {
+        ...base,
+        service: { ...base.service, credentials },
+      };
+
+      const merged = mergeConfig(baseWithCredentials, {
+        service: {
+          credentials: { type: 'jwt', jwtSecret: 'secret', issuedAt: 2, issuer: 'issuer' },
+        },
+      });
+
+      expect(merged.service.credentials?.type).toBe('jwt');
+      expect(merged.service.credentials).not.toHaveProperty('certificate');
+    });
+
+    it('should validate the merged configuration', () => {
+      const base = makeBase();
+
+      expect(() =>
+        mergeConfig(base, { service: { id: 'not-a-uuid' } }),
+      ).toThrow('Invalid configuration after merge');
+    });
+
+    it('should return a frozen configuration', () => {
+      const base = makeBase();
+      const merged = mergeConfig(base, {});
+
+      expect(Object.isFrozen(merged)).toBe(true);
+      expect(Object.isFrozen(merged.service)).toBe(true);
     });
   });
 });

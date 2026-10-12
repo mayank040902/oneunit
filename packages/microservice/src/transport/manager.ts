@@ -1,5 +1,4 @@
-import { Transport, TransportCapabilities, TransportHealth, TransportMetrics } from '../core/capabilities.js';
-import { BaseTransport } from './transport.js';
+import { Transport, TransportCapabilities, TransportHealth, TransportMetrics, MessagePublisher, PointToPointTransport } from '../core/capabilities.js';
 
 export interface TransportManagerConfig {
   healthCheckIntervalMs?: number;
@@ -95,20 +94,40 @@ export class TransportManager {
     return results;
   }
 
-  async send(protocol: string, to: string, message: any): Promise<void> {
-    const transport = this.getByCapability('requestResponse').find(t => t.name === protocol);
+  // Route a point-to-point message to the transport
+  // registered under the protocol name. The transport
+  // must implement PointToPointTransport; transports
+  // without direct addressing fail with a clear error
+  // instead of an unconditional throw.
+  async send(protocol: string, to: string, message: unknown): Promise<void> {
+    const transport = this.transports.get(protocol);
     if (!transport) {
       throw new Error(`No transport found for protocol: ${protocol}`);
     }
-    // This would need to be implemented by the specific transport
-    throw new Error('send not implemented on base transport');
+
+    const sender = transport as unknown as PointToPointTransport;
+    if (typeof sender.send !== 'function') {
+      throw new Error(
+        `Transport ${protocol} does not implement point-to-point send`,
+      );
+    }
+
+    await sender.send(to, message);
   }
 
-  async broadcast(protocol: string, message: any, exclude?: string[]): Promise<void> {
-    const transports = this.getByCapability('publishSubscribe');
-    for (const transport of transports) {
+  // Broadcast a message on the channel named by
+  // `protocol` through every registered transport
+  // that implements MessagePublisher, skipping the
+  // excluded transports. Transports without a
+  // publish operation are not broadcast targets.
+  async broadcast(protocol: string, message: unknown, exclude?: string[]): Promise<void> {
+    for (const transport of this.transports.values()) {
       if (exclude && exclude.includes(transport.name)) continue;
-      // This would need to be implemented by the specific transport
+
+      const publisher = transport as unknown as MessagePublisher;
+      if (typeof publisher.publish !== 'function') continue;
+
+      await publisher.publish(protocol, message);
     }
   }
 

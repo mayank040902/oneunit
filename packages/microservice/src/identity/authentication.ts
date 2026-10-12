@@ -1,5 +1,7 @@
+import { X509Certificate } from 'node:crypto';
 import { ServiceIdentity } from './service-identity.js';
 import { ServiceCredentials } from './credentials.js';
+import type { ServiceRegistration } from '../contracts/schemas.js';
 
 export interface AuthenticationResult {
   authenticated: boolean;
@@ -55,7 +57,7 @@ export class X509Authenticator implements Authenticator {
           serviceName: identity.serviceName,
           instanceId: identity.instanceId,
           credentials,
-          getRegistration: () => ({} as any),
+          getRegistration: () => ({} as ServiceRegistration),
           sign: async () => new Uint8Array(),
           verify: async () => false,
         },
@@ -78,16 +80,16 @@ export class X509Authenticator implements Authenticator {
     }
   }
 
-  private async parseCertificate(pem: string): Promise<any> {
+  private async parseCertificate(pem: string): Promise<X509Certificate> {
     const { X509Certificate } = await import('crypto');
     return new X509Certificate(pem);
   }
 
-  private isExpired(cert: any): boolean {
-    return Date.now() > cert.validTo.getTime();
+  private isExpired(cert: X509Certificate): boolean {
+    return Date.now() > new Date(cert.validTo).getTime();
   }
 
-  private async verifyChain(cert: any): Promise<boolean> {
+  private async verifyChain(cert: X509Certificate): Promise<boolean> {
     for (const caPem of this.trustedCAs) {
       try {
         const ca = await this.parseCertificate(caPem);
@@ -100,11 +102,11 @@ export class X509Authenticator implements Authenticator {
     return false;
   }
 
-  private extractIdentity(cert: any): { serviceId: string; serviceName: string; instanceId: string } {
+private extractIdentity(cert: X509Certificate): { serviceId: string; serviceName: string; instanceId: string } {
     const subject = cert.subject;
     const serviceIdMatch = subject.match(/CN=([^,]+)/);
-    const serviceId = serviceIdMatch ? serviceIdMatch[1] : 'unknown';
-    
+    const serviceId = serviceIdMatch?.[1] ?? 'unknown';
+
     return {
       serviceId,
       serviceName: serviceId,
@@ -144,7 +146,7 @@ export class JwtAuthenticator implements Authenticator {
           serviceName: (payload as Record<string, unknown>)['name'] as string,
           instanceId: payload.jti as string,
           credentials,
-          getRegistration: () => ({} as any),
+          getRegistration: () => ({} as ServiceRegistration),
           sign: async () => new Uint8Array(),
           verify: async () => false,
         },
@@ -201,7 +203,7 @@ export class ApiKeyAuthenticator implements Authenticator {
         serviceName: keyInfo.serviceName,
         instanceId: crypto.randomUUID(),
         credentials,
-        getRegistration: () => ({} as any),
+        getRegistration: () => ({} as ServiceRegistration),
         sign: async () => new Uint8Array(),
         verify: async () => false,
       },

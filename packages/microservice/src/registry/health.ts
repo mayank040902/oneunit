@@ -1,4 +1,4 @@
-import { HealthCheck, ServiceInstance } from '../contracts/schemas.js';
+import { ServiceInstance } from '../contracts/schemas.js';
 import { ServiceRegistry } from './registry.js';
 
 export interface HealthCheckResult {

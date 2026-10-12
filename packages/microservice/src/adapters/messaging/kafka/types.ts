@@ -1,4 +1,4 @@
-import { TransportCapabilities, TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
+import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
 import { Logger } from '@/observability/logger';
 
 export type KafkaDriver = 'oneunit' | 'kafkajs' | 'auto';
@@ -24,7 +24,7 @@ export interface KafkaAdapterConfig {
 
 export interface KafkaDriverAdapter {
   readonly name: string;
-  readonly capabilities: TransportCapabilities;
+  readonly capabilities: any;
   start(): Promise<void>;
   close(): Promise<void>;
   healthCheck(): Promise<TransportHealth>;

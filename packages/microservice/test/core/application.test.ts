@@ -6,9 +6,15 @@ import { AuthorizationPolicy } from '../../src/identity/authorization.js';
 import { LifecycleManager } from '../../src/core/lifecycle.js';
 
 // Mock all dependencies at the top level
-vi.mock('../../src/config/loader.js', () => ({
-  loadConfig: vi.fn(),
-}));
+vi.mock('../../src/config/loader.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/config/loader.js')>();
+  return {
+    loadConfig: vi.fn(),
+    mergeConfig: actual.mergeConfig,
+    buildConfigFromEnv: actual.buildConfigFromEnv,
+    createDefaultConfig: actual.createDefaultConfig,
+  };
+});
 vi.mock('../../src/registry/registry.js', () => ({
   createRegistry: vi.fn(),
   ServiceRegistry: {},
@@ -131,8 +137,9 @@ describe('Application', () => {
       const app = await createMicroservice({});
 
       expect(app).toBeDefined();
-      expect(app.service).toBe(mockConfig.service);
-      expect(app.config).toBe(mockConfig);
+      expect(app.service).toEqual(mockConfig.service);
+      expect(app.config.service.id).toBe(mockConfig.service.id);
+      expect(app.config.registry).toEqual(mockConfig.registry);
       expect(app.registry).toBe(mockRegistry);
       expect(app.identity).toBe(mockIdentity);
       expect(app.authorization).toBe(mockAuthorization);
@@ -144,12 +151,45 @@ describe('Application', () => {
       expect(mockLoadConfig).toHaveBeenCalledWith('/custom/path.json');
     });
 
-    it('should merge provided config overrides', async () => {
+    it('should deep-merge provided config overrides', async () => {
       const overrides = { service: { name: 'overridden-service' } };
-      await createMicroservice({ config: overrides });
-      
-      // Object.assign merges at top level
-      expect(mockConfig.service.name).toBe('overridden-service');
+      const app = await createMicroservice({ config: overrides });
+
+      // Overrides merge field by field: the service section
+      // keeps its other fields and the loaded config is not mutated.
+      expect(app.config.service.name).toBe('overridden-service');
+      expect(app.config.service.id).toBe(mockConfig.service.id);
+      expect(mockConfig.service.name).toBe('test-service');
+    });
+
+    it('should replace credential blocks wholesale', async () => {
+      const overrides = {
+        service: {
+          credentials: {
+            type: 'jwt',
+            jwtSecret: 'secret',
+            issuedAt: Date.now(),
+            issuer: 'issuer',
+          },
+        },
+      };
+      const app = await createMicroservice({ config: overrides });
+
+      expect(app.config.service.credentials?.type).toBe('jwt');
+    });
+
+    it('should reject invalid configuration overrides before constructing resources', async () => {
+      const overrides = { service: { id: 'not-a-uuid' } };
+      await expect(createMicroservice({ config: overrides })).rejects.toThrow(
+        /Invalid configuration after merge/
+      );
+      // No runtime resource was constructed from the invalid config
+      expect(mockCreateServiceIdentity).not.toHaveBeenCalled();
+    });
+
+    it('should expose a frozen configuration', async () => {
+      const app = await createMicroservice({});
+      expect(Object.isFrozen(app.config)).toBe(true);
     });
 
     it('should create service identity with service config', async () => {

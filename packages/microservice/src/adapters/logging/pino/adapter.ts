@@ -1,5 +1,7 @@
-import { Logger, LoggerConfig, LoggerContext, LogLevel } from '@/observability/logger.js';
+import { Logger, LoggerContext, LogLevel } from '@/observability/logger.js';
+import type pino from 'pino';
 import {
+  AdapterLoggerShape,
   createLogFn,
   createErrorFn,
   createFatalFn,
@@ -40,7 +42,7 @@ export async function createPinoLogger(config: PinoLoggerConfig = {}): Promise<L
     return adaptPinoLogger(config.logger);
   }
 
-  let pinoModule: any;
+  let pinoModule: typeof import('pino');
   try {
     pinoModule = await import('pino');
   } catch (err) {
@@ -57,7 +59,7 @@ export async function createPinoLogger(config: PinoLoggerConfig = {}): Promise<L
 
   const pino = pinoModule.default || pinoModule;
 
-  const options: any = {
+  const options: pino.LoggerOptions = {
     level: config.level ?? 'info',
   };
 
@@ -79,7 +81,7 @@ export async function createPinoLogger(config: PinoLoggerConfig = {}): Promise<L
   }
 
   if (config.pretty) {
-    let prettyModule: any;
+    let prettyModule: typeof import('pino-pretty') | undefined;
     try {
       prettyModule = await import('pino-pretty');
     } catch {
@@ -97,19 +99,19 @@ export async function createPinoLogger(config: PinoLoggerConfig = {}): Promise<L
   if (config.serviceId) baseBindings['serviceId'] = config.serviceId;
   if (config.instanceId) baseBindings['instanceId'] = config.instanceId;
 
-  const pinoLogger = pino(options).child(baseBindings);
+  const pinoLogger = pino(options).child(baseBindings) as unknown as PinoLogger;
 
   return adaptPinoLogger(pinoLogger);
 }
 
 function adaptPinoLogger(pinoLogger: PinoLogger): Logger {
-  const logFn = createLogFn(pinoLogger);
-  const errorFn = createErrorFn(pinoLogger);
-  const fatalFn = createFatalFn(pinoLogger);
-  const childFn = createChildFn(pinoLogger, adaptPinoLogger);
+  const logFn = createLogFn(pinoLogger as unknown as AdapterLoggerShape);
+  const errorFn = createErrorFn(pinoLogger as unknown as AdapterLoggerShape);
+  const fatalFn = createFatalFn(pinoLogger as unknown as AdapterLoggerShape);
+  const childFn = createChildFn(pinoLogger as unknown as AdapterLoggerShape, (child) => adaptPinoLogger(child as unknown as PinoLogger));
 
   return adaptLogger({
-    adapterLogger: pinoLogger,
+    adapterLogger: pinoLogger as unknown as AdapterLoggerShape,
     getLevel: () => pinoLogger.level,
     logFn,
     errorFn,

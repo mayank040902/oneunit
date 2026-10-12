@@ -21,12 +21,21 @@ export interface ServiceLease {
 
 export type { ServiceInstance, ServiceQuery, ServiceRegistration, HealthCheck };
 
+export type LeaseRenewalResult = 'renewed' | 'not-found' | 'expired' | 'conflict';
+
 export interface RegistryStore {
   set(leaseId: string, instance: ServiceInstance): Promise<void>;
   get(leaseId: string): Promise<ServiceInstance | null>;
   delete(leaseId: string): Promise<void>;
   query(query: ServiceQuery): Promise<ServiceInstance[]>;
   expire(leaseId: string): Promise<void>;
+  renew(leaseId: string, ttlMs: number): Promise<LeaseRenewalResult>;
+  updateInstanceHealth(
+    serviceId: string,
+    instanceId: string,
+    status: ServiceInstance['status'],
+    timestamp: number,
+  ): Promise<boolean>;
 }
 
 export class InMemoryRegistryStore implements RegistryStore {
@@ -51,12 +60,9 @@ export class InMemoryRegistryStore implements RegistryStore {
     const results: ServiceInstance[] = [];
     
     for (const instance of this.store.values()) {
-      if (query.serviceId && instance.serviceId !== query.serviceId) continue;
-      if (query.serviceName) {
-        const registration = instance as unknown as { serviceName?: string };
-        if (registration.serviceName !== query.serviceName) continue;
-      }
-      if (query.status && instance.status !== query.status) continue;
+    if (query.serviceId && instance.serviceId !== query.serviceId) continue;
+    if (query.serviceName && instance.serviceName !== query.serviceName) continue;
+    if (query.status && instance.status !== query.status) continue;
       if (query.capability && !instance.capabilities.includes(query.capability)) continue;
       if (instance.leaseExpiresAt < Date.now()) continue;
       
@@ -69,6 +75,49 @@ export class InMemoryRegistryStore implements RegistryStore {
 
   async expire(leaseId: string): Promise<void> {
     await this.delete(leaseId);
+  }
+
+  async renew(leaseId: string, ttlMs: number): Promise<LeaseRenewalResult> {
+    const instance = this.store.get(leaseId);
+    if (!instance) {
+      return 'not-found';
+    }
+
+    const now = Date.now();
+    if (instance.leaseExpiresAt < now) {
+      return 'expired';
+    }
+
+    const renewed: ServiceInstance = {
+      ...instance,
+      lastHeartbeat: now,
+      leaseExpiresAt: now + ttlMs,
+    };
+    this.store.set(leaseId, renewed);
+    this.scheduleExpiry(leaseId, renewed.leaseExpiresAt);
+    return 'renewed';
+  }
+
+  async updateInstanceHealth(
+    serviceId: string,
+    instanceId: string,
+    status: ServiceInstance['status'],
+    timestamp: number,
+  ): Promise<boolean> {
+    for (const [leaseId, instance] of this.store) {
+      if (instance.serviceId !== serviceId || instance.instanceId !== instanceId) continue;
+      if (instance.leaseExpiresAt < Date.now()) continue;
+
+      const updated: ServiceInstance = {
+        ...instance,
+        status,
+        lastHeartbeat: timestamp,
+      };
+      this.store.set(leaseId, updated);
+      this.scheduleExpiry(leaseId, updated.leaseExpiresAt);
+      return true;
+    }
+    return false;
   }
 
   private scheduleExpiry(leaseId: string, expiresAt: number): void {
@@ -107,6 +156,7 @@ export class ServiceRegistryImpl implements ServiceRegistry {
 
     const instance: ServiceInstance = {
       serviceId: registration.serviceId,
+      serviceName: registration.serviceName,
       instanceId: registration.instanceId,
       endpoints: registration.endpoints,
       status: 'healthy',
@@ -128,23 +178,17 @@ export class ServiceRegistryImpl implements ServiceRegistry {
   }
 
   async renew(leaseId: string): Promise<void> {
-    const instance = await this.store.get(leaseId);
-    if (!instance) {
+    const result = await this.store.renew(leaseId, this.defaultTtlMs);
+
+    if (result === 'not-found') {
       throw new Error(`Lease not found: ${leaseId}`);
     }
-
-    if (instance.leaseExpiresAt < Date.now()) {
+    if (result === 'expired') {
       throw new Error(`Lease expired: ${leaseId}`);
     }
-
-    const now = Date.now();
-    const expiresAt = now + this.defaultTtlMs;
-
-    await this.store.set(leaseId, {
-      ...instance,
-      lastHeartbeat: now,
-      leaseExpiresAt: expiresAt,
-    });
+    if (result === 'conflict') {
+      throw new Error(`Lease renewal conflict: ${leaseId}`);
+    }
   }
 
   async discover(query: ServiceQuery): Promise<ServiceInstance[]> {
@@ -160,21 +204,12 @@ export class ServiceRegistryImpl implements ServiceRegistry {
   }
 
   async updateHealth(health: HealthCheck): Promise<void> {
-    const instances = await this.store.query({ 
-      serviceId: health.serviceId,
-      limit: 100 
-    });
-
-    for (const instance of instances) {
-      if (instance.instanceId === health.instanceId) {
-        await this.store.set(`${instance.serviceId}:${instance.instanceId}`, {
-          ...instance,
-          status: health.status,
-          lastHeartbeat: health.timestamp,
-        });
-        break;
-      }
-    }
+    await this.store.updateInstanceHealth(
+      health.serviceId,
+      health.instanceId,
+      health.status,
+      health.timestamp,
+    );
   }
 }
 
@@ -189,10 +224,10 @@ export function createRegistry(config: MicroserviceConfig['registry']): ServiceR
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
         if (typeof value === 'function') {
-          return async (...args: any[]) => {
+          return async (...args: unknown[]) => {
             // Ensure connected before any operation
-            if (!(target as any).driverAdapter) {
-              await (target as any).connect();
+            if (!target.isConnected()) {
+              await target.connect();
             }
             return value.apply(target, args);
           };

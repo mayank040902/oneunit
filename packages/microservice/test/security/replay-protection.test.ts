@@ -124,14 +124,14 @@ describe('ReplayProtection', () => {
     expect(protection.isReplay(messageId)).toBe(false);
   });
 
-  it('should enforce maxEntries per source', () => {
+  it('should enforce the global maxEntries bound', () => {
     const smallProtection = createReplayProtection({
       windowSize: 1000,
       maxEntries: 5,
       ttlMs: 5000,
     });
     
-    // Add 5 messages
+    // Add 5 messages to reach capacity
     for (let i = 0; i < 5; i++) {
       const messageId: MessageId = {
         id: `msg-${i}`,
@@ -141,7 +141,9 @@ describe('ReplayProtection', () => {
       smallProtection.checkAndStore(messageId);
     }
     
-    // 6th message should trigger cleanup
+    // At capacity, new messages are rejected
+    // (fail closed) rather than silently
+    // dropping replay protection.
     const messageId6: MessageId = {
       id: 'msg-5',
       timestamp: Date.now(),
@@ -149,8 +151,47 @@ describe('ReplayProtection', () => {
     };
     const result = smallProtection.checkAndStore(messageId6);
     
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('Replay store capacity reached');
     smallProtection.stop();
+  });
+
+  it('should enforce the per-source replay window', () => {
+    const windowedProtection = createReplayProtection({
+      windowSize: 3,
+      maxEntries: 100,
+      ttlMs: 5000,
+    });
+
+    for (let i = 0; i < 3; i++) {
+      windowedProtection.checkAndStore({
+        id: `msg-${i}`,
+        timestamp: Date.now(),
+        source: 'service-1',
+      });
+    }
+
+    // A 4th distinct message evicts the
+    // oldest entry to stay within the
+    // per-source window.
+    const fourth = windowedProtection.checkAndStore({
+      id: 'msg-3',
+      timestamp: Date.now(),
+      source: 'service-1',
+    });
+    expect(fourth.allowed).toBe(true);
+    expect(windowedProtection.getStats().totalEntries).toBe(3);
+
+    // The evicted ID is no longer tracked, so
+    // replaying it is not detected - the
+    // documented bound of the sliding window.
+    const replay = windowedProtection.checkAndStore({
+      id: 'msg-0',
+      timestamp: Date.now(),
+      source: 'service-1',
+    });
+    expect(replay.allowed).toBe(true);
+    windowedProtection.stop();
   });
 
   it('should cleanup expired entries', () => {

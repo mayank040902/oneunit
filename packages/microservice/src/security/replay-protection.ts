@@ -65,8 +65,27 @@ export class ReplayProtection {
       return { allowed: false, reason: 'Duplicate message ID detected' };
     }
 
-    if (sourceSet.size >= this.config.maxEntries) {
-      this.cleanupSource(messageId.source);
+    // Enforce the per-source replay window: only the
+    // most recent `windowSize` message IDs per source
+    // are tracked, evicting the oldest entries first.
+    // A replayed ID older than the window is no longer
+    // detectable - this is the documented bound of the
+    // replay state.
+    while (sourceSet.size >= this.config.windowSize) {
+      const oldest = sourceSet.values().next().value;
+      if (oldest === undefined) break;
+      sourceSet.delete(oldest);
+      this.timestamps.delete(oldest);
+    }
+
+    // Enforce the global entry bound across all
+    // sources. Fail closed when the store is at
+    // capacity after purging expired entries.
+    if (this.getTotalEntries() >= this.config.maxEntries) {
+      this.cleanup();
+      if (this.getTotalEntries() >= this.config.maxEntries) {
+        return { allowed: false, reason: 'Replay store capacity reached' };
+      }
     }
 
     sourceSet.add(key);
@@ -100,15 +119,12 @@ export class ReplayProtection {
     }
   }
 
-  private cleanupSource(source: string): void {
-    const sourceSet = this.store.get(source);
-    if (!sourceSet) return;
-
-    const keysToDelete = Array.from(sourceSet).slice(0, sourceSet.size / 2);
-    for (const key of keysToDelete) {
-      sourceSet.delete(key);
-      this.timestamps.delete(key);
+  private getTotalEntries(): number {
+    let total = 0;
+    for (const set of this.store.values()) {
+      total += set.size;
     }
+    return total;
   }
 
   getStats(): { sources: number; totalEntries: number } {

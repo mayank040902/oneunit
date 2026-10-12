@@ -320,24 +320,57 @@ describe('TransportManager send and broadcast', () => {
     );
   });
 
-  it('should throw "send not implemented" when a matching transport is found', async () => {
+  it('should reject send when the transport does not implement point-to-point send', async () => {
     manager.register(makeTransport({
       name: 'rpc',
       capabilities: makeCapabilities({ requestResponse: true }),
     }));
     await expect(manager.send('rpc', 'dest', { data: 1 })).rejects.toThrow(
-      /send not implemented/,
+      /does not implement point-to-point send/,
     );
   });
 
-  it('should broadcast to all publish-subscribe transports, respecting exclude', async () => {
-    const t1 = makeTransport({ name: 'kafka', capabilities: makeCapabilities({ publishSubscribe: true }) });
-    const t2 = makeTransport({ name: 'nats', capabilities: makeCapabilities({ publishSubscribe: true }) });
-    manager.register(t1);
-    manager.register(t2);
+  it('should route send through a transport implementing PointToPointTransport', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    manager.register({
+      ...makeTransport({ name: 'tcp' }),
+      send,
+    });
 
-    // broadcast is a no-op in the current implementation (no real send on base transport)
-    await expect(manager.broadcast('kafka', { data: 1 }, ['nats'])).resolves.toBeUndefined();
+    await manager.send('tcp', 'dest-svc', { data: 1 });
+
+    expect(send).toHaveBeenCalledWith('dest-svc', { data: 1 });
+  });
+
+  it('should broadcast through transports implementing publish, respecting exclude', async () => {
+    const publish1 = vi.fn().mockResolvedValue(undefined);
+    const publish2 = vi.fn().mockResolvedValue(undefined);
+    manager.register({
+      ...makeTransport({ name: 'kafka' }),
+      publish: publish1,
+    });
+    manager.register({
+      ...makeTransport({ name: 'nats' }),
+      publish: publish2,
+    });
+
+    await manager.broadcast('events', { data: 1 }, ['nats']);
+
+    expect(publish1).toHaveBeenCalledWith('events', { data: 1 });
+    expect(publish2).not.toHaveBeenCalled();
+  });
+
+  it('should skip transports without a publish operation during broadcast', async () => {
+    const publish1 = vi.fn().mockResolvedValue(undefined);
+    manager.register({
+      ...makeTransport({ name: 'kafka' }),
+      publish: publish1,
+    });
+    manager.register(makeTransport({ name: 'grpc' }));
+
+    await expect(manager.broadcast('events', { data: 1 })).resolves.toBeUndefined();
+
+    expect(publish1).toHaveBeenCalledWith('events', { data: 1 });
   });
 });
 

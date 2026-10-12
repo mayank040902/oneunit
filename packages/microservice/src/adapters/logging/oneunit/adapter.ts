@@ -1,10 +1,10 @@
 import { Logger, LoggerContext, LogLevel } from '@/observability/logger.js';
-import type { Logger as OneUnitLogger, LoggerOptions } from '@oneunit/logger';
+import type { LoggerOptions } from '@oneunit/logger';
 import {
+  AdapterLoggerShape,
   createLogFn,
   createErrorFn,
   createFatalFn,
-  createChildFn,
   adaptLogger,
 } from '../shared/adapter-utils.js';
 
@@ -12,7 +12,7 @@ export interface OneUnitLoggerConfig {
   level?: LogLevel;
   serviceId?: string;
   instanceId?: string;
-  logger?: OneUnitLogger;
+  logger?: AdapterLoggerShape;
   mode?: 'development' | 'production' | 'test';
   serializers?: LoggerOptions['serializers'];
   childBindings?: Record<string, unknown>;
@@ -25,7 +25,7 @@ export async function createOneUnitLogger(config: OneUnitLoggerConfig = {}): Pro
     return adaptOneUnitLogger(config.logger);
   }
 
-  let oneUnitLoggerModule: any;
+  let oneUnitLoggerModule: typeof import('@oneunit/logger');
   try {
     oneUnitLoggerModule = await import('@oneunit/logger');
   } catch (err) {
@@ -50,17 +50,23 @@ export async function createOneUnitLogger(config: OneUnitLoggerConfig = {}): Pro
     pino: config.pino,
   });
 
-  return adaptOneUnitLogger(oneUnitLogger, oneUnitCreateChildLogger);
+  return adaptOneUnitLogger(
+    oneUnitLogger as unknown as AdapterLoggerShape,
+    oneUnitCreateChildLogger as unknown as (
+      logger: AdapterLoggerShape,
+      bindings: Record<string, unknown>
+    ) => AdapterLoggerShape
+  );
 }
 
 function adaptOneUnitLogger(
-  oneUnitLogger: OneUnitLogger,
-  oneUnitCreateChildLogger?: (logger: OneUnitLogger, bindings: Record<string, unknown>) => OneUnitLogger
+  oneUnitLogger: AdapterLoggerShape,
+  oneUnitCreateChildLogger?: (logger: AdapterLoggerShape, bindings: Record<string, unknown>) => AdapterLoggerShape
 ): Logger {
   const logFn = createLogFn(oneUnitLogger);
   const errorFn = createErrorFn(oneUnitLogger);
   const fatalFn = createFatalFn(oneUnitLogger);
-  
+
   const createChild = (bindings: LoggerContext): Logger => {
     const childBindings = bindings as Record<string, unknown>;
     const childLogger = oneUnitCreateChildLogger

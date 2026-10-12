@@ -1,5 +1,7 @@
-import { BaseTransport, TransportConfig } from '@/transport/transport';
-import { TransportCapabilities, TransportHealth, StreamTransport, DuplexStream, TransportMetrics } from '@/core/capabilities';
+import { BaseTransport } from '@/transport/transport';
+import { TransportHealth, StreamTransport, DuplexStream, TransportMetrics } from '@/core/capabilities';
+import type * as net from 'net';
+import type * as tls from 'tls';
 
 export interface TcpConfig {
   host: string;
@@ -20,7 +22,7 @@ export interface TcpConnection extends DuplexStream {
 
 export class TcpTransport extends BaseTransport implements StreamTransport {
   private config: TcpConfig;
-  private server: any;
+  private server: net.Server | null = null;
   private connections: Map<string, TcpConnection> = new Map();
   private frameBuffer: Map<string, Uint8Array> = new Map();
   private metrics: TransportMetrics;
@@ -46,7 +48,7 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
     const { createServer: createTlsServer } = await import('tls');
     const { readFileSync } = await import('fs');
 
-    const serverOptions: any = {};
+    const serverOptions: tls.TlsOptions = {};
 
     if (this.config.tls) {
       if (!this.config.cert || !this.config.key) {
@@ -64,13 +66,13 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
       this.server = createServer(this.handleConnection.bind(this));
     }
 
-    this.server.on('error', (err: Error) => {
+    this.server!.on('error', (err: Error) => {
       this.metrics.errors++;
       console.error('TCP server error:', err);
     });
 
     await new Promise<void>((resolve, reject) => {
-      this.server.listen(this.config.port, this.config.host, (err?: Error) => {
+      this.server!.listen(this.config.port, this.config.host, (err?: Error) => {
         if (err) reject(err);
         else resolve();
       });
@@ -87,7 +89,12 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
 
     if (this.server) {
       await new Promise<void>((resolve) => {
-        this.server.close(resolve);
+        this.server!.close((err?: Error) => {
+          if (err) {
+            console.error('TCP server close error:', err);
+          }
+          resolve();
+        });
       });
     }
 
@@ -115,7 +122,7 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
       throw new Error(`Invalid remote address format: ${remote}`);
     }
 
-    const options: any = { host, port };
+    const options: net.NetConnectOpts & tls.ConnectionOptions = { host, port };
     if (this.config.tls) {
       options.cert = this.config.cert;
       options.key = this.config.key;
@@ -123,9 +130,13 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
     }
 
     return new Promise((resolve, reject) => {
-      const socket = this.config.tls ? tlsConnect(options) : connect(options);
+      const socket: net.Socket = this.config.tls ? tlsConnect(options) : connect(options);
       
       socket.on('connect', () => {
+        // The connection timeout only applies to the
+        // connect phase; clear it so it cannot fire
+        // on an established connection.
+        socket.setTimeout(0);
         const conn = this.createConnection(socket, remote);
         this.connections.set(remote, conn);
         resolve(conn);
@@ -142,15 +153,28 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
     });
   }
 
-  private handleConnection(socket: any): void {
+  private handleConnection(socket: net.Socket): void {
     const remote = `${socket.remoteAddress}:${socket.remotePort}`;
     const conn = this.createConnection(socket, remote);
     this.connections.set(remote, conn);
   }
 
-  private createConnection(socket: any, remote: string): TcpConnection {
+  private createConnection(socket: net.Socket, remote: string): TcpConnection {
     let buffer = Buffer.alloc(0);
     const maxFrameSize = this.config.maxFrameSize ?? 16 * 1024 * 1024;
+    const idleTimeout = this.config.idleTimeout;
+
+    // Apply the configured idle timeout to
+    // established connections: a socket that
+    // carries no traffic within the window is
+    // destroyed and the connection is dropped.
+    if (idleTimeout && typeof socket.setTimeout === 'function') {
+      socket.setTimeout(idleTimeout, () => {
+        socket.destroy();
+        this.connections.delete(remote);
+        this.metrics.errors++;
+      });
+    }
 
     const conn: TcpConnection = {
       remoteAddress: socket.remoteAddress ?? 'unknown',

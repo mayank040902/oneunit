@@ -1,4 +1,4 @@
-import { KafkaDriver, KafkaAdapterConfig, KafkaDriverAdapter, KafkaDriverModule } from './types.js';
+import { KafkaDriver, KafkaAdapterConfig, KafkaDriverModule } from './types.js';
 import { Logger } from '@/observability/logger.js';
 
 export interface ResolvedDriver {

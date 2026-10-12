@@ -5,6 +5,21 @@ export interface ResolvedRedisDriver {
   module: RedisDriverModule;
 }
 
+interface OneUnitRedisModuleShape {
+  createClient?: unknown;
+  createRedisClient?: unknown;
+  RedisClient?: unknown;
+}
+
+interface IORedisModuleShape {
+  default?: unknown;
+  Redis?: unknown;
+}
+
+interface NodeRedisModuleShape {
+  createClient?: unknown;
+}
+
 export async function resolveRedisDriver(config: RedisAdapterConfig): Promise<ResolvedRedisDriver> {
   const requestedDriver = config.driver ?? 'auto';
 
@@ -42,7 +57,7 @@ export async function resolveRedisDriver(config: RedisAdapterConfig): Promise<Re
 }
 
 async function loadOneUnitDriver(): Promise<ResolvedRedisDriver> {
-  let oneUnitModule: any;
+  let oneUnitModule: OneUnitRedisModuleShape;
   try {
     oneUnitModule = await import('@oneunit/redis');
   } catch (err) {
@@ -59,10 +74,13 @@ async function loadOneUnitDriver(): Promise<ResolvedRedisDriver> {
     throw err;
   }
 
-  // Verify the module has the expected exports
-  if (!oneUnitModule.createRedisClient && !oneUnitModule.RedisClient) {
+  // Verify the module has the expected exports. The current @oneunit/redis
+  // package exports `createClient` (returning an ioredis-compatible client);
+  // `createRedisClient` and `RedisClient` are accepted as aliases for
+  // compatibility with other releases of that package.
+  if (!oneUnitModule.createClient && !oneUnitModule.createRedisClient && !oneUnitModule.RedisClient) {
     throw new Error(
-      '@oneunit/redis does not export required APIs (createRedisClient or RedisClient)',
+      '@oneunit/redis does not export required APIs (createClient, createRedisClient, or RedisClient)',
     );
   }
 
@@ -71,13 +89,13 @@ async function loadOneUnitDriver(): Promise<ResolvedRedisDriver> {
   return {
     driver: 'oneunit',
     module: {
-      createStore: (cfg) => createRedisStore(cfg, oneUnitModule),
+      createStore: (cfg) => createRedisStore(cfg, oneUnitModule as import('./oneunit/adapter.js').OneUnitRedisModule),
     },
   };
 }
 
 async function loadIORedisDriver(): Promise<ResolvedRedisDriver> {
-  let ioredisModule: any;
+  let ioredisModule: IORedisModuleShape;
   try {
     ioredisModule = await import('ioredis');
   } catch (err) {
@@ -104,13 +122,13 @@ async function loadIORedisDriver(): Promise<ResolvedRedisDriver> {
   return {
     driver: 'ioredis',
     module: {
-      createStore: (cfg) => createRedisStore(cfg, Redis),
+      createStore: (cfg) => createRedisStore(cfg, Redis as import('./ioredis/adapter.js').IORedisConstructor),
     },
   };
 }
 
 async function loadNodeRedisDriver(): Promise<ResolvedRedisDriver> {
-  let nodeRedisModule: any;
+  let nodeRedisModule: NodeRedisModuleShape;
   try {
     // @ts-expect-error node-redis (v4) is an optional peer dependency and may
     // not be installed; the import is resolved at runtime.
@@ -138,7 +156,7 @@ async function loadNodeRedisDriver(): Promise<ResolvedRedisDriver> {
   return {
     driver: 'node-redis',
     module: {
-      createStore: (cfg) => createRedisStore(cfg, nodeRedisModule),
+      createStore: (cfg) => createRedisStore(cfg, nodeRedisModule as import('./node-redis/adapter.js').NodeRedisModule),
     },
   };
 }

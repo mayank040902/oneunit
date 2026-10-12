@@ -70,7 +70,7 @@ export class InMemoryMetricsCollector implements MetricsCollector {
   getMetrics(): Metric[] {
     const allMetrics: Metric[] = [];
     
-    for (const [key, metrics] of this.metrics) {
+    for (const [_key, metrics] of this.metrics) {
       allMetrics.push(...metrics);
     }
     

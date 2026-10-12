@@ -1,19 +1,20 @@
-import { BaseTransport, TransportConfig } from '@/transport/transport';
-import { TransportCapabilities, TransportHealth, RpcClient, RpcServer, RpcContext, RpcMethodHandler } from '@/core/capabilities';
+import { BaseTransport } from '@/transport/transport';
+import { TransportHealth, RpcClient, RpcServer, RpcContext, RpcMethodHandler } from '@/core/capabilities';
+import type * as grpc from '@grpc/grpc-js';
 
 export interface GrpcConfig {
   endpoint: string;
   protoPath: string;
   packageName: string;
-  credentials?: any;
+  credentials?: grpc.ChannelCredentials | null;
   tls?: boolean;
 }
 
 export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer {
   private config: GrpcConfig;
-  private client: any;
-  private server: any;
-  private serviceDefinitions: Map<string, any> = new Map();
+  private client: grpc.Client | null = null;
+  private server: grpc.Server | null = null;
+  private serviceDefinitions: Map<string, grpc.ServiceDefinition | grpc.ProtobufTypeDefinition> = new Map();
   private methodHandlers: Map<string, Map<string, RpcMethodHandler>> = new Map();
 
   constructor(config: GrpcConfig) {
@@ -34,7 +35,7 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
   async start(): Promise<void> {
     const grpc = await import('@grpc/grpc-js');
     const protoLoader = await import('@grpc/proto-loader');
-    
+
     const packageDefinition = protoLoader.loadSync(this.config.protoPath, {
       keepCase: true,
       longs: String,
@@ -44,28 +45,28 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
     });
 
     const proto = grpc.loadPackageDefinition(packageDefinition);
-    const service = proto[this.config.packageName] as Record<string, any>;
+    const service = proto[this.config.packageName] as Record<string, grpc.ServiceClientConstructor | grpc.ProtobufTypeDefinition | grpc.GrpcObject>;
 
     this.server = new grpc.Server();
-    
+
     for (const [serviceName, methods] of this.methodHandlers) {
       const serviceDef = service[serviceName];
-      if (serviceDef && serviceDef.service) {
-        const handlers: Record<string, Function> = {};
+      if (serviceDef && (serviceDef as grpc.ServiceClientConstructor).service) {
+        const handlers: grpc.UntypedServiceImplementation = {};
         for (const [methodName, handler] of methods) {
           handlers[methodName] = this.createGrpcHandler(handler, serviceName, methodName);
         }
-        this.server.addService(serviceDef.service, handlers);
+        this.server.addService((serviceDef as grpc.ServiceClientConstructor).service, handlers);
       }
     }
 
     const address = this.config.endpoint;
-    const creds = this.config.tls 
+    const creds = this.config.tls
       ? grpc.ServerCredentials.createSsl(null, [], true)
       : grpc.ServerCredentials.createInsecure();
-    
+
     await new Promise<void>((resolve, reject) => {
-      this.server.bindAsync(address, creds, (err: Error | null) => {
+      this.server!.bindAsync(address, creds, (err: Error | null) => {
         if (err) reject(err);
         else resolve();
       });
@@ -78,7 +79,12 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
   async close(): Promise<void> {
     if (this.server) {
       await new Promise<void>((resolve) => {
-        this.server.tryShutdown(resolve);
+        this.server!.tryShutdown((err?: Error) => {
+          if (err) {
+            console.error('gRPC server shutdown error:', err);
+          }
+          resolve();
+        });
       });
     }
     if (this.client) {
@@ -105,12 +111,12 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
     this.methodHandlers.get(service)?.delete(method);
   }
 
-  private createGrpcHandler(handler: RpcMethodHandler, serviceName: string, methodName: string) {
-    return async (call: any, callback: any) => {
+  private createGrpcHandler(handler: RpcMethodHandler, _serviceName: string, _methodName: string): grpc.UntypedHandleCall {
+    return async (call: grpc.ServerUnaryCall<unknown, unknown>, callback: grpc.sendUnaryData<unknown>) => {
       try {
         const context: RpcContext = {
-          serviceId: serviceName,
-          correlationId: call.metadata.get('correlation-id')?.[0] || crypto.randomUUID(),
+          serviceId: _serviceName,
+          correlationId: (call.metadata.get('correlation-id')?.[0] as string | undefined) || crypto.randomUUID(),
           headers: {},
           metadata: new Map(),
         };
@@ -118,7 +124,7 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
         const result = await handler(call.request, context);
         callback(null, result);
       } catch (err) {
-        callback(err, null);
+        callback(err as grpc.ServiceError, null);
       }
     };
   }
@@ -127,7 +133,7 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
     if (!this.client) {
       const grpc = await import('@grpc/grpc-js');
       const protoLoader = await import('@grpc/proto-loader');
-      
+
       const packageDefinition = protoLoader.loadSync(this.config.protoPath, {
         keepCase: true,
         longs: String,
@@ -137,29 +143,36 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
       });
 
       const proto = grpc.loadPackageDefinition(packageDefinition);
-      const serviceDef = proto[this.config.packageName] as Record<string, any>;
-      
+      const serviceDef = proto[this.config.packageName] as Record<string, grpc.ServiceClientConstructor | grpc.ProtobufTypeDefinition | grpc.GrpcObject>;
+
       const creds = this.config.tls
         ? grpc.credentials.createSsl()
         : grpc.credentials.createInsecure();
-      
-      const ServiceConstructor = serviceDef[service];
+
+      const ServiceConstructor = serviceDef[service] as grpc.ServiceClientConstructor | undefined;
       if (!ServiceConstructor) {
         throw new Error(`Service ${service} not found`);
       }
-      
+
       this.client = new ServiceConstructor(this.config.endpoint, creds);
     }
 
-    const serviceClient = this.client;
+    const serviceClient = this.client as unknown as Record<string, (...args: unknown[]) => unknown>;
     if (!serviceClient) {
       throw new Error(`Service ${service} not found`);
     }
 
-    return new Promise((resolve, reject) => {
-      serviceClient[method](input, (err: any, response: any) => {
+    return new Promise<TOutput>((resolve, reject) => {
+      // ServiceClient exposes each method via an index signature of
+      // `Function`; call it with the standard unary callback.
+      const fn = serviceClient[method];
+      if (!fn) {
+        reject(new Error(`Method ${method} not found on service ${service}`));
+        return;
+      }
+      fn(input, (err: grpc.ServiceError | null, response: unknown) => {
         if (err) reject(err);
-        else resolve(response);
+        else resolve(response as TOutput);
       });
     });
   }
@@ -168,7 +181,7 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
     if (!this.client) {
       const grpc = await import('@grpc/grpc-js');
       const protoLoader = await import('@grpc/proto-loader');
-      
+
       const packageDefinition = protoLoader.loadSync(this.config.protoPath, {
         keepCase: true,
         longs: String,
@@ -178,22 +191,32 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
       });
 
       const proto = grpc.loadPackageDefinition(packageDefinition);
-      const serviceDef = proto[this.config.packageName] as Record<string, any>;
-      
+      const serviceDef = proto[this.config.packageName] as Record<string, grpc.ServiceClientConstructor | grpc.ProtobufTypeDefinition | grpc.GrpcObject>;
+
       const creds = this.config.tls
         ? grpc.credentials.createSsl()
         : grpc.credentials.createInsecure();
-      
-      const ServiceConstructor = serviceDef[service];
+
+      const ServiceConstructor = serviceDef[service] as grpc.ServiceClientConstructor | undefined;
       if (!ServiceConstructor) {
         throw new Error(`Service ${service} not found`);
       }
-      
+
       this.client = new ServiceConstructor(this.config.endpoint, creds);
     }
 
-    const call = this.client[method](input);
-    
+    const serviceClient = this.client as unknown as Record<string, (input: unknown) => grpc.ClientReadableStream<unknown>>;
+    if (!serviceClient) {
+      throw new Error(`Service ${service} not found`);
+    }
+
+    const streamFn = serviceClient[method];
+    if (!streamFn) {
+      throw new Error(`Method ${method} not found on service ${service}`);
+    }
+
+    const call = streamFn(input);
+
     for await (const response of call) {
       yield response as TOutput;
     }

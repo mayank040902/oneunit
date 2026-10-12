@@ -23,14 +23,12 @@ describe('resolveRedisDriver explicit selection', () => {
     expect(typeof resolved.module.createStore).toBe('function');
   });
 
-  it('should surface a clear error for oneunit when the package lacks the expected exports', async () => {
-    // @oneunit/redis is installed in this workspace but does not export the
-    // `createRedisClient` / `RedisClient` names the resolver expects. The
-    // resolver must surface that as a configuration/dependency error rather
-    // than silently falling through to another driver.
-    await expect(resolveRedisDriver(makeConfig({ driver: 'oneunit' }))).rejects.toThrow(
-      /@oneunit\/redis does not export required APIs/,
-    );
+  it('should resolve oneunit driver when explicitly requested', async () => {
+    // @oneunit/redis is installed and exports `createClient` (returning an
+    // ioredis-compatible client). Explicit selection must resolve it directly.
+    const resolved = await resolveRedisDriver(makeConfig({ driver: 'oneunit' }));
+    expect(resolved.driver).toBe('oneunit');
+    expect(typeof resolved.module.createStore).toBe('function');
   });
 
   it('should surface a clear actionable error for node-redis when redis is not installed', async () => {
@@ -51,7 +49,7 @@ describe('resolveRedisDriver auto mode', () => {
 
   it('should select an available driver in auto mode', async () => {
     // Auto mode must deterministically pick an available driver rather than
-    // silently failing. ioredis is installed and exports the Redis class.
+    // silently failing. @oneunit/redis and ioredis are installed.
     const resolved = await resolveRedisDriver(makeConfig({ driver: 'auto' }));
     expect(['oneunit', 'ioredis']).toContain(resolved.driver);
     expect(typeof resolved.module.createStore).toBe('function');

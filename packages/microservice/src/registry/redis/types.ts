@@ -1,4 +1,4 @@
-import { RegistryStore, ServiceInstance, ServiceQuery } from '../registry.js';
+import { RegistryStore } from '../registry.js';
 
 export type RedisDriver = 'oneunit' | 'ioredis' | 'node-redis' | 'auto';
 
@@ -19,13 +19,18 @@ export interface RedisDriverModule {
   createStore(config: RedisAdapterConfig): Promise<RegistryStore>;
 }
 
+export interface RedisPipeline {
+  get(key: string): RedisPipeline;
+  exec(): Promise<Array<[Error | null, unknown]> | null>;
+}
+
 export interface RedisClientLike {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, mode?: string, ttlMs?: number): Promise<void>;
   del(key: string): Promise<void>;
-  keys(pattern: string): Promise<string[]>;
+  scan(cursor: string, ...args: unknown[]): Promise<[string, string[]]>;
   quit(): Promise<void>;
-  multi(): any;
+  multi(): RedisPipeline;
   connect?(): Promise<void>;
 }
 

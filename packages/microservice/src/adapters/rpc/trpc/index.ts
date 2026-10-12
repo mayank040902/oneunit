@@ -1,17 +1,19 @@
-import { BaseTransport, TransportConfig } from '@/transport/transport';
-import { TransportCapabilities, TransportHealth, RpcClient, RpcServer, RpcContext, RpcMethodHandler, TransportMetrics } from '@/core/capabilities';
+import { BaseTransport } from '@/transport/transport';
+import { TransportHealth, RpcClient, RpcServer, RpcMethodHandler } from '@/core/capabilities';
 
 export interface TrpcConfig {
   endpoint: string;
-  router: any;
+  router: unknown;
   cors?: boolean;
 }
+
+type TrpcServiceClient = Record<string, (input: unknown) => Promise<unknown>>;
 
 export class TrpcTransport extends BaseTransport implements RpcClient, RpcServer {
   private config: TrpcConfig;
   private methods: Map<string, Map<string, RpcMethodHandler>> = new Map();
-  private client: any;
-  private server: any;
+  private client: unknown = null;
+  private server: unknown = null;
 
   constructor(config: TrpcConfig) {
     super({
@@ -34,22 +36,22 @@ export class TrpcTransport extends BaseTransport implements RpcClient, RpcServer
     }
     const { initTRPC } = await import('@trpc/server');
     const { createHTTPServer } = await import('@trpc/server/adapters/standalone');
-    
+
     const t = initTRPC.create();
-    const router = t.router(this.config.router);
-    
+    const router = t.router(this.config.router as Parameters<typeof t.router>[0]);
+
     this.server = createHTTPServer({
       router,
       createContext: () => ({}),
     });
 
-    await this.server.listen(this.config.endpoint);
+    await (this.server as { listen: (port: string | number) => Promise<void> }).listen(this.config.endpoint as string | number);
     this.started = true;
   }
 
   async close(): Promise<void> {
     if (this.server) {
-      await this.server.close();
+      await (this.server as { close: () => Promise<void> }).close();
     }
     this.started = false;
   }
@@ -80,15 +82,20 @@ export class TrpcTransport extends BaseTransport implements RpcClient, RpcServer
       });
     }
 
-    const serviceClient = this.client[service];
+    const serviceClient = (this.client as Record<string, TrpcServiceClient>)[service];
     if (!serviceClient) {
       throw new Error(`Service ${service} not found`);
     }
 
-    return serviceClient[method](input);
+    const methodClient = serviceClient[method];
+    if (!methodClient) {
+      throw new Error(`Method ${method} not found on service ${service}`);
+    }
+
+    return methodClient(input) as Promise<TOutput>;
   }
 
-  async *stream<TInput, TOutput>(service: string, method: string, input: TInput): AsyncIterable<TOutput> {
+  stream<TInput, TOutput>(_service: string, _method: string, _input: TInput): AsyncIterable<TOutput> {
     throw new Error('Streaming not supported in tRPC transport');
   }
 }

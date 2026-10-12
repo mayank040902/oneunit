@@ -7,10 +7,10 @@ const mockIORedisClient = {
   get: vi.fn().mockResolvedValue(null),
   set: vi.fn().mockResolvedValue('OK'),
   del: vi.fn().mockResolvedValue(1),
-  keys: vi.fn().mockResolvedValue([]),
+  scan: vi.fn().mockResolvedValue(['0', []]),
+  eval: vi.fn().mockResolvedValue('renewed'),
   quit: vi.fn().mockResolvedValue('OK'),
   multi: vi.fn().mockReturnThis(),
-  get: vi.fn().mockResolvedValue(null),
   exec: vi.fn().mockResolvedValue([]),
   connect: vi.fn().mockResolvedValue(undefined),
 };
@@ -55,7 +55,8 @@ describe('IORedis Driver Adapter', () => {
     mockIORedisClient.get.mockResolvedValue(null);
     mockIORedisClient.set.mockResolvedValue('OK');
     mockIORedisClient.del.mockResolvedValue(1);
-    mockIORedisClient.keys.mockResolvedValue([]);
+    mockIORedisClient.scan.mockResolvedValue(['0', []]);
+    mockIORedisClient.eval.mockResolvedValue('renewed');
     mockIORedisClient.quit.mockResolvedValue('OK');
     mockIORedisClient.multi.mockReturnThis();
     mockIORedisClient.exec.mockResolvedValue([]);
@@ -134,7 +135,7 @@ describe('IORedis Driver Adapter', () => {
     const instance1 = makeInstance({ serviceId: 'svc-1', instanceId: 'inst-1' });
     const instance2 = makeInstance({ serviceId: 'svc-2', instanceId: 'inst-2' });
     
-    mockIORedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockIORedisClient.multi.mockReturnThis();
     mockIORedisClient.get.mockReturnThis();
     mockIORedisClient.exec.mockResolvedValueOnce([
@@ -145,7 +146,33 @@ describe('IORedis Driver Adapter', () => {
     const results = await store.query({});
 
     expect(results).toHaveLength(2);
-    expect(mockIORedisClient.keys).toHaveBeenCalledWith('microservice:registry:*');
+    expect(mockIORedisClient.scan).toHaveBeenCalledWith('0', 'MATCH', 'microservice:registry:*', 'COUNT', 100);
+  });
+
+  it('should page through SCAN cursors until the cursor returns to 0', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+
+    const instance1 = makeInstance({ serviceId: 'svc-1', instanceId: 'inst-1' });
+    const instance2 = makeInstance({ serviceId: 'svc-2', instanceId: 'inst-2' });
+
+    // First page returns a non-zero cursor; the
+    // collection loop must continue paging.
+    mockIORedisClient.scan
+      .mockResolvedValueOnce(['cursor-page-2', ['microservice:registry:lease-1']])
+      .mockResolvedValueOnce(['0', ['microservice:registry:lease-2']]);
+    mockIORedisClient.multi.mockReturnThis();
+    mockIORedisClient.get.mockReturnThis();
+    mockIORedisClient.exec.mockResolvedValueOnce([
+      [null, JSON.stringify(instance1)],
+      [null, JSON.stringify(instance2)],
+    ]);
+
+    const results = await store.query({});
+
+    expect(results).toHaveLength(2);
+    expect(mockIORedisClient.scan).toHaveBeenCalledTimes(2);
+    expect(mockIORedisClient.scan).toHaveBeenNthCalledWith(1, '0', 'MATCH', 'microservice:registry:*', 'COUNT', 100);
+    expect(mockIORedisClient.scan).toHaveBeenNthCalledWith(2, 'cursor-page-2', 'MATCH', 'microservice:registry:*', 'COUNT', 100);
   });
 
   it('should filter by serviceId in query', async () => {
@@ -154,7 +181,7 @@ describe('IORedis Driver Adapter', () => {
     const instance1 = makeInstance({ serviceId: 'svc-1', instanceId: 'inst-1' });
     const instance2 = makeInstance({ serviceId: 'svc-2', instanceId: 'inst-2' });
     
-    mockIORedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockIORedisClient.multi.mockReturnThis();
     mockIORedisClient.get.mockReturnThis();
     mockIORedisClient.exec.mockResolvedValueOnce([
@@ -174,7 +201,7 @@ describe('IORedis Driver Adapter', () => {
     const instance1 = makeInstance({ status: 'healthy' });
     const instance2 = makeInstance({ status: 'unhealthy' });
     
-    mockIORedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockIORedisClient.multi.mockReturnThis();
     mockIORedisClient.get.mockReturnThis();
     mockIORedisClient.exec.mockResolvedValueOnce([
@@ -194,7 +221,7 @@ describe('IORedis Driver Adapter', () => {
     const instance1 = makeInstance({ capabilities: ['test', 'rpc'] });
     const instance2 = makeInstance({ capabilities: ['test'] });
     
-    mockIORedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockIORedisClient.multi.mockReturnThis();
     mockIORedisClient.get.mockReturnThis();
     mockIORedisClient.exec.mockResolvedValueOnce([
@@ -214,7 +241,7 @@ describe('IORedis Driver Adapter', () => {
     const instance1 = makeInstance({ leaseExpiresAt: Date.now() + 60000 });
     const instance2 = makeInstance({ leaseExpiresAt: Date.now() - 1000 }); // expired
     
-    mockIORedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
     mockIORedisClient.multi.mockReturnThis();
     mockIORedisClient.get.mockReturnThis();
     mockIORedisClient.exec.mockResolvedValueOnce([
@@ -235,7 +262,7 @@ describe('IORedis Driver Adapter', () => {
       makeInstance({ instanceId: `inst-${i}` })
     );
     
-    mockIORedisClient.keys.mockResolvedValueOnce(instances.map((_, i) => `microservice:registry:lease-${i}`));
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', [instances.map((_, i) => `microservice:registry:lease-${i}`)]]);
     mockIORedisClient.multi.mockReturnThis();
     mockIORedisClient.get.mockReturnThis();
     mockIORedisClient.exec.mockResolvedValueOnce(
@@ -252,6 +279,105 @@ describe('IORedis Driver Adapter', () => {
     await store.expire('lease-1');
 
     expect(mockIORedisClient.del).toHaveBeenCalledWith('microservice:registry:lease-1');
+  });
+
+  it('should renew a lease atomically via server-side script', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+    mockIORedisClient.eval.mockResolvedValueOnce('renewed');
+
+    const result = await store.renew('lease-1', 30000);
+
+    expect(result).toBe('renewed');
+    expect(mockIORedisClient.eval).toHaveBeenCalledWith(
+      expect.stringContaining("redis.call('GET', KEYS[1])"),
+      1,
+      'microservice:registry:lease-1',
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+    );
+  });
+
+  it('should report not-found when renewing a missing lease', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+    mockIORedisClient.eval.mockResolvedValueOnce('not-found');
+
+    const result = await store.renew('missing-lease', 30000);
+
+    expect(result).toBe('not-found');
+  });
+
+  it('should report expired when renewing an expired lease', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+    mockIORedisClient.eval.mockResolvedValueOnce('expired');
+
+    const result = await store.renew('lease-1', 30000);
+
+    expect(result).toBe('expired');
+  });
+
+  it('should update health on the canonical record', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+
+    const instance = makeInstance();
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1']]);
+    mockIORedisClient.multi.mockReturnThis();
+    mockIORedisClient.get.mockReturnThis();
+    mockIORedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(true);
+    expect(mockIORedisClient.set).toHaveBeenCalledWith(
+      'microservice:registry:lease-1',
+      expect.stringContaining('"status":"degraded"'),
+      'EX',
+      expect.any(Number),
+    );
+  });
+
+  it('should return false when updating health for an unknown instance', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+
+    const instance = makeInstance({ serviceId: 'svc-other' });
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1']]);
+    mockIORedisClient.multi.mockReturnThis();
+    mockIORedisClient.get.mockReturnThis();
+    mockIORedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(false);
+    expect(mockIORedisClient.set).not.toHaveBeenCalled();
+  });
+
+  it('should return false when updating health with no keys', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', []]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(false);
+  });
+
+  it('should filter by serviceName in query', async () => {
+    store = await createRedisStore(makeConfig(), (await import('ioredis')).default);
+
+    const instance1 = makeInstance({ serviceName: 'service-a' });
+    const instance2 = makeInstance({ serviceName: 'service-b' });
+
+    mockIORedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1', 'microservice:registry:lease-2']]);
+    mockIORedisClient.multi.mockReturnThis();
+    mockIORedisClient.get.mockReturnThis();
+    mockIORedisClient.exec.mockResolvedValueOnce([
+      [null, JSON.stringify(instance1)],
+      [null, JSON.stringify(instance2)],
+    ]);
+
+    const results = await store.query({ serviceName: 'service-a' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].serviceName).toBe('service-a');
   });
 
   it('should handle sentinel configuration', async () => {

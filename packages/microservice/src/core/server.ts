@@ -1,4 +1,4 @@
-import { RpcServer, Transport } from './capabilities.js';
+import { RpcServer, Transport, RpcMethodHandler } from './capabilities.js';
 import { ServiceIdentity } from '../identity/service-identity.js';
 import { AuthorizationPolicy } from '../identity/authorization.js';
 
@@ -9,7 +9,7 @@ export interface ServerOptions {
 
 export class MicroserviceServer implements RpcServer {
   private transports: Map<string, Transport> = new Map();
-  private methods: Map<string, Map<string, (input: unknown, context: any) => Promise<unknown>>> = new Map();
+  private methods: Map<string, Map<string, RpcMethodHandler>> = new Map();
   private options: ServerOptions;
 
   constructor(options: ServerOptions) {
@@ -28,7 +28,7 @@ export class MicroserviceServer implements RpcServer {
     return this.transports.get(name);
   }
 
-  registerMethod(service: string, method: string, handler: (input: unknown, context: any) => Promise<unknown>): void {
+  registerMethod(service: string, method: string, handler: RpcMethodHandler): void {
     if (!this.methods.has(service)) {
       this.methods.set(service, new Map());
     }
@@ -39,7 +39,7 @@ export class MicroserviceServer implements RpcServer {
     this.methods.get(service)?.delete(method);
   }
 
-  getMethodHandler(service: string, method: string): ((input: unknown, context: any) => Promise<unknown>) | undefined {
+  getMethodHandler(service: string, method: string): RpcMethodHandler | undefined {
     return this.methods.get(service)?.get(method);
   }
 

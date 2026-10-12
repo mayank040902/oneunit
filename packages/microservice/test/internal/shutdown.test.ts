@@ -132,8 +132,11 @@ describe('ShutdownManager', () => {
     });
 
     const promise = manager.shutdown();
+    // Attach the rejection handler before advancing timers so the
+    // rejection is handled in the same event-loop turn it occurs.
+    const expectation = expect(promise).rejects.toThrow(/Shutdown timeout/);
     await vi.advanceTimersByTimeAsync(200);
-    await expect(promise).rejects.toThrow(/Shutdown timeout/);
+    await expectation;
     expect(error).toHaveBeenCalled();
   });
 });

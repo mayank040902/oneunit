@@ -1,4 +1,5 @@
-import { KafkaAdapterConfig } from './types.js';
+import { KafkaAdapterConfig, KafkaDriverAdapter } from './types.js';
+import { resolveKafkaDriver } from './driver-resolver.js';
 import { Logger } from '@/observability/logger.js';
 
 export interface KafkaClient {
@@ -18,7 +19,9 @@ let kafkaInitializationError: Error | null = null;
 
 export function isKafkaAvailable(): boolean {
   try {
-    require.resolve('@oneunit/kafka');
+    // Synchronous ESM resolution check. require.resolve is
+    // not part of the ESM module system and is not used here.
+    import.meta.resolve('@oneunit/kafka');
     return true;
   } catch {
     return false;
@@ -37,100 +40,51 @@ export async function createKafkaClient(config: KafkaClientConfig): Promise<Kafk
   const { config: kafkaConfig, logger } = config;
 
   try {
-    const oneUnitKafkaModule = await import('@oneunit/kafka');
-    
-    if (!oneUnitKafkaModule.createKafkaClient && !oneUnitKafkaModule.KafkaClient) {
-      throw new Error('@oneunit/kafka does not export required APIs (createKafkaClient, KafkaClient)');
-    }
-
-    const client = await oneUnitKafkaModule.createKafkaClient({
-      brokers: kafkaConfig.brokers,
-      clientId: kafkaConfig.clientId,
-      ...(kafkaConfig.security && { ssl: kafkaConfig.security.ssl, sasl: kafkaConfig.security.sasl }),
-    }, { logger });
-
-    const producer = await client.getProducer(kafkaConfig.producer) as any;
-
-    const consumers: Map<string, any> = new Map();
+    // Honor the configured driver explicitly: "oneunit" selects
+    // @oneunit/kafka, "kafkajs" selects KafkaJS (whether or not
+    // @oneunit/kafka is installed), "auto" tries @oneunit/kafka
+    // first and falls back to KafkaJS only when the module is
+    // absent. An explicit selection never silently switches
+    // drivers after a selection or connection failure.
+    const resolved = await resolveKafkaDriver(kafkaConfig, logger);
+    const adapter: KafkaDriverAdapter = await resolved.module.createAdapter(
+      kafkaConfig,
+      logger,
+    );
+    await adapter.start();
 
     cachedKafkaClient = {
       async publish(topic: string, message: unknown, options?: { key?: string; headers?: Record<string, string> }) {
-        const fullTopic = `${kafkaConfig.topics.prefix}.${topic}`;
-        await producer.send(fullTopic, message, {
-          send: {
-            key: options?.key,
-            headers: options?.headers,
-          },
-        });
+        await adapter.publish(topic, message, options);
       },
 
       async subscribe(topic: string, handler: (message: unknown, context: { topic: string; partition: number; offset: string; headers?: Record<string, string> }) => Promise<void>, options?: { groupId?: string; autoAck?: boolean }) {
-        const fullTopic = `${kafkaConfig.topics.prefix}.${topic}`;
-        const groupId = options?.groupId ?? `${kafkaConfig.clientId}-${topic}`;
-
-        const consumer = await client.consume(fullTopic, async (payload: any) => {
-          try {
-            await handler(payload.message.value, {
-              topic: payload.topic,
-              partition: payload.partition,
-              offset: payload.offset,
-              headers: payload.message.headers,
-            });
-
-            if (!options?.autoAck && payload.ack) {
-              await payload.ack();
-            }
-          } catch (err) {
-            logger?.error(`Error processing message from ${fullTopic}`, { error: err });
-            if (!options?.autoAck && payload.nak) {
-              await payload.nak();
-            }
-          }
-        }, { groupId });
-
-        consumers.set(topic, consumer);
+        await adapter.subscribe(topic, handler, options);
       },
 
       async unsubscribe(topic: string): Promise<void> {
-        const consumer = consumers.get(topic);
-        if (consumer) {
-          await consumer.disconnect();
-          consumers.delete(topic);
-        }
+        await adapter.unsubscribe(topic);
       },
 
       async disconnect(): Promise<void> {
-        await client.disconnect();
-        for (const consumer of consumers.values()) {
-          await consumer.disconnect();
-        }
-        consumers.clear();
+        await adapter.close();
         cachedKafkaClient = null;
       },
     };
 
-    logger?.info('Kafka client initialized with @oneunit/kafka', { clientId: kafkaConfig.clientId });
+    logger?.info('Kafka client initialized', {
+      clientId: kafkaConfig.clientId,
+      driver: resolved.driver,
+    });
     return cachedKafkaClient;
 
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    
-    if (
-      msg.includes('Cannot find module') ||
-      msg.includes('Failed to load url') ||
-      msg.includes('Cannot find package')
-    ) {
-      kafkaInitializationError = new Error(
-        '@oneunit/kafka is not installed. ' +
-        'To use Kafka messaging, either:\n' +
-        '  1. Install @oneunit/kafka: pnpm add @oneunit/kafka\n' +
-        '  2. Or configure a KafkaJS driver by setting driver: "kafkajs" in your Kafka adapter config and installing kafkajs: pnpm add kafkajs\n' +
-        '  3. Or provide your own Kafka infrastructure and client implementation.'
-      );
-    } else {
-      kafkaInitializationError = err instanceof Error ? err : new Error(String(err));
-    }
-    
+    // Driver resolution surfaces actionable dependency errors
+    // ("@oneunit/kafka is not installed. Install it or use
+    // driver: \"kafkajs\""); connection failures propagate the
+    // driver's own error. Cache and rethrow without switching
+    // drivers.
+    kafkaInitializationError = err instanceof Error ? err : new Error(String(err));
     throw kafkaInitializationError;
   }
 }

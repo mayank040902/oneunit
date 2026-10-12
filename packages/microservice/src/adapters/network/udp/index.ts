@@ -1,5 +1,6 @@
-import { BaseTransport, TransportConfig } from '@/transport/transport';
-import { TransportCapabilities, TransportHealth, DatagramTransport } from '@/core/capabilities';
+import { BaseTransport } from '@/transport/transport';
+import { TransportHealth, DatagramTransport } from '@/core/capabilities';
+import type * as dgram from 'dgram';
 
 export interface UdpConfig {
   host: string;
@@ -19,7 +20,7 @@ export interface UdpPacket {
 
 export class UdpTransport extends BaseTransport implements DatagramTransport {
   private config: UdpConfig;
-  private socket: any;
+  private socket: dgram.Socket | null = null;
   private messageHandler: ((data: Uint8Array, source: { address: string; port: number }) => void) | null = null;
 
   constructor(config: UdpConfig) {
@@ -42,7 +43,7 @@ export class UdpTransport extends BaseTransport implements DatagramTransport {
     
     this.socket = createSocket({ type: 'udp4', reuseAddr: true });
     
-    this.socket.on('message', (msg: Buffer, rinfo: any) => {
+    this.socket.on('message', (msg: Buffer, rinfo: dgram.RemoteInfo) => {
       if (this.messageHandler) {
         this.messageHandler(new Uint8Array(msg), { address: rinfo.address, port: rinfo.port });
       }
@@ -52,10 +53,9 @@ export class UdpTransport extends BaseTransport implements DatagramTransport {
       console.error('UDP socket error:', err);
     });
 
-    await new Promise<void>((resolve, reject) => {
-      this.socket.bind(this.config.port, this.config.host, (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
+    await new Promise<void>((resolve, _reject) => {
+      this.socket!.bind(this.config.port, this.config.host, () => {
+        resolve();
       });
     });
 
@@ -66,14 +66,14 @@ export class UdpTransport extends BaseTransport implements DatagramTransport {
     }
   }
 
-  async close(): Promise<void> {
+async close(): Promise<void> {
     if (this.config.multicast) {
-      this.socket.dropMembership(this.config.multicast.address);
+      this.socket?.dropMembership(this.config.multicast.address);
     }
-    
+
     if (this.socket) {
       await new Promise<void>((resolve) => {
-        this.socket.close(resolve);
+        this.socket!.close(resolve);
       });
     }
   }
@@ -96,7 +96,7 @@ export class UdpTransport extends BaseTransport implements DatagramTransport {
     }
 
     return new Promise((resolve, reject) => {
-      this.socket.send(data, port, target, (err: Error | null) => {
+      this.socket!.send(data, port, target, (err: Error | null) => {
         if (err) reject(err);
         else resolve();
       });

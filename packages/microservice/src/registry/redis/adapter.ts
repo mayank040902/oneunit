@@ -1,5 +1,5 @@
-import { RegistryStore, ServiceInstance, ServiceQuery } from '../registry.js';
-import { RedisAdapterConfig, RedisDriver, ResolvedRedisDriver, RedisDriverModule } from './types.js';
+import { RegistryStore, ServiceInstance, ServiceQuery, LeaseRenewalResult } from '../registry.js';
+import { RedisAdapterConfig, RedisDriver } from './types.js';
 import { resolveRedisDriver } from './driver-resolver.js';
 
 export class RedisRegistryStore implements RegistryStore {
@@ -20,6 +20,10 @@ export class RedisRegistryStore implements RegistryStore {
   async disconnect(): Promise<void> {
     // The driver adapters don't need explicit disconnect if they handle it internally
     this.driverAdapter = null;
+  }
+
+  isConnected(): boolean {
+    return this.driverAdapter !== null;
   }
 
   async set(leaseId: string, instance: ServiceInstance): Promise<void> {
@@ -55,6 +59,25 @@ export class RedisRegistryStore implements RegistryStore {
       throw new Error('Redis store not connected');
     }
     return this.driverAdapter.expire(leaseId);
+  }
+
+  async renew(leaseId: string, ttlMs: number): Promise<LeaseRenewalResult> {
+    if (!this.driverAdapter) {
+      throw new Error('Redis store not connected');
+    }
+    return this.driverAdapter.renew(leaseId, ttlMs);
+  }
+
+  async updateInstanceHealth(
+    serviceId: string,
+    instanceId: string,
+    status: ServiceInstance['status'],
+    timestamp: number,
+  ): Promise<boolean> {
+    if (!this.driverAdapter) {
+      throw new Error('Redis store not connected');
+    }
+    return this.driverAdapter.updateInstanceHealth(serviceId, instanceId, status, timestamp);
   }
 
   getResolvedDriver(): RedisDriver {

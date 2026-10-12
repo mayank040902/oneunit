@@ -1,5 +1,5 @@
 import { BaseTransport } from '@/transport/transport';
-import { TransportCapabilities, TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
+import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
 import { KafkaAdapterConfig, KafkaDriver, KafkaDriverAdapter } from './types.js';
 import { resolveKafkaDriver } from './driver-resolver.js';
 import { Logger } from '@/observability/logger.js';

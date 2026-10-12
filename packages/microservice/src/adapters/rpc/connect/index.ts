@@ -1,17 +1,19 @@
-import { BaseTransport, TransportConfig } from '@/transport/transport';
-import { TransportCapabilities, TransportHealth, RpcClient, RpcServer, RpcContext, RpcMethodHandler } from '@/core/capabilities';
+import { BaseTransport } from '@/transport/transport';
+import { TransportHealth, RpcClient, RpcServer, RpcMethodHandler } from '@/core/capabilities';
+import type { ServiceType } from '@bufbuild/protobuf';
+import type { Transport } from '@connectrpc/connect';
 
 export interface ConnectConfig {
   endpoint: string;
-  transport: any;
-  services: Map<string, any>;
-  interceptors?: any[];
+  transport: unknown;
+  services: Map<string, unknown>;
+  interceptors?: unknown[];
 }
 
 export class ConnectTransport extends BaseTransport implements RpcClient, RpcServer {
   private config: ConnectConfig;
-  private client: any;
-  private server: any;
+  private client: unknown = null;
+  private server: unknown = null;
   private methodHandlers: Map<string, Map<string, RpcMethodHandler>> = new Map();
 
   constructor(config: ConnectConfig) {
@@ -31,21 +33,25 @@ export class ConnectTransport extends BaseTransport implements RpcClient, RpcSer
 
   async start(): Promise<void> {
     const { createPromiseClient } = await import('@connectrpc/connect');
-    const { createGrpcTransport } = await import('@connectrpc/connect-node');
-    
+
     // Convert Map to proper service definitions for createPromiseClient
-    const serviceDefinitions: any = {};
+    const serviceDefinitions: Record<string, unknown> = {};
     for (const [name, def] of this.config.services) {
       serviceDefinitions[name] = def;
     }
-    
-    this.client = createPromiseClient(serviceDefinitions, this.config.transport);
+
+    // The service map is built at runtime from caller-supplied definitions;
+    // cast to the connect ServiceType so createPromiseClient can accept it.
+    this.client = createPromiseClient(
+      serviceDefinitions as unknown as ServiceType,
+      this.config.transport as Transport,
+    );
     this.started = true;
   }
 
   async close(): Promise<void> {
     if (this.client) {
-      await this.client.close();
+      await (this.client as { close(): Promise<void> }).close();
     }
     this.started = false;
   }
@@ -73,12 +79,12 @@ export class ConnectTransport extends BaseTransport implements RpcClient, RpcSer
       throw new Error('Connect client not initialized');
     }
 
-    const serviceClient = this.client[service];
+    const serviceClient = (this.client as Record<string, (input: unknown) => unknown>)[service];
     if (!serviceClient) {
       throw new Error(`Service ${service} not found`);
     }
 
-    return serviceClient[method](input);
+    return serviceClient(input) as TOutput;
   }
 
   async *stream<TInput, TOutput>(service: string, method: string, input: TInput): AsyncIterable<TOutput> {
@@ -86,13 +92,13 @@ export class ConnectTransport extends BaseTransport implements RpcClient, RpcSer
       throw new Error('Connect client not initialized');
     }
 
-    const serviceClient = this.client[service];
+    const serviceClient = (this.client as Record<string, (input: unknown) => AsyncIterable<unknown>>)[service];
     if (!serviceClient) {
       throw new Error(`Service ${service} not found`);
     }
 
-    const stream = serviceClient[method](input);
-    
+    const stream = serviceClient(input);
+
     for await (const response of stream) {
       yield response as TOutput;
     }

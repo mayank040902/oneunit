@@ -1,5 +1,5 @@
-import { BaseTransport, TransportConfig } from '@/transport/transport';
-import { TransportCapabilities, TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
+import { BaseTransport } from '@/transport/transport';
+import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
 import { connect, NatsConnection, Subscription } from 'nats';
 import { NatsAdapterConfig } from '@/config/schema.js';
 
@@ -13,7 +13,10 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
     super({
       name: 'nats',
       capabilities: {
-        requestResponse: true,
+        // Core NATS offers pub/sub and JetStream offers durable,
+        // ordered delivery. Request/reply is not implemented by
+        // this transport, so the capability is not advertised.
+        requestResponse: false,
         streaming: false,
         publishSubscribe: true,
         durableDelivery: config.jetstream?.enabled ?? false,

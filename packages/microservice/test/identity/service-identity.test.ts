@@ -83,15 +83,103 @@ describe('ServiceIdentity', () => {
       certificate: 'cert-data',
       privateKey: 'key-data',
       caCert: 'ca-data',
-      issuedAt: Date.now(),
+      issuedAt: 1234567890,
       issuer: 'test-issuer',
     };
     const config = { ...validConfig, credentials };
     const identity = createServiceIdentity(config);
 
+    expect(identity.credentials).toEqual(credentials);
+    expect(identity.credentials.type).toBe('x509');
+    expect(identity.credentials.issuedAt).toBe(1234567890);
+    expect(identity.credentials.issuer).toBe('test-issuer');
+  });
+
+  it('should preserve jwt credentials', () => {
+    const credentials: ServiceCredentials = {
+      type: 'jwt',
+      jwtSecret: 'secret',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    };
+    const identity = createServiceIdentity({ ...validConfig, credentials });
+
+    expect(identity.credentials.type).toBe('jwt');
+    expect(identity.credentials.jwtSecret).toBe('secret');
+  });
+
+  it('should preserve api-key credentials', () => {
+    const credentials: ServiceCredentials = {
+      type: 'api-key',
+      apiKey: 'key',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    };
+    const identity = createServiceIdentity({ ...validConfig, credentials });
+
+    expect(identity.credentials.type).toBe('api-key');
+    expect(identity.credentials.apiKey).toBe('key');
+  });
+
+  it('should preserve mtls credentials', () => {
+    const credentials: ServiceCredentials = {
+      type: 'mtls',
+      certificate: 'cert-data',
+      privateKey: 'key-data',
+      caCert: 'ca-data',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    };
+    const identity = createServiceIdentity({ ...validConfig, credentials });
+
+    expect(identity.credentials.type).toBe('mtls');
     expect(identity.credentials.certificate).toBe('cert-data');
     expect(identity.credentials.privateKey).toBe('key-data');
-    expect(identity.credentials.caCert).toBe('ca-data');
+  });
+
+  it('should reject jwt credentials without jwtSecret', () => {
+    const credentials: ServiceCredentials = {
+      type: 'jwt',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    };
+    expect(() => createServiceIdentity({ ...validConfig, credentials })).toThrow(
+      'jwt credentials require jwtSecret',
+    );
+  });
+
+  it('should reject api-key credentials without apiKey', () => {
+    const credentials: ServiceCredentials = {
+      type: 'api-key',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    };
+    expect(() => createServiceIdentity({ ...validConfig, credentials })).toThrow(
+      'api-key credentials require apiKey',
+    );
+  });
+
+  it('should reject x509 credentials without privateKey', () => {
+    const credentials: ServiceCredentials = {
+      type: 'x509',
+      certificate: 'cert-data',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    };
+    expect(() => createServiceIdentity({ ...validConfig, credentials })).toThrow(
+      'x509 credentials require both certificate and privateKey',
+    );
+  });
+
+  it('should reject unsupported credential types', () => {
+    const credentials = {
+      type: 'kerberos',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    } as unknown as ServiceCredentials;
+    expect(() => createServiceIdentity({ ...validConfig, credentials })).toThrow(
+      'Unsupported credential type: kerberos',
+    );
   });
 });
 
@@ -140,9 +228,6 @@ describe('createIdentityFromCredentials', () => {
 });
 
 describe('ServiceIdentity sign/verify', () => {
-  // These tests require actual crypto keys to work properly
-  // We test the error cases that don't require valid keys
-
   it('should throw for unsupported credential type in sign', async () => {
     const identity = createIdentityFromCredentials('svc', 'service', {
       type: 'api-key',
@@ -151,7 +236,7 @@ describe('ServiceIdentity sign/verify', () => {
     });
 
     await expect(identity.sign(new Uint8Array([1, 2, 3]))).rejects.toThrow(
-      'Signing not supported for this credential type'
+      'Signing not supported for credential type: api-key'
     );
   });
 
@@ -163,31 +248,75 @@ describe('ServiceIdentity sign/verify', () => {
     });
 
     await expect(identity.verify(new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6]))).rejects.toThrow(
-      'Verification not supported for this credential type'
+      'Verification not supported for credential type: api-key'
     );
   });
 
-  it('should throw when x509 credentials missing private key for sign', async () => {
+  it('should throw when x509 credentials missing private key', () => {
+    expect(() =>
+      createIdentityFromCredentials('svc', 'service', {
+        type: 'x509',
+        certificate: 'cert-data',
+        issuedAt: Date.now(),
+      })
+    ).toThrow('x509 credentials require both certificate and privateKey');
+  });
+
+  it('should throw when x509 credentials missing certificate', () => {
+    expect(() =>
+      createIdentityFromCredentials('svc', 'service', {
+        type: 'x509',
+        privateKey: 'key-data',
+        issuedAt: Date.now(),
+      })
+    ).toThrow('x509 credentials require both certificate and privateKey');
+  });
+
+  it('should sign and verify with PEM-encoded key material', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: 'SHA-256',
+      },
+      true,
+      ['sign', 'verify'],
+    );
+    const pkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
+    const spki = await crypto.subtle.exportKey('spki', keyPair.publicKey);
+    const toPem = (der: ArrayBuffer, label: string): string => {
+      const base64 = Buffer.from(der).toString('base64');
+      const lines = base64.replace(/(.{64})/g, '$1\n').trim();
+      return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----\n`;
+    };
+
     const identity = createIdentityFromCredentials('svc', 'service', {
       type: 'x509',
-      certificate: 'cert-data',
+      certificate: toPem(spki, 'PUBLIC KEY'),
+      privateKey: toPem(pkcs8, 'PRIVATE KEY'),
       issuedAt: Date.now(),
+      issuer: 'test-issuer',
+    });
+
+    const data = new Uint8Array([1, 2, 3]);
+    const signature = await identity.sign(data);
+
+    expect(await identity.verify(data, signature)).toBe(true);
+    expect(await identity.verify(new Uint8Array([4, 5, 6]), signature)).toBe(false);
+  });
+
+  it('should reject PEM material with no Base64 payload', async () => {
+    const identity = createIdentityFromCredentials('svc', 'service', {
+      type: 'x509',
+      certificate: '-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----\n',
+      privateKey: '-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n',
+      issuedAt: Date.now(),
+      issuer: 'test-issuer',
     });
 
     await expect(identity.sign(new Uint8Array([1, 2, 3]))).rejects.toThrow(
-      'Signing not supported for this credential type'
-    );
-  });
-
-  it('should throw when x509 credentials missing certificate for verify', async () => {
-    const identity = createIdentityFromCredentials('svc', 'service', {
-      type: 'x509',
-      privateKey: 'key-data',
-      issuedAt: Date.now(),
-    });
-
-    await expect(identity.verify(new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6]))).rejects.toThrow(
-      'Verification not supported for this credential type'
+      'PEM key material contains no Base64 payload'
     );
   });
 });

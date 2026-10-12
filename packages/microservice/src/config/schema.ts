@@ -230,6 +230,16 @@ export const MicroserviceConfigSchema = z.object({
 
 export type MicroserviceConfig = z.infer<typeof MicroserviceConfigSchema>;
 export type ServiceConfig = z.infer<typeof ServiceConfigSchema>;
+
+// Recursive partial for programmatic configuration overrides:
+// every field at every depth is optional. Arrays are replaced
+// wholesale (never merged element-wise), so they keep their
+// full element type.
+export type DeepPartial<T> = T extends (infer U)[]
+  ? U[]
+  : T extends object
+  ? { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
 export type TlsConfig = z.infer<typeof TlsConfigSchema>;
 export type RedisConfig = z.infer<typeof RedisConfigSchema>;
 export type ServiceCredentials = z.infer<typeof ServiceCredentialsSchema>;

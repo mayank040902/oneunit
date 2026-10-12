@@ -27,6 +27,93 @@ describe('Lifecycle Manager', () => {
     });
   });
 
+  describe('degraded state', () => {
+    it('should transition from running to degraded when a transport reports unhealthy', async () => {
+      vi.useFakeTimers();
+      const transport = createMockTransport('tcp');
+      transport.healthCheck = vi.fn().mockResolvedValue({
+        status: 'unhealthy',
+        checkedAt: Date.now(),
+      });
+      lifecycle.registerTransport(transport);
+
+      await lifecycle.start();
+      expect(lifecycle.getState()).toBe('running');
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(lifecycle.getState()).toBe('degraded');
+    });
+
+    it('should return from degraded to running when every transport recovers', async () => {
+      vi.useFakeTimers();
+      let status: 'healthy' | 'unhealthy' = 'unhealthy';
+      const transport = createMockTransport('tcp');
+      transport.healthCheck = vi.fn().mockImplementation(async () => ({
+        status,
+        checkedAt: Date.now(),
+      }));
+      lifecycle.registerTransport(transport);
+
+      await lifecycle.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(lifecycle.getState()).toBe('degraded');
+
+      status = 'healthy';
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(lifecycle.getState()).toBe('running');
+    });
+
+    it('should emit the degraded event with the unhealthy transport names', async () => {
+      vi.useFakeTimers();
+      const degradedNames: string[][] = [];
+      lifecycle.on('degraded', (names: string[]) => degradedNames.push(names));
+      const transport = createMockTransport('tcp');
+      transport.healthCheck = vi.fn().mockResolvedValue({
+        status: 'unhealthy',
+        checkedAt: Date.now(),
+      });
+      lifecycle.registerTransport(transport);
+
+      await lifecycle.start();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(degradedNames).toEqual([['tcp']]);
+    });
+
+    it('should stop from the degraded state', async () => {
+      vi.useFakeTimers();
+      const transport = createMockTransport('tcp');
+      transport.healthCheck = vi.fn().mockResolvedValue({
+        status: 'unhealthy',
+        checkedAt: Date.now(),
+      });
+      lifecycle.registerTransport(transport);
+
+      await lifecycle.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(lifecycle.getState()).toBe('degraded');
+
+      await lifecycle.stop();
+      expect(lifecycle.getState()).toBe('stopped');
+    });
+
+    it('should reject start from the degraded state', async () => {
+      vi.useFakeTimers();
+      const transport = createMockTransport('tcp');
+      transport.healthCheck = vi.fn().mockResolvedValue({
+        status: 'unhealthy',
+        checkedAt: Date.now(),
+      });
+      lifecycle.registerTransport(transport);
+
+      await lifecycle.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(lifecycle.getState()).toBe('degraded');
+
+      await expect(lifecycle.start()).rejects.toThrow('Cannot start from state: degraded');
+    });
+  });
+
   describe('registerTransport', () => {
     it('should register a transport', () => {
       const mockTransport = createMockTransport('test-transport');

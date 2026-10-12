@@ -48,8 +48,9 @@ export class ShutdownManager extends EventEmitter {
     this.shuttingDown = true;
     this.emit('shutdown:started', reason);
 
+    let timeoutId: NodeJS.Timeout | undefined;
     const timeout = new Promise<void>((_, reject) => {
-      setTimeout(() => reject(new Error('Shutdown timeout')), this.options.timeoutMs);
+      timeoutId = setTimeout(() => reject(new Error('Shutdown timeout')), this.options.timeoutMs);
     });
 
     try {
@@ -57,11 +58,16 @@ export class ShutdownManager extends EventEmitter {
         this.executeHooks(),
         timeout,
       ]);
-      
+
+      // Hooks finished before the deadline: cancel the
+      // timeout timer so it cannot fire (and reject) after
+      // a successful shutdown.
+      clearTimeout(timeoutId);
       this.shuttingDown = false;
       this.completed = true;
       this.emit('shutdown:completed');
     } catch (err) {
+      clearTimeout(timeoutId);
       this.shuttingDown = false;
       this.emit('shutdown:error', err);
       throw err;
@@ -113,27 +119,32 @@ export async function gracefulShutdown(
   const startTime = Date.now();
   const errors: Error[] = [];
 
-  for (const service of services) {
-    const elapsed = Date.now() - startTime;
-    const remaining = timeout - elapsed;
-    
-    if (remaining <= 0) {
-      throw new Error('Shutdown timeout exceeded');
-    }
-
-    try {
-      await Promise.race([
-        service.stop(),
-        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Timeout')), remaining)),
-      ]);
-    } catch (err) {
-      if ((err as Error).message === 'Timeout') {
+    for (const service of services) {
+      const elapsed = Date.now() - startTime;
+      const remaining = timeout - elapsed;
+      
+      if (remaining <= 0) {
         throw new Error('Shutdown timeout exceeded');
       }
-      errors.push(err as Error);
-      console.error(`Failed to stop ${service.name}:`, err);
+
+      let timeoutId: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          service.stop(),
+          new Promise<void>((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('Timeout')), remaining);
+          }),
+        ]);
+        clearTimeout(timeoutId);
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if ((err as Error).message === 'Timeout') {
+          throw new Error('Shutdown timeout exceeded');
+        }
+        errors.push(err as Error);
+        console.error(`Failed to stop ${service.name}:`, err);
+      }
     }
-  }
 
   if (errors.length > 0) {
     throw new Error(`Shutdown completed with errors: ${errors.map(e => e.message).join(', ')}`);

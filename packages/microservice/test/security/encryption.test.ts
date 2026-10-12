@@ -7,6 +7,7 @@ import {
   EncryptionService,
   deriveKey,
 } from '../../src/security/encryption.js';
+import { createMessageEnvelope } from '../../src/contracts/messages.js';
 
 describe('SUPPORTED_ALGORITHMS', () => {
   it('should define aes-256-gcm algorithm', () => {
@@ -50,13 +51,71 @@ describe('EncryptionService', () => {
   });
 
   it('should create service with chacha20-poly1305', async () => {
-    // Note: Web Crypto doesn't support importing raw keys for ChaCha20-Poly1305
-    // So we just verify the algorithm name is correct
-    const algo = SUPPORTED_ALGORITHMS['chacha20-poly1305'];
-    expect(algo.name).toBe('CHACHA20-POLY1305');
-    expect(algo.keyLength).toBe(32);
-    expect(algo.nonceLength).toBe(12);
-    expect(algo.tagLength).toBe(16);
+    // ChaCha20-Poly1305 is implemented with
+    // node:crypto because Web Crypto cannot
+    // import raw ChaCha20-Poly1305 keys.
+    const key = await EncryptionService.generateKey('chacha20-poly1305');
+    const service = await EncryptionService.create('chacha20-poly1305', key);
+
+    expect(service).toBeInstanceOf(EncryptionService);
+    expect(service.getAlgorithm().name).toBe('CHACHA20-POLY1305');
+    expect(service.getKey()).toBeNull();
+  });
+
+  it('should encrypt and decrypt with chacha20-poly1305', async () => {
+    const key = await EncryptionService.generateKey('chacha20-poly1305');
+    const service = await EncryptionService.create('chacha20-poly1305', key);
+    const plaintext = new TextEncoder().encode('ChaCha20 secret');
+
+    const result = await service.encrypt(plaintext);
+    expect(result.nonce.length).toBe(12);
+    expect(result.tag.length).toBe(16);
+
+    const decrypted = await service.decrypt(result);
+    expect(new TextDecoder().decode(decrypted)).toBe('ChaCha20 secret');
+  });
+
+  it('should encrypt and decrypt with chacha20-poly1305 and associated data', async () => {
+    const key = await EncryptionService.generateKey('chacha20-poly1305');
+    const service = await EncryptionService.create('chacha20-poly1305', key);
+    const plaintext = new TextEncoder().encode('ChaCha20 secret');
+    const associatedData = new TextEncoder().encode('header');
+
+    const result = await service.encrypt(plaintext, associatedData);
+    const decrypted = await service.decrypt({ ...result, associatedData });
+    expect(new TextDecoder().decode(decrypted)).toBe('ChaCha20 secret');
+
+    // Associated data is authenticated: a
+    // different value must fail decryption.
+    await expect(
+      service.decrypt({ ...result, associatedData: new TextEncoder().encode('other') }),
+    ).rejects.toThrow();
+  });
+
+  it('should reject chacha20-poly1305 with a wrong key length', async () => {
+    const wrongKey = new Uint8Array(16);
+    await expect(EncryptionService.create('chacha20-poly1305', wrongKey)).rejects.toThrow(
+      /requires a 256-bit/,
+    );
+  });
+
+  it('should fail decryption with modified ciphertext (chacha20-poly1305)', async () => {
+    const key = await EncryptionService.generateKey('chacha20-poly1305');
+    const service = await EncryptionService.create('chacha20-poly1305', key);
+    const result = await service.encrypt(new TextEncoder().encode('Test'));
+
+    result.ciphertext[0] ^= 0xff;
+    await expect(service.decrypt(result)).rejects.toThrow();
+  });
+
+  it('should fail decryption with a wrong key (chacha20-poly1305)', async () => {
+    const key = await EncryptionService.generateKey('chacha20-poly1305');
+    const service = await EncryptionService.create('chacha20-poly1305', key);
+    const wrongKey = await EncryptionService.generateKey('chacha20-poly1305');
+    const wrongService = await EncryptionService.create('chacha20-poly1305', wrongKey);
+    const result = await service.encrypt(new TextEncoder().encode('Test'));
+
+    await expect(wrongService.decrypt(result)).rejects.toThrow();
   });
 
   it('should throw for unsupported algorithm', async () => {
@@ -210,11 +269,14 @@ describe('deriveKey', () => {
     expect(key.length).toBe(32);
   });
 
-  it('should reject creating EncryptionService with chacha20-poly1305 when runtime does not support it', async () => {
-    const key = await EncryptionService.generateKey('aes-256-gcm'); // 32 bytes
-    
-    // ChaCha20-Poly1305 is not supported in current Node.js Web Crypto
-    await expect(EncryptionService.create('chacha20-poly1305', key)).rejects.toThrow();
+  it('should create EncryptionService with chacha20-poly1305 via node:crypto', async () => {
+    const key = await EncryptionService.generateKey('chacha20-poly1305');
+
+    // Web Crypto cannot import raw ChaCha20-Poly1305
+    // keys, so the implementation uses node:crypto;
+    // creation must succeed with a 32-byte key.
+    const service = await EncryptionService.create('chacha20-poly1305', key);
+    expect(service).toBeInstanceOf(EncryptionService);
   });
 });
 
@@ -379,13 +441,9 @@ describe('EncryptionService - Adversarial and Edge Case Tests', () => {
 
   it('should fail create with invalid key length for chacha20-poly1305', async () => {
     const wrongKey = new Uint8Array(16);
-    // Note: This tests the API but actual behavior depends on Web Crypto implementation
-    try {
-      await EncryptionService.create('chacha20-poly1305', wrongKey);
-      // If it doesn't throw, that's also valid behavior - just document it
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-    }
+    await expect(EncryptionService.create('chacha20-poly1305', wrongKey)).rejects.toThrow(
+      /requires a 256-bit/,
+    );
   });
 
   it('should generate cryptographically random nonces', async () => {
@@ -665,5 +723,125 @@ describe('EncryptionService - Adversarial and Edge Case Tests', () => {
         expect(errorMessage).not.toContain('secret plaintext');
       }
     });
+  });
+});
+
+describe('EncryptedEnvelope production', () => {
+  it('should encrypt and decrypt a message envelope (aes-256-gcm)', async () => {
+    const key = await EncryptionService.generateKey('aes-256-gcm');
+    const service = await EncryptionService.create('aes-256-gcm', key);
+
+    const envelope = createMessageEnvelope(
+      'test.event',
+      { value: 42 },
+      { serviceId: 'svc-1', instanceId: 'inst-1' },
+      { correlationId: 'corr-1' }
+    );
+
+    const encrypted = await service.encryptEnvelope(envelope, { keyId: 'key-1' });
+
+    expect(encrypted.version).toBe(1);
+    expect(encrypted.cipherSuite).toBe('aes-256-gcm');
+    expect(encrypted.keyId).toBe('key-1');
+    expect(encrypted.nonce).toHaveLength(12);
+    expect(encrypted.tag).toHaveLength(16);
+
+    const decrypted = await service.decryptEnvelope(encrypted);
+    expect(decrypted.messageId).toBe(envelope.messageId);
+    expect(decrypted.type).toBe('test.event');
+    expect(decrypted.source).toEqual(envelope.source);
+    expect(decrypted.correlationId).toBe('corr-1');
+    expect(decrypted.payload).toEqual({ value: 42 });
+  });
+
+  it('should encrypt and decrypt a message envelope (chacha20-poly1305)', async () => {
+    const key = await EncryptionService.generateKey('chacha20-poly1305');
+    const service = await EncryptionService.create('chacha20-poly1305', key);
+
+    const envelope = createMessageEnvelope(
+      'test.event',
+      { value: 7 },
+      { serviceId: 'svc-1', instanceId: 'inst-1' }
+    );
+
+    const encrypted = await service.encryptEnvelope(envelope);
+    expect(encrypted.cipherSuite).toBe('chacha20-poly1305');
+
+    const decrypted = await service.decryptEnvelope(encrypted);
+    expect(decrypted.payload).toEqual({ value: 7 });
+  });
+
+  it('should reject an envelope with tampered authenticated metadata', async () => {
+    const key = await EncryptionService.generateKey('aes-256-gcm');
+    const service = await EncryptionService.create('aes-256-gcm', key);
+
+    const envelope = createMessageEnvelope(
+      'test.event',
+      { value: 42 },
+      { serviceId: 'svc-1', instanceId: 'inst-1' }
+    );
+    const encrypted = await service.encryptEnvelope(envelope);
+
+    // Rewrite the destination inside the authenticated
+    // metadata without re-encrypting: the AEAD tag
+    // must fail to verify.
+    const tamperedMetadata = JSON.parse(
+      new TextDecoder().decode(encrypted.authenticatedMetadata)
+    );
+    tamperedMetadata.destination = { serviceId: 'evil' };
+    encrypted.authenticatedMetadata = new TextEncoder().encode(
+      JSON.stringify(tamperedMetadata)
+    );
+
+    await expect(service.decryptEnvelope(encrypted)).rejects.toThrow();
+  });
+
+  it('should reject an envelope whose ciphertext was modified', async () => {
+    const key = await EncryptionService.generateKey('aes-256-gcm');
+    const service = await EncryptionService.create('aes-256-gcm', key);
+
+    const envelope = createMessageEnvelope(
+      'test.event',
+      { value: 42 },
+      { serviceId: 'svc-1', instanceId: 'inst-1' }
+    );
+    const encrypted = await service.encryptEnvelope(envelope);
+    encrypted.ciphertext[0] ^= 0xff;
+
+    await expect(service.decryptEnvelope(encrypted)).rejects.toThrow();
+  });
+
+  it('should reject an envelope produced with a different cipher suite', async () => {
+    const key = await EncryptionService.generateKey('aes-256-gcm');
+    const service = await EncryptionService.create('aes-256-gcm', key);
+
+    const envelope = createMessageEnvelope(
+      'test.event',
+      { value: 42 },
+      { serviceId: 'svc-1', instanceId: 'inst-1' }
+    );
+    const encrypted = await service.encryptEnvelope(envelope);
+    encrypted.cipherSuite = 'chacha20-poly1305';
+
+    await expect(service.decryptEnvelope(encrypted)).rejects.toThrow(
+      /Cipher suite mismatch/,
+    );
+  });
+
+  it('should reject an envelope with an unsupported version', async () => {
+    const key = await EncryptionService.generateKey('aes-256-gcm');
+    const service = await EncryptionService.create('aes-256-gcm', key);
+
+    const envelope = createMessageEnvelope(
+      'test.event',
+      { value: 42 },
+      { serviceId: 'svc-1', instanceId: 'inst-1' }
+    );
+    const encrypted = await service.encryptEnvelope(envelope);
+    encrypted.version = 2 as never;
+
+    await expect(service.decryptEnvelope(encrypted)).rejects.toThrow(
+      /Unsupported encrypted envelope version/,
+    );
   });
 });

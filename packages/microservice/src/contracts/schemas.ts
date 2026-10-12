@@ -17,6 +17,7 @@ export const ServiceRegistrationSchema = z.object({
 
 export const ServiceInstanceSchema = z.object({
   serviceId: z.string().uuid(),
+  serviceName: z.string().min(1).optional(),
   instanceId: z.string().uuid(),
   endpoints: z.array(z.object({
     protocol: z.enum(['tcp', 'udp', 'trpc', 'grpc', 'connect', 'kafka', 'nats']),

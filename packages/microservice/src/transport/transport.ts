@@ -1,4 +1,4 @@
-import { TransportCapabilities, TransportHealth, Transport, TransportMetrics } from '../core/capabilities.js';
+import { TransportCapabilities, TransportHealth, Transport } from '../core/capabilities.js';
 
 export interface TransportConfig {
   name: string;

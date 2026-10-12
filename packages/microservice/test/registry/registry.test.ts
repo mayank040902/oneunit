@@ -398,12 +398,12 @@ describe('ServiceRegistryImpl', () => {
       details: { reason: 'high latency' },
     });
 
-    // Health update creates a new entry with key serviceId:instanceId
-    // Query returns both original and updated entries; find the degraded one
+    // Health updates modify the canonical registered record in place:
+    // exactly one instance remains, with the updated status.
     const instances = await registry.discover({ serviceId: 'svc-1' });
-    const degradedInstance = instances.find(i => i.status === 'degraded');
-    expect(degradedInstance).toBeDefined();
-    expect(degradedInstance!.status).toBe('degraded');
+    expect(instances).toHaveLength(1);
+    expect(instances[0].status).toBe('degraded');
+    expect(instances[0].instanceId).toBe('inst-1');
   });
 });
 

@@ -45,7 +45,7 @@ export class NoopTracer implements Tracer {
     };
   }
   
-  endSpan(span: Span): void {}
+  endSpan(_span: Span): void {}
   
   getCurrentSpan(): Span | null {
     return null;

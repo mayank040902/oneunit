@@ -78,7 +78,7 @@ export class FrameworkLogger implements Logger {
     this.base = { ...base };
   }
 
-  private write(_level: LogLevel, message: string, context: LoggerContext): void {
+  private write(_level: LogLevel, _message: string, _context: LoggerContext): void {
     // Framework-owned no-op sink. Applications inject a real logger via
     // createLogger({ logger }) or by supplying their own Logger instance.
   }

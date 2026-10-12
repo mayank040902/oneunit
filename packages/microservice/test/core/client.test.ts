@@ -3,6 +3,7 @@ import { MicroserviceClient, createClient, ClientOptions, RetryPolicy } from '..
 import { Transport, TransportCapabilities, RpcClient, MessagePublisher, MessageSubscriber } from '../../src/core/capabilities.js';
 import { ServiceIdentity } from '../../src/identity/service-identity.js';
 import { AuthorizationPolicy } from '../../src/identity/authorization.js';
+import { createMicroserviceError } from '../../src/core/errors.js';
 
 function makeServiceIdentity(): ServiceIdentity {
   return {
@@ -391,5 +392,164 @@ describe('MicroserviceClient with multiple transports', () => {
   it('should use messaging transport for unsubscribe', async () => {
     await client.unsubscribe('topic');
     expect(msgTransport.unsubscribe).toHaveBeenCalled();
+  });
+});
+
+describe('MicroserviceClient runtime capability verification', () => {
+  it('should reject call when the transport advertises requestResponse but lacks call/stream', async () => {
+    const client = new MicroserviceClient(makeClientOptions());
+    // A transport that self-reports the capability
+    // without implementing the RPC interface.
+    const fakeRpc = makeMockTransport('fake-rpc', { requestResponse: true });
+    client.registerTransport(fakeRpc);
+
+    await expect(client.call('svc', 'method', { x: 1 })).rejects.toThrow(
+      /Transport fake-rpc advertises requestResponse but does not implement RPC call\/stream/,
+    );
+    expect(() => client.stream('svc', 'method', { x: 1 })).toThrow(
+      /does not implement RPC call\/stream/,
+    );
+  });
+
+  it('should reject publish when the transport advertises publishSubscribe but lacks publish', async () => {
+    const client = new MicroserviceClient(makeClientOptions());
+    const fakePublisher = makeMockTransport('fake-pub', { publishSubscribe: true });
+    client.registerTransport(fakePublisher);
+
+    await expect(client.publish('topic', { x: 1 })).rejects.toThrow(
+      /Transport fake-pub advertises publishSubscribe but does not implement publish/,
+    );
+  });
+
+  it('should reject subscribe when the transport advertises publishSubscribe but lacks subscribe/unsubscribe', async () => {
+    const client = new MicroserviceClient(makeClientOptions());
+    const publisherOnly: Transport & MessagePublisher = {
+      ...makeMockTransport('pub-only', { publishSubscribe: true }),
+      publish: vi.fn().mockResolvedValue(undefined),
+    };
+    client.registerTransport(publisherOnly);
+
+    await expect(client.subscribe('topic', vi.fn())).rejects.toThrow(
+      /does not implement subscribe\/unsubscribe/,
+    );
+    await expect(client.unsubscribe('topic')).rejects.toThrow(
+      /does not implement subscribe\/unsubscribe/,
+    );
+  });
+});
+
+describe('RetryPolicy execution', () => {
+  function makeRetryingClient(
+    call: ReturnType<typeof vi.fn>,
+    retryPolicy: RetryPolicy = {
+      maxRetries: 3,
+      baseDelayMs: 1,
+      maxDelayMs: 5,
+      jitter: false,
+      retryableCategories: ['UNAVAILABLE', 'DEADLINE_EXCEEDED'],
+    }
+  ): MicroserviceClient {
+    const client = createClient(makeClientOptions({ retryPolicy }));
+    const transport = makeRpcTransport('rpc');
+    (transport as any).call = call;
+    client.registerTransport(transport);
+    return client;
+  }
+
+  it('should retry a retryable failure and return the eventual result', async () => {
+    const call = vi.fn()
+      .mockRejectedValueOnce(
+        createMicroserviceError('SERVICE_UNAVAILABLE', 'down', 'UNAVAILABLE', true)
+      )
+      .mockResolvedValueOnce({ success: true });
+
+    const result = await makeRetryingClient(call).call('svc', 'method', { x: 1 });
+
+    expect(result).toEqual({ success: true });
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it('should give up after maxRetries attempts', async () => {
+    const call = vi.fn().mockRejectedValue(
+      createMicroserviceError('SERVICE_UNAVAILABLE', 'down', 'UNAVAILABLE', true)
+    );
+
+    await expect(
+      makeRetryingClient(call).call('svc', 'method', { x: 1 })
+    ).rejects.toThrow('down');
+
+    // 1 initial attempt + 3 retries.
+    expect(call).toHaveBeenCalledTimes(4);
+  });
+
+  it('should fail fast on a non-retryable category', async () => {
+    const call = vi.fn().mockRejectedValue(
+      createMicroserviceError('INVALID_ARGUMENT', 'bad input', 'VALIDATION', false)
+    );
+
+    await expect(
+      makeRetryingClient(call).call('svc', 'method', { x: 1 })
+    ).rejects.toThrow('bad input');
+
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should fail fast on errors outside the normalized error model', async () => {
+    const call = vi.fn().mockRejectedValue(new Error('boom'));
+
+    await expect(
+      makeRetryingClient(call).call('svc', 'method', { x: 1 })
+    ).rejects.toThrow('boom');
+
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should apply exponential backoff capped at maxDelayMs', async () => {
+    vi.useFakeTimers();
+    const call = vi.fn().mockRejectedValue(
+      createMicroserviceError('SERVICE_UNAVAILABLE', 'down', 'UNAVAILABLE', true)
+    );
+    const client = makeRetryingClient(call, {
+      maxRetries: 2,
+      baseDelayMs: 100,
+      maxDelayMs: 150,
+      jitter: false,
+      retryableCategories: ['UNAVAILABLE'],
+    });
+
+    const pending = client.call('svc', 'method', { x: 1 });
+    // Attach the rejection handler before advancing
+    // timers so the eventual failure is not observed
+    // as an unhandled rejection.
+    const assertion = expect(pending).rejects.toThrow('down');
+
+    // Attempt 1 fails; first backoff is 100ms.
+    await vi.advanceTimersByTimeAsync(99);
+    expect(call).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(call).toHaveBeenCalledTimes(2);
+
+    // Attempt 2 fails; second backoff would be 200ms but
+    // is capped at maxDelayMs (150ms).
+    await vi.advanceTimersByTimeAsync(149);
+    expect(call).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(call).toHaveBeenCalledTimes(3);
+
+    await assertion;
+    vi.useRealTimers();
+  });
+
+  it('should not retry publishes: messaging delivery is non-idempotent', async () => {
+    const client = createClient(makeClientOptions());
+    const transport = makeMockTransport('kafka', { publishSubscribe: true });
+    const publish = vi.fn().mockRejectedValue(
+      createMicroserviceError('SERVICE_UNAVAILABLE', 'down', 'UNAVAILABLE', true)
+    );
+    (transport as any).publish = publish;
+    client.registerTransport(transport);
+
+    await expect(client.publish('topic', { x: 1 })).rejects.toThrow('down');
+    expect(publish).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,4 +1,4 @@
-import { ServiceLease, ServiceInstance } from './registry.js';
+import { ServiceLease, ServiceInstance, ServiceRegistration } from './registry.js';
 import { ServiceRegistry } from './registry.js';
 
 export interface LeaseManager {
@@ -17,7 +17,16 @@ export class DefaultLeaseManager implements LeaseManager {
   }
 
   async acquire(registration: { serviceId: string; instanceId: string; endpoints: ServiceInstance['endpoints']; capabilities: string[]; metadata: Record<string, unknown> }): Promise<ServiceLease> {
-    return this.registry.register(registration as any);
+    const serviceRegistration: ServiceRegistration = {
+      serviceId: registration.serviceId,
+      serviceName: registration.serviceId, // Use serviceId as serviceName fallback
+      instanceId: registration.instanceId,
+      endpoints: registration.endpoints,
+      capabilities: registration.capabilities,
+      metadata: registration.metadata,
+      registeredAt: Date.now(),
+    };
+    return this.registry.register(serviceRegistration);
   }
 
   async renew(leaseId: string): Promise<void> {

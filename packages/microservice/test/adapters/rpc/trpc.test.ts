@@ -109,11 +109,6 @@ describe('TrpcTransport before start', () => {
     await expect(transport.call('svc', 'create', { x: 1 })).rejects.toThrow();
   });
 
-  it('should reject stream when iterated', async () => {
-    const transport = new TrpcTransport(makeConfig());
-    const gen = transport.stream('svc', 'create', { x: 1 });
-    await expect(gen.next()).rejects.toThrow(/not supported/);
-  });
 
   it('should report unhealthy before start', async () => {
     const transport = new TrpcTransport(makeConfig());
@@ -189,7 +184,7 @@ describe('TrpcTransport stream', () => {
   it('should throw when streaming not supported', async () => {
     const transport = new TrpcTransport(makeConfig());
     const gen = transport.stream('svc', 'create', { x: 1 });
-    await expect(gen.next()).rejects.toThrow(/not supported/);
+    await expect(gen.next()).rejects.toThrow('Streaming not supported in tRPC transport');
   });
 });
 

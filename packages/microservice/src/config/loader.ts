@@ -1,6 +1,59 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { MicroserviceConfigSchema, MicroserviceConfig } from './schema.js';
+import { MicroserviceConfigSchema, MicroserviceConfig, DeepPartial } from './schema.js';
+
+// Objects under these keys hold security-sensitive credential
+// material; overrides replace them wholesale instead of merging,
+// so an override cannot produce a hybrid credential block.
+const REPLACE_ONLY_KEYS = new Set(['credentials']);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function deepMerge(base: unknown, overrides: unknown, key?: string): unknown {
+  if (Array.isArray(overrides) || !isPlainObject(overrides)) {
+    return overrides;
+  }
+  if (!isPlainObject(base) || (key !== undefined && REPLACE_ONLY_KEYS.has(key))) {
+    return overrides;
+  }
+  const merged: Record<string, unknown> = { ...base };
+  for (const [field, value] of Object.entries(overrides)) {
+    merged[field] = deepMerge(base[field], value, field);
+  }
+  return merged;
+}
+
+function deepFreeze(value: unknown): void {
+  if (Array.isArray(value) || isPlainObject(value)) {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(item);
+    }
+    Object.freeze(value);
+  }
+}
+
+// Deterministic precedence: schema defaults < environment <
+// config file < programmatic overrides. Plain objects deep-merge
+// field by field; arrays, scalars, and security-sensitive objects
+// (credentials) are replaced. The merged result is validated once
+// more with the full schema and returned frozen.
+export function mergeConfig(
+  base: MicroserviceConfig,
+  overrides: DeepPartial<MicroserviceConfig> = {},
+): MicroserviceConfig {
+  const merged = deepMerge(base, overrides) as MicroserviceConfig;
+  const result = MicroserviceConfigSchema.safeParse(merged);
+
+  if (!result.success) {
+    const errors = result.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join('\n');
+    throw new Error(`Invalid configuration after merge:\n${errors}`);
+  }
+
+  deepFreeze(result.data);
+  return result.data;
+}
 
 export function loadConfig(configPath?: string): MicroserviceConfig {
   const path = configPath || process.env['CONFIG_PATH'] || resolve(process.cwd(), 'config.json');
@@ -124,7 +177,6 @@ export function buildConfigFromEnv(): Record<string, unknown> {
   };
 }
 
-export function createDefaultConfig(overrides: Partial<MicroserviceConfig> = {}): MicroserviceConfig {
-  const defaults = loadConfig();
-  return MicroserviceConfigSchema.parse({ ...defaults, ...overrides });
+export function createDefaultConfig(overrides: DeepPartial<MicroserviceConfig> = {}): MicroserviceConfig {
+  return mergeConfig(loadConfig(), overrides);
 }

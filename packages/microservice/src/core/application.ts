@@ -1,13 +1,12 @@
 import { LifecycleManager } from './lifecycle.js';
-import { Transport, MessagePublisher, MessageSubscriber } from './capabilities.js';
-import { MicroserviceConfig, ServiceConfig, KafkaAdapterConfig } from '../config/schema.js';
-import { loadConfig } from '../config/loader.js';
+import { Transport } from './capabilities.js';
+import { MicroserviceConfig, ServiceConfig, KafkaAdapterConfig, DeepPartial } from '../config/schema.js';
+import { loadConfig, mergeConfig } from '../config/loader.js';
 import { ServiceRegistry, createRegistry } from '../registry/registry.js';
 import { ServiceIdentity, createServiceIdentity } from '../identity/service-identity.js';
 import { AuthorizationPolicy, createAuthorizationPolicy } from '../identity/authorization.js';
-import { Logger, createLogger, createChildLogger } from '../observability/logger.js';
-import { createKafkaTransport } from '../adapters/messaging/kafka/adapter.js';
-import { createKafkaClient, type KafkaClient } from '../adapters/messaging/kafka/kafka-client.js';
+import { Logger, createLogger } from '../observability/logger.js';
+import { createKafkaClient } from '../adapters/messaging/kafka/kafka-client.js';
 
 export interface KafkaMessaging {
   publish(topic: string, message: unknown, options?: { key?: string; headers?: Record<string, string> }): Promise<void>;
@@ -35,7 +34,7 @@ export interface MicroserviceApp {
 
 export interface CreateAppOptions {
   configPath?: string;
-  config?: Partial<MicroserviceConfig>;
+  config?: DeepPartial<MicroserviceConfig>;
   logger?: Logger;
 }
 
@@ -87,13 +86,15 @@ async function createKafkaMessaging(logger: Logger, kafkaConfig: KafkaAdapterCon
 }
 
 export async function createMicroservice(options: CreateAppOptions = {}): Promise<MicroserviceApp> {
-  const config = options.configPath 
+  const loaded = options.configPath
     ? loadConfig(options.configPath)
     : loadConfig();
 
-  if (options.config) {
-    Object.assign(config, options.config);
-  }
+  // Deep-merge programmatic overrides over the loaded configuration
+  // and validate the final effective configuration with the full
+  // schema before any runtime resource is constructed. Invalid
+  // configuration fails here, before sockets or clients open.
+  const config = mergeConfig(loaded, options.config ?? {});
 
   const identity = createServiceIdentity(config.service);
   const registry = createRegistry(config.registry);

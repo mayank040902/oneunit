@@ -393,7 +393,7 @@ describe('GrpcTransport call', () => {
 
   it('should create client lazily on first call', async () => {
     await transport.start();
-    expect((transport as any).client).toBeUndefined();
+    expect((transport as any).client).toBeNull();
     await transport.call('TestService', 'Unary', { x: 1 });
     expect((transport as any).client).toBeDefined();
   });

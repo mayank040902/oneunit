@@ -1,7 +1,6 @@
 import { EncryptionService } from './encryption.js';
 import { KeyExchangeService } from './key-exchange.js';
 import { Ed25519SigningService } from './signing.js';
-import { ServiceIdentity } from '../identity/service-identity.js';
 
 export interface KeyProvider {
   getEncryptionKey(serviceId: string): Promise<EncryptionService | null>;
@@ -11,6 +10,19 @@ export interface KeyProvider {
   rotateKeys(serviceId: string): Promise<ServiceKeys>;
   revokeKeys(serviceId: string): Promise<void>;
   getKeyVersion(serviceId: string): Promise<number>;
+  // Retention hooks, used by the key rotation
+  // manager to enforce the rotation policy.
+  setRetentionPolicy?(policy: KeyRetentionPolicy): void;
+  getEncryptionKeys?(serviceId: string): Promise<EncryptionService[]>;
+}
+
+// Bounded key-version retention: retired key
+// versions remain usable for decryption during
+// the grace period after rotation, and at most
+// `maxVersions` retired versions are kept.
+export interface KeyRetentionPolicy {
+  gracePeriodMs: number;
+  maxVersions: number;
 }
 
 export interface ServiceKeys {
@@ -24,16 +36,48 @@ export interface ServiceKeys {
 
 export class MemoryKeyProvider implements KeyProvider {
   private store: Map<string, ServiceKeys> = new Map();
+  private history: Map<string, ServiceKeys[]> = new Map();
+  private retention: KeyRetentionPolicy = {
+    gracePeriodMs: 60 * 60 * 1000,
+    maxVersions: 3,
+  };
   private defaultTtlMs: number;
 
-  constructor(defaultTtlMs = 24 * 60 * 60 * 1000) {
+  constructor(defaultTtlMs = 24 * 60 * 60 * 1000, retention?: Partial<KeyRetentionPolicy>) {
     this.defaultTtlMs = defaultTtlMs;
+    if (retention) {
+      this.retention = { ...this.retention, ...retention };
+    }
+  }
+
+  setRetentionPolicy(policy: KeyRetentionPolicy): void {
+    this.retention = { ...policy };
   }
 
   async getEncryptionKey(serviceId: string): Promise<EncryptionService | null> {
     const keys = this.store.get(serviceId);
     if (!keys || this.isExpired(keys)) return null;
     return EncryptionService.create('aes-256-gcm', keys.encryptionKey);
+  }
+
+  // Current key first, then retained versions
+  // still inside their grace period, so peers
+  // can decrypt messages sent with a recently
+  // rotated key.
+  async getEncryptionKeys(serviceId: string): Promise<EncryptionService[]> {
+    const keys: EncryptionService[] = [];
+
+    const current = this.store.get(serviceId);
+    if (current && !this.isExpired(current)) {
+      keys.push(await EncryptionService.create('aes-256-gcm', current.encryptionKey));
+    }
+
+    for (const retired of this.history.get(serviceId) ?? []) {
+      if (this.isExpired(retired)) continue;
+      keys.push(await EncryptionService.create('aes-256-gcm', retired.encryptionKey));
+    }
+
+    return keys;
   }
 
   async getSigningKey(serviceId: string): Promise<Ed25519SigningService | null> {
@@ -72,12 +116,29 @@ export class MemoryKeyProvider implements KeyProvider {
       version,
     };
 
+    // Retire the previous version: keep it
+    // usable for decryption during the grace
+    // period, bounded by maxVersions.
+    if (oldKeys) {
+      const retired: ServiceKeys = {
+        ...oldKeys,
+        expiresAt: issuedAt + this.retention.gracePeriodMs,
+      };
+      const versions = this.history.get(serviceId) ?? [];
+      versions.unshift(retired);
+      while (versions.length > this.retention.maxVersions) {
+        versions.pop();
+      }
+      this.history.set(serviceId, versions);
+    }
+
     await this.storeKeys(serviceId, newKeys);
     return newKeys;
   }
 
   async revokeKeys(serviceId: string): Promise<void> {
     this.store.delete(serviceId);
+    this.history.delete(serviceId);
   }
 
   async getKeyVersion(serviceId: string): Promise<number> {
@@ -139,6 +200,25 @@ export class CompositeKeyProvider implements KeyProvider {
 
   async revokeKeys(serviceId: string): Promise<void> {
     await Promise.all(this.providers.map(p => p.revokeKeys(serviceId)));
+  }
+
+  setRetentionPolicy(policy: KeyRetentionPolicy): void {
+    for (const provider of this.providers) {
+      provider.setRetentionPolicy?.(policy);
+    }
+  }
+
+  async getEncryptionKeys(serviceId: string): Promise<EncryptionService[]> {
+    const keys: EncryptionService[] = [];
+    for (const provider of this.providers) {
+      if (provider.getEncryptionKeys) {
+        keys.push(...(await provider.getEncryptionKeys(serviceId)));
+      } else {
+        const key = await provider.getEncryptionKey(serviceId);
+        if (key) keys.push(key);
+      }
+    }
+    return keys;
   }
 
   async getKeyVersion(serviceId: string): Promise<number> {

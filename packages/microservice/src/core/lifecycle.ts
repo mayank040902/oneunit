@@ -1,8 +1,12 @@
 import { EventEmitter } from 'events';
 import { Transport, TransportHealth } from './capabilities.js';
-import { MicroserviceError, createMicroserviceError, ErrorCategory } from './errors.js';
+import { createMicroserviceError } from './errors.js';
 
-export type LifecycleState = 'initialized' | 'starting' | 'running' | 'stopping' | 'stopped' | 'failed';
+// 'degraded' is a sub-state of 'running': the instance
+// is up but at least one registered transport reports
+// 'unhealthy'. It re-enters 'running' automatically
+// when every transport reports healthy again.
+export type LifecycleState = 'initialized' | 'starting' | 'running' | 'degraded' | 'stopping' | 'stopped' | 'failed';
 
 export interface LifecycleHooks {
   onStart?: () => Promise<void>;
@@ -62,7 +66,6 @@ export class LifecycleManager extends EventEmitter {
         'CONFIGURATION'
       );
     }
-
     this.state = 'starting';
     this.emit('stateChange', this.state);
 
@@ -71,8 +74,12 @@ export class LifecycleManager extends EventEmitter {
         await this.hooks.onStart();
       }
 
+      // Startup order is registration order.
+      // Transport dependencies are not a
+      // supported public concept, so no
+      // dependency sorting is performed.
       const transportNames = Array.from(this.transports.keys());
-      this.startOrder = this.sortByDependencies(transportNames);
+      this.startOrder = transportNames;
 
       for (const name of this.startOrder) {
         const transport = this.transports.get(name)!;
@@ -103,6 +110,8 @@ export class LifecycleManager extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    // 'degraded' is a running sub-state: shutdown
+    // proceeds exactly as from 'running'.
     if (this.state === 'stopping' || this.state === 'stopped') {
       return;
     }
@@ -185,56 +194,32 @@ export class LifecycleManager extends EventEmitter {
     return results;
   }
 
-  private sortByDependencies(names: string[]): string[] {
-    const order: string[] = [];
-    const visited = new Set<string>();
-    const visiting = new Set<string>();
-
-    const visit = (name: string) => {
-      if (visiting.has(name)) {
-        return;
-      }
-      if (visited.has(name)) {
-        return;
-      }
-      visiting.add(name);
-      
-      const transport = this.transports.get(name);
-      if (transport?.capabilities) {
-        if (transport.capabilities.bidirectional) {
-          // Bidirectional transports (like TCP) might need to start first
-        }
-      }
-      
-      visiting.delete(name);
-      visited.add(name);
-      order.push(name);
-    };
-
-    for (const name of names) {
-      visit(name);
-    }
-
-    return order;
-  }
-
   private startHealthChecks(): void {
     this.healthCheckInterval = setInterval(async () => {
       try {
         const health = await this.healthCheck();
         this.emit('healthCheck', health);
         
-        const unhealthy = Object.entries(health).filter(
-          ([, h]) => h.status === 'unhealthy'
-        );
-        
-        if (unhealthy.length > 0) {
-          this.emit('degraded', unhealthy.map(([name]) => name));
+      const unhealthy = Object.entries(health).filter(
+        ([, h]) => h.status === 'unhealthy'
+      );
+      
+      if (unhealthy.length > 0) {
+        this.emit('degraded', unhealthy.map(([name]) => name));
+        if (this.state === 'running') {
+          this.state = 'degraded';
+          this.emit('stateChange', this.state);
         }
-      } catch (err) {
-        this.emit('healthCheckError', err);
+      } else if (this.state === 'degraded') {
+        // Every transport recovered: leave the
+        // degraded sub-state back into 'running'.
+        this.state = 'running';
+        this.emit('stateChange', this.state);
       }
-    }, this.healthCheckIntervalMs);
+    } catch (err) {
+      this.emit('healthCheckError', err);
+    }
+  }, this.healthCheckIntervalMs);
   }
 
   private stopHealthChecks(): void {

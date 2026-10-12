@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RedisRegistryStore } from '../../src/registry/redis/adapter.js';
 import { RedisAdapterConfig } from '../../src/registry/redis/types.js';
-import { RegistryStore, ServiceInstance } from '../../src/registry/registry.js';
+import { RegistryStore, ServiceInstance, LeaseRenewalResult } from '../../src/registry/registry.js';
 
 function makeConfig(overrides: Partial<RedisAdapterConfig> = {}): RedisAdapterConfig {
   return {
@@ -40,6 +40,8 @@ function createFakeStore(): RegistryStore {
     expire: vi.fn(async (leaseId: string) => {
       store.delete(leaseId);
     }),
+    renew: vi.fn(async (): Promise<LeaseRenewalResult> => 'renewed'),
+    updateInstanceHealth: vi.fn(async (): Promise<boolean> => true),
   };
 }
 
@@ -83,6 +85,16 @@ describe('RedisRegistryStore before connect', () => {
   it('should reject expire when not connected', async () => {
     await expect(store.expire('lease-1')).rejects.toThrow(/Redis store not connected/);
   });
+
+  it('should reject renew when not connected', async () => {
+    await expect(store.renew('lease-1', 30000)).rejects.toThrow(/Redis store not connected/);
+  });
+
+  it('should reject updateInstanceHealth when not connected', async () => {
+    await expect(
+      store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now()),
+    ).rejects.toThrow(/Redis store not connected/);
+  });
 });
 
 describe('RedisRegistryStore delegation', () => {
@@ -123,6 +135,20 @@ describe('RedisRegistryStore delegation', () => {
   it('should delegate expire to the driver adapter', async () => {
     await store.expire('lease-1');
     expect(fakeStore.expire).toHaveBeenCalledWith('lease-1');
+  });
+
+  it('should delegate renew to the driver adapter', async () => {
+    (fakeStore.renew as any).mockResolvedValueOnce('renewed' as LeaseRenewalResult);
+    const result = await store.renew('lease-1', 30000);
+    expect(result).toBe('renewed');
+    expect(fakeStore.renew).toHaveBeenCalledWith('lease-1', 30000);
+  });
+
+  it('should delegate updateInstanceHealth to the driver adapter', async () => {
+    (fakeStore.updateInstanceHealth as any).mockResolvedValueOnce(true);
+    const result = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+    expect(result).toBe(true);
+    expect(fakeStore.updateInstanceHealth).toHaveBeenCalledWith('svc-1', 'inst-1', 'degraded', expect.any(Number));
   });
 
   it('should report the resolved driver', () => {

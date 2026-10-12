@@ -7,10 +7,10 @@ const mockNodeRedisClient = {
   get: vi.fn().mockResolvedValue(null),
   set: vi.fn().mockResolvedValue('OK'),
   del: vi.fn().mockResolvedValue(1),
-  keys: vi.fn().mockResolvedValue([]),
+  scan: vi.fn().mockResolvedValue({ cursor: 0, keys: [] }),
+  eval: vi.fn().mockResolvedValue('renewed'),
   quit: vi.fn().mockResolvedValue('OK'),
   multi: vi.fn().mockReturnThis(),
-  get: vi.fn().mockResolvedValue(null),
   exec: vi.fn().mockResolvedValue([]),
   connect: vi.fn().mockResolvedValue(undefined),
 };
@@ -54,7 +54,8 @@ describe('Node-Redis Driver Adapter', () => {
     mockNodeRedisClient.get.mockResolvedValue(null);
     mockNodeRedisClient.set.mockResolvedValue('OK');
     mockNodeRedisClient.del.mockResolvedValue(1);
-    mockNodeRedisClient.keys.mockResolvedValue([]);
+    mockNodeRedisClient.scan.mockResolvedValue({ cursor: 0, keys: [] });
+    mockNodeRedisClient.eval.mockResolvedValue('renewed');
     mockNodeRedisClient.quit.mockResolvedValue('OK');
     mockNodeRedisClient.multi.mockReturnThis();
     mockNodeRedisClient.exec.mockResolvedValue([]);
@@ -131,7 +132,7 @@ describe('Node-Redis Driver Adapter', () => {
     const instance1 = makeInstance({ serviceId: 'svc-1', instanceId: 'inst-1' });
     const instance2 = makeInstance({ serviceId: 'svc-2', instanceId: 'inst-2' });
     
-    mockNodeRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1', 'microservice:registry:lease-2'] });
     mockNodeRedisClient.multi.mockReturnThis();
     mockNodeRedisClient.get.mockReturnThis();
     mockNodeRedisClient.exec.mockResolvedValueOnce([
@@ -142,7 +143,7 @@ describe('Node-Redis Driver Adapter', () => {
     const results = await store.query({});
 
     expect(results).toHaveLength(2);
-    expect(mockNodeRedisClient.keys).toHaveBeenCalledWith('microservice:registry:*');
+    expect(mockNodeRedisClient.scan).toHaveBeenCalledWith(0, { MATCH: 'microservice:registry:*', COUNT: 100 });
   });
 
   it('should filter by serviceId in query', async () => {
@@ -151,7 +152,7 @@ describe('Node-Redis Driver Adapter', () => {
     const instance1 = makeInstance({ serviceId: 'svc-1', instanceId: 'inst-1' });
     const instance2 = makeInstance({ serviceId: 'svc-2', instanceId: 'inst-2' });
     
-    mockNodeRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1', 'microservice:registry:lease-2'] });
     mockNodeRedisClient.multi.mockReturnThis();
     mockNodeRedisClient.get.mockReturnThis();
     mockNodeRedisClient.exec.mockResolvedValueOnce([
@@ -171,7 +172,7 @@ describe('Node-Redis Driver Adapter', () => {
     const instance1 = makeInstance({ status: 'healthy' });
     const instance2 = makeInstance({ status: 'unhealthy' });
     
-    mockNodeRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1', 'microservice:registry:lease-2'] });
     mockNodeRedisClient.multi.mockReturnThis();
     mockNodeRedisClient.get.mockReturnThis();
     mockNodeRedisClient.exec.mockResolvedValueOnce([
@@ -191,7 +192,7 @@ describe('Node-Redis Driver Adapter', () => {
     const instance1 = makeInstance({ capabilities: ['test', 'rpc'] });
     const instance2 = makeInstance({ capabilities: ['test'] });
     
-    mockNodeRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1', 'microservice:registry:lease-2'] });
     mockNodeRedisClient.multi.mockReturnThis();
     mockNodeRedisClient.get.mockReturnThis();
     mockNodeRedisClient.exec.mockResolvedValueOnce([
@@ -211,7 +212,7 @@ describe('Node-Redis Driver Adapter', () => {
     const instance1 = makeInstance({ leaseExpiresAt: Date.now() + 60000 });
     const instance2 = makeInstance({ leaseExpiresAt: Date.now() - 1000 }); // expired
     
-    mockNodeRedisClient.keys.mockResolvedValueOnce(['microservice:registry:lease-1', 'microservice:registry:lease-2']);
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1', 'microservice:registry:lease-2'] });
     mockNodeRedisClient.multi.mockReturnThis();
     mockNodeRedisClient.get.mockReturnThis();
     mockNodeRedisClient.exec.mockResolvedValueOnce([
@@ -232,7 +233,7 @@ describe('Node-Redis Driver Adapter', () => {
       makeInstance({ instanceId: `inst-${i}` })
     );
     
-    mockNodeRedisClient.keys.mockResolvedValueOnce(instances.map((_, i) => `microservice:registry:lease-${i}`));
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: instances.map((_, i) => `microservice:registry:lease-${i}`) });
     mockNodeRedisClient.multi.mockReturnThis();
     mockNodeRedisClient.get.mockReturnThis();
     mockNodeRedisClient.exec.mockResolvedValueOnce(
@@ -249,6 +250,103 @@ describe('Node-Redis Driver Adapter', () => {
     await store.expire('lease-1');
 
     expect(mockNodeRedisClient.del).toHaveBeenCalledWith('microservice:registry:lease-1');
+  });
+
+  it('should renew a lease atomically via server-side script', async () => {
+    store = await createRedisStore(makeConfig(), (await import('redis')) as any);
+    mockNodeRedisClient.eval.mockResolvedValueOnce('renewed');
+
+    const result = await store.renew('lease-1', 30000);
+
+    expect(result).toBe('renewed');
+    expect(mockNodeRedisClient.eval).toHaveBeenCalledWith(
+      expect.stringContaining("redis.call('GET', KEYS[1])"),
+      {
+        keys: ['microservice:registry:lease-1'],
+        arguments: [expect.any(String), expect.any(String), expect.any(String)],
+      },
+    );
+  });
+
+  it('should report not-found when renewing a missing lease', async () => {
+    store = await createRedisStore(makeConfig(), (await import('redis')) as any);
+    mockNodeRedisClient.eval.mockResolvedValueOnce('not-found');
+
+    const result = await store.renew('missing-lease', 30000);
+
+    expect(result).toBe('not-found');
+  });
+
+  it('should report expired when renewing an expired lease', async () => {
+    store = await createRedisStore(makeConfig(), (await import('redis')) as any);
+    mockNodeRedisClient.eval.mockResolvedValueOnce('expired');
+
+    const result = await store.renew('lease-1', 30000);
+
+    expect(result).toBe('expired');
+  });
+
+  it('should update health on the canonical record', async () => {
+    store = await createRedisStore(makeConfig(), (await import('redis')) as any);
+
+    const instance = makeInstance();
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1'] });
+    mockNodeRedisClient.multi.mockReturnThis();
+    mockNodeRedisClient.get.mockReturnThis();
+    mockNodeRedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(true);
+    expect(mockNodeRedisClient.set).toHaveBeenCalledWith(
+      'microservice:registry:lease-1',
+      expect.stringContaining('"status":"degraded"'),
+      { EX: expect.any(Number) },
+    );
+  });
+
+  it('should return false when updating health for an unknown instance', async () => {
+    store = await createRedisStore(makeConfig(), (await import('redis')) as any);
+
+    const instance = makeInstance({ serviceId: 'svc-other' });
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1'] });
+    mockNodeRedisClient.multi.mockReturnThis();
+    mockNodeRedisClient.get.mockReturnThis();
+    mockNodeRedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(false);
+    expect(mockNodeRedisClient.set).not.toHaveBeenCalled();
+  });
+
+  it('should return false when updating health with no keys', async () => {
+    store = await createRedisStore(makeConfig(), (await import('redis')) as any);
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: [] });
+
+    const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
+
+    expect(updated).toBe(false);
+  });
+
+  it('should filter by serviceName in query', async () => {
+    store = await createRedisStore(makeConfig(), (await import('redis')) as any);
+
+    const instance1 = makeInstance({ serviceName: 'service-a' });
+    const instance2 = makeInstance({ serviceName: 'service-b' });
+
+    mockNodeRedisClient.scan.mockResolvedValueOnce({ cursor: 0, keys: ['microservice:registry:lease-1', 'microservice:registry:lease-2'] });
+    mockNodeRedisClient.multi.mockReturnThis();
+    mockNodeRedisClient.get.mockReturnThis();
+    mockNodeRedisClient.exec.mockResolvedValueOnce([
+      [null, JSON.stringify(instance1)],
+      [null, JSON.stringify(instance2)],
+    ]);
+
+    const results = await store.query({ serviceName: 'service-a' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].serviceName).toBe('service-a');
   });
 
   it('should handle TLS configuration', async () => {

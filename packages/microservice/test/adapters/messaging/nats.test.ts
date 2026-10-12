@@ -19,7 +19,9 @@ describe('NatsTransport construction', () => {
   it('should report correct capabilities for Core mode', () => {
     const transport = new NatsTransport(makeConfig());
     expect(transport.name).toBe('nats');
-    expect(transport.capabilities.requestResponse).toBe(true);
+    // Request/reply is not implemented; the capability
+    // must not be advertised.
+    expect(transport.capabilities.requestResponse).toBe(false);
     expect(transport.capabilities.streaming).toBe(false);
     expect(transport.capabilities.publishSubscribe).toBe(true);
     expect(transport.capabilities.durableDelivery).toBe(false);
