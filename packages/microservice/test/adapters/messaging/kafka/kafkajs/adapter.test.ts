@@ -276,11 +276,9 @@ describe('KafkaJS Driver Adapter', () => {
       { data: 'test' },
       expect.objectContaining({
         topic: 'oneunit.test-topic',
-        partition: 0,
-        offset: '123',
-        headers: expect.objectContaining({
-          'correlation-id': expect.any(Object), // Headers are Buffers in kafkajs
-        }),
+        correlationId: 'abc',
+        traceContext: undefined,
+        headers: { 'correlation-id': 'abc' },
       })
     );
   });

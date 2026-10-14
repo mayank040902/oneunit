@@ -1,9 +1,32 @@
-import { Kafka, Producer, Consumer, EachMessagePayload } from 'kafkajs';
+import { Kafka, Producer, Consumer, EachMessagePayload, KafkaConfig, SASLOptions, IHeaders } from 'kafkajs';
 import { KafkaAdapterConfig, KafkaDriverAdapter } from '../types.js';
 import { Logger } from '@/observability/logger.js';
+import { PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities.js';
+
+function headerValueToString(value: Buffer | string | (Buffer | string)[] | undefined): string | undefined {
+  if (!value) return undefined;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return undefined;
+    value = value[0];
+  }
+  if (Buffer.isBuffer(value)) return value.toString();
+  return value;
+}
+
+function headersToRecord(headers?: IHeaders): Record<string, string> | undefined {
+  if (!headers) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const strValue = headerValueToString(value);
+    if (strValue !== undefined) {
+      result[key] = strValue;
+    }
+  }
+  return result;
+}
 
 export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Logger): Promise<KafkaDriverAdapter> {
-  const kafkaConfig: any = {
+  const kafkaConfig: KafkaConfig = {
     brokers: config.brokers,
     clientId: config.clientId,
   };
@@ -17,7 +40,7 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
         mechanism: config.security.sasl.mechanism,
         username: config.security.sasl.username,
         password: config.security.sasl.password,
-      };
+      } as SASLOptions;
     }
   }
 
@@ -64,7 +87,7 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
       };
     },
 
-    async publish(topic: string, message: unknown, options: any = {}) {
+    async publish(topic: string, message: unknown, options: PublishOptions = {}): Promise<void> {
       if (!producer) {
         throw new Error('Producer not connected');
       }
@@ -81,7 +104,7 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
       logger?.debug('Message published', { topic: fullTopic });
     },
 
-    async subscribe(topic: string, handler: (message: unknown, context: any) => Promise<void>, options: any = {}) {
+    async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options: SubscribeOptions = {}): Promise<void> {
       const fullTopic = `${config.topics.prefix}.${topic}`;
       const groupId = options.groupId ?? `${config.clientId}-${topic}`;
 
@@ -90,14 +113,15 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
       await consumer.subscribe({ topic: fullTopic, fromBeginning: options.fromBeginning });
       
       await consumer.run({
-        eachMessage: async ({ topic, partition, message }: EachMessagePayload) => {
+        eachMessage: async ({ topic, partition: _partition, message }: EachMessagePayload) => {
           try {
             const value = message.value ? JSON.parse(message.value.toString()) : null;
+            const headersRecord = headersToRecord(message.headers);
             await handler(value, {
               topic,
-              partition,
-              offset: message.offset,
-              headers: message.headers,
+              correlationId: headersRecord?.['correlation-id'],
+              traceContext: headersRecord?.['trace-context'] ? JSON.parse(headersRecord['trace-context']) as Record<string, string> : undefined,
+              headers: headersRecord,
             });
           } catch (err) {
             logger?.error(`Error processing message from ${fullTopic}`, { error: err });

@@ -1,0 +1,11 @@
+
+> @oneunit/user-service@1.0.0 start
+> tsx src/index.ts
+
+🚀 Starting User Service...
+⚠️  Kafka not initialized - events will not be published
+✅ User Service running on http://localhost:3000
+   Health: http://localhost:3000/health
+   Users API: http://localhost:3000/users
+   Kafka: disabled
+   Registry: Redis

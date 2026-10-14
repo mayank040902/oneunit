@@ -1,10 +1,11 @@
 import { KafkaAdapterConfig, KafkaDriverAdapter } from './types.js';
 import { resolveKafkaDriver } from './driver-resolver.js';
 import { Logger } from '@/observability/logger.js';
+import { MessageContext } from '@/core/capabilities.js';
 
 export interface KafkaClient {
   publish(topic: string, message: unknown, options?: { key?: string; headers?: Record<string, string> }): Promise<void>;
-  subscribe(topic: string, handler: (message: unknown, context: { topic: string; partition: number; offset: string; headers?: Record<string, string> }) => Promise<void>, options?: { groupId?: string; autoAck?: boolean }): Promise<void>;
+  subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options?: { groupId?: string; autoAck?: boolean }): Promise<void>;
   unsubscribe(topic: string): Promise<void>;
   disconnect(): Promise<void>;
 }
@@ -58,7 +59,7 @@ export async function createKafkaClient(config: KafkaClientConfig): Promise<Kafk
         await adapter.publish(topic, message, options);
       },
 
-      async subscribe(topic: string, handler: (message: unknown, context: { topic: string; partition: number; offset: string; headers?: Record<string, string> }) => Promise<void>, options?: { groupId?: string; autoAck?: boolean }) {
+      async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options?: { groupId?: string; autoAck?: boolean }) {
         await adapter.subscribe(topic, handler, options);
       },
 

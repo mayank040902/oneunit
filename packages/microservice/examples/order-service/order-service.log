@@ -1,0 +1,11 @@
+
+> @oneunit/order-service@1.0.0 start
+> tsx src/index.ts
+
+🚀 Starting Order Service...
+⚠️  Kafka not initialized - events will not be published
+✅ Order Service running on http://localhost:3001
+   Health: http://localhost:3001/health
+   Orders API: http://localhost:3001/orders
+   Kafka: disabled
+   Registry: Redis

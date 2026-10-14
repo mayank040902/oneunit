@@ -1,23 +1,63 @@
 import { KafkaAdapterConfig, KafkaDriverAdapter } from '../types.js';
 import { Logger } from '@/observability/logger.js';
+import { PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities.js';
+
+export interface OneUnitKafkaClientConfig {
+  brokers: string[];
+  clientId: string;
+  ssl?: boolean;
+  sasl?: { mechanism: string; username: string; password: string };
+}
+
+export interface OneUnitKafkaProducerConfig {
+  [key: string]: unknown;
+}
+
+export interface OneUnitKafkaConsumerConfig {
+  groupId: string;
+  [key: string]: unknown;
+}
+
+export interface OneUnitKafkaMessage {
+  value: unknown;
+  headers?: Record<string, string>;
+}
+
+export interface OneUnitKafkaPayload {
+  topic: string;
+  partition: number;
+  offset: string;
+  message: OneUnitKafkaMessage;
+  ack?: () => Promise<void>;
+  nak?: () => Promise<void>;
+}
 
 export interface OneUnitKafkaModule {
-  KafkaClient: new (config: any) => OneUnitKafkaClient;
-  createKafkaClient: (config: any, options?: { logger?: Logger }) => Promise<OneUnitKafkaClient>;
+  KafkaClient: new (config: OneUnitKafkaClientConfig) => OneUnitKafkaClient;
+  createKafkaClient: (config: OneUnitKafkaClientConfig, options?: { logger?: Logger }) => Promise<OneUnitKafkaClient>;
 }
 
 export interface OneUnitKafkaClient {
-  getProducer(config?: any): Promise<OneUnitKafkaProducer>;
-  consume(topic: string, handler: (payload: any) => Promise<void>, options?: any): Promise<OneUnitKafkaConsumer>;
+  getProducer(config?: OneUnitKafkaProducerConfig): Promise<OneUnitKafkaProducer>;
+  consume(topic: string, handler: (payload: OneUnitKafkaPayload) => Promise<void>, options?: OneUnitKafkaConsumerConfig): Promise<OneUnitKafkaConsumer>;
   disconnect(): Promise<void>;
 }
 
 export interface OneUnitKafkaProducer {
-  send(topic: string, message: any, options?: any): Promise<void>;
+  send(topic: string, message: unknown, options?: { send?: { key?: string; headers?: Record<string, string> } }): Promise<void>;
 }
 
 export interface OneUnitKafkaConsumer {
   disconnect(): Promise<void>;
+}
+
+function toMessageContext(payload: OneUnitKafkaPayload): MessageContext {
+  return {
+    topic: payload.topic,
+    correlationId: payload.message.headers?.['correlation-id'] as string | undefined,
+    traceContext: payload.message.headers?.['trace-context'] ? JSON.parse(payload.message.headers['trace-context'] as string) as Record<string, string> : undefined,
+    headers: payload.message.headers,
+  };
 }
 
 export async function createKafkaAdapter(
@@ -66,7 +106,7 @@ export async function createKafkaAdapter(
       };
     },
 
-    async publish(topic: string, message: unknown, options: any = {}) {
+    async publish(topic: string, message: unknown, options: PublishOptions = {}): Promise<void> {
       const fullTopic = `${config.topics.prefix}.${topic}`;
       await producer.send(fullTopic, message, {
         send: {
@@ -76,18 +116,13 @@ export async function createKafkaAdapter(
       });
     },
 
-    async subscribe(topic: string, handler: (message: unknown, context: any) => Promise<void>, options: any = {}) {
+    async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options: SubscribeOptions = {}): Promise<void> {
       const fullTopic = `${config.topics.prefix}.${topic}`;
       const groupId = options.groupId ?? `${config.clientId}-${topic}`;
 
-      const consumer = await client.consume(fullTopic, async (payload: any) => {
+      const consumer = await client.consume(fullTopic, async (payload: OneUnitKafkaPayload) => {
         try {
-          await handler(payload.message.value, {
-            topic: payload.topic,
-            partition: payload.partition,
-            offset: payload.offset,
-            headers: payload.message.headers,
-          });
+          await handler(payload.message.value, toMessageContext(payload));
 
           if (!options.autoAck && payload.ack) {
             await payload.ack();

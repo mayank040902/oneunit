@@ -165,12 +165,13 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
     return new Promise<TOutput>((resolve, reject) => {
       // ServiceClient exposes each method via an index signature of
       // `Function`; call it with the standard unary callback.
+      // Must use .call() to preserve `this` context on the client.
       const fn = serviceClient[method];
       if (!fn) {
         reject(new Error(`Method ${method} not found on service ${service}`));
         return;
       }
-      fn(input, (err: grpc.ServiceError | null, response: unknown) => {
+      fn.call(serviceClient, input, (err: grpc.ServiceError | null, response: unknown) => {
         if (err) reject(err);
         else resolve(response as TOutput);
       });

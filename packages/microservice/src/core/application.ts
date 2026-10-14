@@ -7,10 +7,11 @@ import { ServiceIdentity, createServiceIdentity } from '../identity/service-iden
 import { AuthorizationPolicy, createAuthorizationPolicy } from '../identity/authorization.js';
 import { Logger, createLogger } from '../observability/logger.js';
 import { createKafkaClient } from '../adapters/messaging/kafka/kafka-client.js';
+import { MessageContext } from '../core/capabilities.js';
 
 export interface KafkaMessaging {
   publish(topic: string, message: unknown, options?: { key?: string; headers?: Record<string, string> }): Promise<void>;
-  subscribe(topic: string, handler: (message: unknown, context: { topic: string; partition: number; offset: string; headers?: Record<string, string> }) => Promise<void>, options?: { groupId?: string }): Promise<void>;
+  subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options?: { groupId?: string }): Promise<void>;
   unsubscribe(topic: string): Promise<void>;
   disconnect(): Promise<void>;
 }
@@ -71,7 +72,7 @@ async function createKafkaMessaging(logger: Logger, kafkaConfig: KafkaAdapterCon
       await kafkaClient.publish(topic, message, options);
     },
     
-    async subscribe(topic: string, handler: (message: unknown, context: { topic: string; partition: number; offset: string; headers?: Record<string, string> }) => Promise<void>, options?: { groupId?: string }) {
+    async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options?: { groupId?: string }) {
       await kafkaClient.subscribe(topic, handler, options);
     },
     
@@ -108,7 +109,7 @@ const authorization = createAuthorizationPolicy(config.auth.type, {
   
   const logger = await createAppLogger(options, config);
 
-  // Auto-initialize Kafka if enabled in config
+  // Auto-initialize Kafka if enabled in config (non-blocking)
   let kafkaMessaging: KafkaMessaging | undefined;
   const kafkaConfig = config.adapters?.kafka;
   if (kafkaConfig?.enabled) {
@@ -117,8 +118,8 @@ const authorization = createAuthorizationPolicy(config.auth.type, {
       logger.info('Kafka messaging initialized', { clientId: kafkaConfig.clientId });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.error('Failed to initialize Kafka messaging', { error: msg });
-      throw err;
+      logger.warn('Kafka initialization failed, continuing without Kafka', { error: msg });
+      // Don't throw - allow service to start without Kafka
     }
   }
 

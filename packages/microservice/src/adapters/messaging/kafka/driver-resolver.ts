@@ -1,5 +1,6 @@
 import { KafkaDriver, KafkaAdapterConfig, KafkaDriverModule } from './types.js';
 import { Logger } from '@/observability/logger.js';
+import type { OneUnitKafkaModule } from './oneunit/adapter.js';
 
 export interface ResolvedDriver {
   driver: KafkaDriver;
@@ -33,10 +34,15 @@ export async function resolveKafkaDriver(config: KafkaAdapterConfig, logger?: Lo
   }
 }
 
+interface OneUnitKafkaModuleCheck {
+  createKafkaClient?: unknown;
+  KafkaClient?: unknown;
+}
+
 async function loadOneUnitDriver(logger?: Logger): Promise<ResolvedDriver> {
-  let oneUnitModule: any;
+  let oneUnitModule: OneUnitKafkaModuleCheck;
   try {
-    oneUnitModule = await import('@oneunit/kafka');
+    oneUnitModule = await import('@oneunit/kafka') as OneUnitKafkaModuleCheck;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (
@@ -59,15 +65,19 @@ async function loadOneUnitDriver(logger?: Logger): Promise<ResolvedDriver> {
   return {
     driver: 'oneunit',
     module: {
-      createAdapter: (cfg) => createKafkaAdapter(cfg, oneUnitModule, logger),
+      createAdapter: (cfg) => createKafkaAdapter(cfg, oneUnitModule as OneUnitKafkaModule, logger),
     },
   };
 }
 
+interface KafkaJSModule {
+  Kafka?: unknown;
+}
+
 async function loadKafkaJSDriver(logger?: Logger): Promise<ResolvedDriver> {
-  let kafkajsModule: any;
+  let kafkajsModule: KafkaJSModule;
   try {
-    kafkajsModule = await import('kafkajs');
+    kafkajsModule = await import('kafkajs') as KafkaJSModule;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (

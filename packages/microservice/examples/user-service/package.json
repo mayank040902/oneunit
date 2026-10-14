@@ -1,0 +1,24 @@
+{
+  "name": "@oneunit/user-service",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@oneunit/microservice": "file:../..",
+    "@oneunit/logger": "file:../../logger",
+    "@oneunit/kafka": "file:../../kafka",
+    "@oneunit/redis": "file:../../redis",
+    "kafkajs": "^2.2.4",
+    "ioredis": "^5.0.0",
+    "fastify": "^4.28.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

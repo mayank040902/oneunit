@@ -25,6 +25,10 @@
       "import": "./dist/adapters/messaging/nats/index.js",
       "types": "./dist/adapters/messaging/nats/index.d.ts"
     },
+    "./adapters/rpc/grpc": {
+      "import": "./dist/adapters/rpc/grpc/index.js",
+      "types": "./dist/adapters/rpc/grpc/index.d.ts"
+    },
     "./registry/redis": {
       "import": "./dist/registry/redis/index.js",
       "types": "./dist/registry/redis/index.d.ts"

@@ -96,7 +96,11 @@ export class TrpcTransport extends BaseTransport implements RpcClient, RpcServer
   }
 
   stream<TInput, TOutput>(_service: string, _method: string, _input: TInput): AsyncIterable<TOutput> {
-    throw new Error('Streaming not supported in tRPC transport');
+    async function* throwingGenerator(): AsyncIterable<TOutput> {
+      throw new Error('Streaming not supported in tRPC transport');
+      yield undefined as never;
+    }
+    return throwingGenerator();
   }
 }
 

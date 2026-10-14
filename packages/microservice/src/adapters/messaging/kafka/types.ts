@@ -1,5 +1,5 @@
-import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
-import { Logger } from '@/observability/logger';
+import { TransportHealth, PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities.js';
+import { Logger } from '@/observability/logger.js';
 
 export type KafkaDriver = 'oneunit' | 'kafkajs' | 'auto';
 
@@ -10,8 +10,8 @@ export interface KafkaAdapterConfig {
   topics: {
     prefix: string;
   };
-  producer?: any;
-  consumer?: any;
+  producer?: Record<string, unknown>;
+  consumer?: Record<string, unknown>;
   security?: {
     ssl?: boolean;
     sasl?: {
@@ -24,12 +24,19 @@ export interface KafkaAdapterConfig {
 
 export interface KafkaDriverAdapter {
   readonly name: string;
-  readonly capabilities: any;
+  readonly capabilities: {
+    requestResponse: boolean;
+    streaming: boolean;
+    publishSubscribe: boolean;
+    durableDelivery: boolean;
+    orderedDelivery: boolean;
+    bidirectional: boolean;
+  };
   start(): Promise<void>;
   close(): Promise<void>;
   healthCheck(): Promise<TransportHealth>;
   publish(topic: string, message: unknown, options?: PublishOptions): Promise<void>;
-  subscribe(topic: string, handler: (message: unknown, context: any) => Promise<void>, options?: SubscribeOptions): Promise<void>;
+  subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options?: SubscribeOptions): Promise<void>;
   unsubscribe(topic: string): Promise<void>;
 }
 

@@ -42,16 +42,74 @@ export async function createOneUnitLogger(config: OneUnitLoggerConfig = {}): Pro
 
   const { createLogger, createChildLogger: oneUnitCreateChildLogger } = oneUnitLoggerModule;
 
+  // Create pino logger with base bindings
+  const baseBindings: Record<string, unknown> = {};
+  if (config.serviceId) baseBindings['serviceId'] = config.serviceId;
+  if (config.instanceId) baseBindings['instanceId'] = config.instanceId;
+
   const oneUnitLogger = createLogger({
     mode: config.mode,
     serializers: config.serializers,
-    childBindings: config.childBindings,
+    childBindings: baseBindings,
     destination: config.destination,
     pino: config.pino,
   });
 
+  // Wrap pino logger to match AdapterLoggerShape (pino uses message-first, we need context-first too)
+  const wrappedLogger: AdapterLoggerShape = {
+    level: oneUnitLogger.level,
+    trace: (messageOrContext: unknown, contextOrMessage?: unknown) => {
+      const { message, context } = typeof messageOrContext === 'string' 
+        ? { message: messageOrContext, context: (contextOrMessage as LoggerContext) ?? {} }
+        : { message: '', context: (messageOrContext as LoggerContext) ?? {} };
+      oneUnitLogger.trace(context, message);
+    },
+    debug: (messageOrContext: unknown, contextOrMessage?: unknown) => {
+      const { message, context } = typeof messageOrContext === 'string'
+        ? { message: messageOrContext, context: (contextOrMessage as LoggerContext) ?? {} }
+        : { message: '', context: (messageOrContext as LoggerContext) ?? {} };
+      oneUnitLogger.debug(context, message);
+    },
+    info: (messageOrContext: unknown, contextOrMessage?: unknown) => {
+      const { message, context } = typeof messageOrContext === 'string'
+        ? { message: messageOrContext, context: (contextOrMessage as LoggerContext) ?? {} }
+        : { message: '', context: (messageOrContext as LoggerContext) ?? {} };
+      oneUnitLogger.info(context, message);
+    },
+    warn: (messageOrContext: unknown, contextOrMessage?: unknown) => {
+      const { message, context } = typeof messageOrContext === 'string'
+        ? { message: messageOrContext, context: (contextOrMessage as LoggerContext) ?? {} }
+        : { message: '', context: (messageOrContext as LoggerContext) ?? {} };
+      oneUnitLogger.warn(context, message);
+    },
+    error: (messageOrContext: unknown, contextOrMessage?: unknown) => {
+      if (messageOrContext instanceof Error) {
+        oneUnitLogger.error(messageOrContext, contextOrMessage as string);
+      } else {
+        const { message, context } = typeof messageOrContext === 'string'
+          ? { message: messageOrContext, context: (contextOrMessage as LoggerContext) ?? {} }
+          : { message: '', context: (messageOrContext as LoggerContext) ?? {} };
+        oneUnitLogger.error(context, message);
+      }
+    },
+    fatal: (messageOrContext: unknown, contextOrMessage?: unknown) => {
+      if (messageOrContext instanceof Error) {
+        oneUnitLogger.fatal(messageOrContext, contextOrMessage as string);
+      } else {
+        const { message, context } = typeof messageOrContext === 'string'
+          ? { message: messageOrContext, context: (contextOrMessage as LoggerContext) ?? {} }
+          : { message: '', context: (messageOrContext as LoggerContext) ?? {} };
+        oneUnitLogger.fatal(context, message);
+      }
+    },
+    child: (bindings: Record<string, unknown>) => {
+      // This will be handled by adaptLogger's childFn
+      return oneUnitLogger.child(bindings) as unknown as AdapterLoggerShape;
+    },
+  };
+
   return adaptOneUnitLogger(
-    oneUnitLogger as unknown as AdapterLoggerShape,
+    wrappedLogger,
     oneUnitCreateChildLogger as unknown as (
       logger: AdapterLoggerShape,
       bindings: Record<string, unknown>

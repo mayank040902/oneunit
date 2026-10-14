@@ -1,5 +1,5 @@
 import { BaseTransport } from '@/transport/transport';
-import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
+import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities';
 import { KafkaAdapterConfig, KafkaDriver, KafkaDriverAdapter } from './types.js';
 import { resolveKafkaDriver } from './driver-resolver.js';
 import { Logger } from '@/observability/logger.js';
@@ -60,7 +60,7 @@ export class KafkaTransport extends BaseTransport implements MessagePublisher, M
 
   async subscribe(
     topic: string, 
-    handler: (message: unknown, context: any) => Promise<void>, 
+    handler: (message: unknown, context: MessageContext) => Promise<void>, 
     options: SubscribeOptions = {}
   ): Promise<void> {
     if (!this.driverAdapter) {

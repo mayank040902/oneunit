@@ -254,8 +254,8 @@ describe('OneUnit Kafka Driver Adapter', () => {
       { data: 'test' },
       expect.objectContaining({
         topic: 'oneunit.test-topic',
-        partition: 0,
-        offset: '123',
+        correlationId: 'abc',
+        traceContext: undefined,
         headers: { 'correlation-id': 'abc' },
       })
     );

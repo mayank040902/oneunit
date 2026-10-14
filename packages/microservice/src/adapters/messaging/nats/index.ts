@@ -1,21 +1,44 @@
 import { BaseTransport } from '@/transport/transport';
-import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions } from '@/core/capabilities';
-import { connect, NatsConnection, Subscription } from 'nats';
+import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities.js';
+import { connect, NatsConnection, Subscription, JetStreamClient, JetStreamSubscription, headers as createHeaders, MsgHdrs } from 'nats';
 import { NatsAdapterConfig } from '@/config/schema.js';
+
+interface JetStreamMessage {
+  data: Uint8Array;
+  subject: string;
+  headers?: MsgHdrs;
+  ack?: () => Promise<void>;
+  nak?: () => Promise<void>;
+}
+
+function headersToRecord(hdrs?: MsgHdrs): Record<string, string> | undefined {
+  if (!hdrs) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(hdrs)) {
+    result[key] = value;
+  }
+  return result;
+}
+
+function recordToHeaders(headers?: Record<string, string>): MsgHdrs | undefined {
+  if (!headers) return undefined;
+  const h = createHeaders();
+  for (const [key, value] of Object.entries(headers)) {
+    h.set(key, value);
+  }
+  return h;
+}
 
 export class NatsTransport extends BaseTransport implements MessagePublisher, MessageSubscriber {
   private config: NatsAdapterConfig;
   private nc: NatsConnection | null = null;
-  private js: any = null;
-  private subscriptions: Map<string, Subscription> = new Map();
+  private js: JetStreamClient | null = null;
+  private subscriptions: Map<string, Subscription | JetStreamSubscription> = new Map();
 
   constructor(config: NatsAdapterConfig) {
     super({
       name: 'nats',
       capabilities: {
-        // Core NATS offers pub/sub and JetStream offers durable,
-        // ordered delivery. Request/reply is not implemented by
-        // this transport, so the capability is not advertised.
         requestResponse: false,
         streaming: false,
         publishSubscribe: true,
@@ -28,7 +51,7 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
   }
 
   async start(): Promise<void> {
-    const options: any = {
+    const options: Record<string, unknown> = {
       servers: this.config.servers,
       name: this.config.clientName,
       ...(this.config.auth?.user && { user: this.config.auth.user }),
@@ -75,24 +98,25 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
     const data = JSON.stringify(message);
 
     if (this.js && this.config.jetstream?.enabled) {
-      await this.js.publish(subject, new TextEncoder().encode(data), { headers: options.headers });
+      await this.js.publish(subject, new TextEncoder().encode(data), { headers: recordToHeaders(options.headers) });
     } else if (this.nc) {
       this.nc.publish(subject, new TextEncoder().encode(data));
     }
   }
 
-  async subscribe(topic: string, handler: (message: unknown, context: any) => Promise<void>, options: SubscribeOptions = {}): Promise<void> {
+  async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options: SubscribeOptions = {}): Promise<void> {
     if (!this.nc) throw new Error('NATS not connected');
 
     const subject = `${this.config.subjects.prefix}.${topic}`;
     
-    let subscription: Subscription;
+    let subscription: Subscription | JetStreamSubscription;
     
     if (this.js && this.config.jetstream?.enabled) {
+      const durableName = options.groupId ?? `${this.config.clientName}-${topic}`;
       subscription = await this.js.subscribe(subject, {
-        durable: options.groupId ?? `${this.config.clientName}-${topic}`,
+        durable: durableName,
         ackPolicy: options.autoAck ? 'none' : 'explicit',
-      });
+      } as Record<string, unknown>);
     } else {
       subscription = this.nc.subscribe(subject);
     }
@@ -103,21 +127,27 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
       for await (const msg of subscription) {
         try {
           const data = JSON.parse(new TextDecoder().decode(msg.data));
+          // NATS message headers may be MsgHdrs or undefined
+          // Convert to Record<string, string> for our context
+          const msgHeaders = msg.headers ? headersToRecord(msg.headers) : undefined;
           await handler(data, {
-            subject: msg.subject,
-            headers: msg.headers,
+            topic: msg.subject,
+            headers: msgHeaders,
           });
           
-          // JetStream messages have ack/nak methods
-          const jsMsg = msg as any;
-          if (this.config.jetstream?.enabled && !options.autoAck && typeof jsMsg.ack === 'function') {
-            await jsMsg.ack();
+          if (this.config.jetstream?.enabled && !options.autoAck) {
+            const jsMsg = msg as JetStreamMessage;
+            if (typeof jsMsg.ack === 'function') {
+              await jsMsg.ack();
+            }
           }
         } catch (err) {
           console.error(`Error processing message from ${subject}:`, err);
-          const jsMsg = msg as any;
-          if (this.config.jetstream?.enabled && !options.autoAck && typeof jsMsg.nak === 'function') {
-            await jsMsg.nak();
+          if (this.config.jetstream?.enabled && !options.autoAck) {
+            const jsMsg = msg as JetStreamMessage;
+            if (typeof jsMsg.nak === 'function') {
+              await jsMsg.nak();
+            }
           }
         }
       }

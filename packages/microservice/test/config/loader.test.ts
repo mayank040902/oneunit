@@ -169,7 +169,7 @@ describe('Config Loader', () => {
 
     it('should load config from file when it exists', () => {
       const fs = require('fs');
-      const path = '/tmp/test-config.json';
+      const path = './test-tmp-runtime/test-config.json';
       const validConfig = {
         service: { id: '123e4567-e89b-12d3-a456-426614174000', name: 'file-service' },
         security: {},
@@ -178,7 +178,7 @@ describe('Config Loader', () => {
         observability: {},
         crypto: { rootKey: 'a'.repeat(32) },
       };
-      fs.writeFileSync(path, JSON.stringify(validConfig));
+      const dir = require("path").dirname(path); fs.mkdirSync(dir, {recursive:true}); fs.writeFileSync(path, JSON.stringify(validConfig));
 
       const config = loadConfig(path);
 
@@ -188,8 +188,8 @@ describe('Config Loader', () => {
 
     it('should throw with actionable error for invalid config file', () => {
       const fs = require('fs');
-      const path = '/tmp/invalid-config.json';
-      fs.writeFileSync(path, JSON.stringify({ service: { name: 'test' } })); // missing required fields
+      const path = './test-tmp-runtime/invalid-config.json';
+      const dir = require("path").dirname(path); fs.mkdirSync(dir, {recursive:true}); fs.writeFileSync(path, JSON.stringify({ service: { name: 'test' } })); // missing required fields
 
       expect(() => loadConfig(path)).toThrow('Invalid configuration:');
 
@@ -198,8 +198,8 @@ describe('Config Loader', () => {
 
     it('should throw with actionable error for malformed JSON', () => {
       const fs = require('fs');
-      const path = '/tmp/malformed-config.json';
-      fs.writeFileSync(path, '{ invalid json }');
+      const path = './test-tmp-runtime/malformed-config.json';
+      const dir = require("path").dirname(path); fs.mkdirSync(dir, {recursive:true}); fs.writeFileSync(path, '{ invalid json }');
 
       expect(() => loadConfig(path)).toThrow('Failed to load config');
 

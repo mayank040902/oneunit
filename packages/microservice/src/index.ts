@@ -5,6 +5,7 @@ export * from './registry/index.js';
 export * from './transport/index.js';
 export * from './adapters/rpc/index.js';
 export * from './adapters/network/index.js';
+export * from './adapters/messaging/index.js';
 export * from './observability/index.js';
 export * from './internal/index.js';
 export * from './config/index.js';
