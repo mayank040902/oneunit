@@ -1,5 +1,6 @@
 import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, StreamTransport, DuplexStream, TransportMetrics } from '@/core/capabilities';
+import { TcpFrameParser } from './frame-parser.js';
 import type * as net from 'net';
 import type * as tls from 'tls';
 
@@ -20,11 +21,48 @@ export interface TcpConnection extends DuplexStream {
   remotePort: number;
 }
 
+export interface ParsedRemote {
+  host: string;
+  port: number;
+}
+
+export function parseRemote(remote: string): ParsedRemote {
+  // Handle bracketed IPv6 literals: [::1]:9000
+  if (remote.startsWith('[')) {
+    const closeBracket = remote.indexOf(']');
+    if (closeBracket === -1) {
+      throw new Error(`Invalid remote address format: ${remote}`);
+    }
+    const host = remote.slice(1, closeBracket);
+    const rest = remote.slice(closeBracket + 1);
+    if (!rest.startsWith(':')) {
+      throw new Error(`Invalid remote address format: ${remote}`);
+    }
+    const port = parseInt(rest.slice(1), 10);
+    if (isNaN(port) || port < 0 || port > 65535) {
+      throw new Error(`Invalid remote address format: ${remote}`);
+    }
+    return { host, port };
+  }
+
+  // For non-bracketed addresses, split on the last colon to support IPv6
+  const lastColon = remote.lastIndexOf(':');
+  if (lastColon === -1) {
+    throw new Error(`Invalid remote address format: ${remote}`);
+  }
+  const host = remote.slice(0, lastColon);
+  const portStr = remote.slice(lastColon + 1);
+  const port = parseInt(portStr, 10);
+  if (!portStr || isNaN(port) || port < 0 || port > 65535) {
+    throw new Error(`Invalid remote address format: ${remote}`);
+  }
+  return { host, port };
+}
+
 export class TcpTransport extends BaseTransport implements StreamTransport {
-  private config: TcpConfig;
+   private config: TcpConfig;
   private server: net.Server | null = null;
   private connections: Map<string, TcpConnection> = new Map();
-  private frameBuffer: Map<string, Uint8Array> = new Map();
   private metrics: TransportMetrics;
 
   constructor(config: TcpConfig) {
@@ -113,14 +151,13 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
   }
 
   async openStream(remote: string): Promise<DuplexStream> {
+    if (!this.started) {
+      throw new Error('TCP transport not started');
+    }
     const { connect } = await import('net');
     const { connect: tlsConnect } = await import('tls');
 
-    const [host, portStr] = remote.split(':');
-    const port = portStr ? parseInt(portStr, 10) : 0;
-    if (!portStr || isNaN(port)) {
-      throw new Error(`Invalid remote address format: ${remote}`);
-    }
+    const { host, port } = parseRemote(remote);
 
     const options: net.NetConnectOpts & tls.ConnectionOptions = { host, port };
     if (this.config.tls) {
@@ -133,9 +170,6 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
       const socket: net.Socket = this.config.tls ? tlsConnect(options) : connect(options);
       
       socket.on('connect', () => {
-        // The connection timeout only applies to the
-        // connect phase; clear it so it cannot fire
-        // on an established connection.
         socket.setTimeout(0);
         const conn = this.createConnection(socket, remote);
         this.connections.set(remote, conn);
@@ -160,14 +194,12 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
   }
 
   private createConnection(socket: net.Socket, remote: string): TcpConnection {
-    let buffer = Buffer.alloc(0);
     const maxFrameSize = this.config.maxFrameSize ?? 16 * 1024 * 1024;
     const idleTimeout = this.config.idleTimeout;
+    const parser = new TcpFrameParser({ maxFrameSize });
+    const readQueue: Array<(value: Uint8Array | null) => void> = [];
+    let closed = false;
 
-    // Apply the configured idle timeout to
-    // established connections: a socket that
-    // carries no traffic within the window is
-    // destroyed and the connection is dropped.
     if (idleTimeout && typeof socket.setTimeout === 'function') {
       socket.setTimeout(idleTimeout, () => {
         socket.destroy();
@@ -176,57 +208,68 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
       });
     }
 
+    const drainQueue = (value: Uint8Array | null) => {
+      while (readQueue.length > 0) {
+        const resolve = readQueue.shift()!;
+        resolve(value);
+      }
+    };
+
+    const onData = (chunk: Buffer) => {
+      const result = parser.feed(chunk);
+      for (const frame of result.frames) {
+        this.metrics.bytesReceived += frame.length + 4;
+        this.metrics.messagesReceived++;
+        if (readQueue.length > 0) {
+          const resolve = readQueue.shift()!;
+          resolve(new Uint8Array(frame));
+        }
+      }
+      if (result.error) {
+        closed = true;
+        drainQueue(null);
+        socket.destroy();
+      }
+    };
+
+    const onClose = () => {
+      closed = true;
+      drainQueue(null);
+    };
+
+    socket.on('data', onData);
+    socket.once('close', onClose);
+    socket.once('error', onClose);
+
     const conn: TcpConnection = {
       remoteAddress: socket.remoteAddress ?? 'unknown',
       remotePort: socket.remotePort ?? 0,
-      
+
       write: async (data: Uint8Array) => {
+        if (closed) {
+          throw new Error('Connection is closed');
+        }
         const length = Buffer.alloc(4);
         length.writeUInt32BE(data.length, 0);
         socket.write(Buffer.concat([length, Buffer.from(data)]));
         this.metrics.bytesSent += data.length + 4;
         this.metrics.messagesSent++;
       },
-      
+
       read: async () => {
         return new Promise<Uint8Array | null>((resolve) => {
-          const onData = (chunk: Buffer) => {
-            buffer = Buffer.concat([buffer, chunk]);
-            
-            while (buffer.length >= 4) {
-              const frameLength = buffer.readUInt32BE(0);
-              
-              if (frameLength > maxFrameSize) {
-                socket.destroy();
-                resolve(null);
-                return;
-              }
-              
-              if (buffer.length >= 4 + frameLength) {
-                const frame = buffer.slice(4, 4 + frameLength);
-                buffer = buffer.slice(4 + frameLength);
-                
-                this.metrics.bytesReceived += frame.length + 4;
-                this.metrics.messagesReceived++;
-                
-                resolve(new Uint8Array(frame));
-                return;
-              }
-              
-              break;
-            }
-          };
-          
-          socket.on('data', onData);
-          socket.once('close', () => {
-            socket.off('data', onData);
-            resolve(null);
-          });
+          readQueue.push(resolve);
         });
       },
-      
+
       close: async () => {
-        socket.destroy();
+        if (!closed) {
+          closed = true;
+          socket.off('data', onData);
+          socket.off('close', onClose);
+          socket.off('error', onClose);
+          socket.destroy();
+        }
         this.connections.delete(remote);
       },
     };

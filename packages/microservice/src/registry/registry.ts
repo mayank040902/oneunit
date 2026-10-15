@@ -143,13 +143,22 @@ export class InMemoryRegistryStore implements RegistryStore {
 export class ServiceRegistryImpl implements ServiceRegistry {
   private store: RegistryStore;
   private defaultTtlMs: number;
+  private maxServices: number;
 
-  constructor(store: RegistryStore, defaultTtlMs = 30000) {
+  constructor(store: RegistryStore, defaultTtlMs = 30000, maxServices = 1000) {
     this.store = store;
     this.defaultTtlMs = defaultTtlMs;
+    this.maxServices = maxServices;
   }
 
   async register(registration: ServiceRegistration): Promise<ServiceLease> {
+    const active = await this.store.query({});
+    if (active.length >= this.maxServices) {
+      throw new Error(
+        `Service registry capacity reached (maxServices=${this.maxServices}). Cannot register service ${registration.serviceId}.`,
+      );
+    }
+
     const leaseId = crypto.randomUUID();
     const now = Date.now();
     const expiresAt = now + this.defaultTtlMs;
@@ -239,5 +248,5 @@ export function createRegistry(config: MicroserviceConfig['registry']): ServiceR
     store = new InMemoryRegistryStore();
   }
   
-  return new ServiceRegistryImpl(store, config.ttlMs);
+  return new ServiceRegistryImpl(store, config.ttlMs, config.maxServices);
 }

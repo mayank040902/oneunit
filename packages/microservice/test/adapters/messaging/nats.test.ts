@@ -86,6 +86,7 @@ describe('NatsTransport subject construction', () => {
     // Inject a fake connection so publish() can be exercised without a broker.
     const publishMock = vi.fn();
     (transport as any).nc = { publish: publishMock };
+    (transport as any).started = true;
 
     await transport.publish('orders.created', { id: 1 });
 
@@ -99,6 +100,7 @@ describe('NatsTransport subject construction', () => {
     const transport = new NatsTransport(makeConfig({ subjects: { prefix: 'oneunit' } }));
     const publishMock = vi.fn();
     (transport as any).nc = { publish: publishMock };
+    (transport as any).started = true;
 
     await transport.publish('orders.created', { id: 1, name: 'x' });
 
@@ -112,6 +114,7 @@ describe('NatsTransport subject construction', () => {
     const jsPublishMock = vi.fn().mockResolvedValue(undefined);
     (transport as any).js = { publish: jsPublishMock };
     (transport as any).nc = { publish: vi.fn() };
+    (transport as any).started = true;
 
     await transport.publish('orders.created', { id: 1 });
 

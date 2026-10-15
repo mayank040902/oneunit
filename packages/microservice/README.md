@@ -12,7 +12,7 @@ Provides a consistent application API and shared infrastructure for configuratio
 | **Language** | TypeScript 5.3+ (strict, `isolatedModules`, `noUncheckedIndexedAccess`, `noImplicitOverride`) |
 | **Package Manager** | pnpm 11.9.0 |
 | **Build** | `tsc && tsc-alias` — `tsc-alias` rewrites `@/*`, `@crypto/*`, `@transport/*`, `@registry/*`, `@config/*`, `@adapters/*` path aliases to relative ESM imports in `dist/` |
-| **Testing** | Vitest 1.6 (v8 coverage, `forks` pool, single fork) — 54 files, ~1,427 tests |
+| **Testing** | Vitest 3.2 (v8 coverage, `forks` pool, single fork) — 73 test files |
 | **Validation** | Zod 3.22 — every configuration section is Zod-validated at load time |
 | **Cryptography** | Node.js Web Crypto API (`crypto.subtle`) + `node:crypto` (`X509Certificate`) — no third-party crypto libraries |
 | **Logging Contract** | Framework-owned `Logger` interface (6 levels, dual overloads, `child(bindings)`); concrete loggers are application-injected or loaded via optional adapters |
@@ -23,7 +23,8 @@ Provides a consistent application API and shared infrastructure for configuratio
 - `@connectrpc/connect` + `@connectrpc/connect-node` v1.5 — Connect RPC (dynamically imported)
 - `jose` v5.2 — JWT verification (dynamically imported)
 - `zod` v3.22 — runtime config validation
-- `uuid` v11, `ws` v8.16 — **declared but unused** (IDs use the global `crypto.randomUUID()`; no WebSocket transport exists)
+
+> **Note:** `uuid` and `ws` were removed from `dependencies`. All identifiers use `crypto.randomUUID()`; no WebSocket transport exists.
 
 **Optional peer dependencies (all `optional: true`, lazily loaded via dynamic `import()`):**
 - `@oneunit/kafka` v1 — OneUnit-native Kafka client (driver: `oneunit`)
@@ -106,7 +107,7 @@ import { createMicroservice } from '@oneunit/microservice';
 
 // Configuration precedence: config file (CONFIG_PATH or ./config.json)
 // → env-built config when the file is absent → Zod schema defaults
-// → shallow programmatic overrides applied post-validation.
+// → programmatic overrides (deep-merged via mergeConfig, then re-validated).
 const app = await createMicroservice({
   config: {
     service: {
@@ -142,7 +143,7 @@ await app.stop();    // disconnects Kafka, closes transports in reverse order,
                      // deregisters the lease; aggregates shutdown errors
 ```
 
-Note: passing `config.adapters` **replaces** the whole adapters section (shallow `Object.assign`, no deep merge, no re-validation). Required config sections are `service`, `security`, `registry`, `auth`, `observability`, `crypto` — supply them or let the file/env/defaults provide them.
+Configuration merging uses `mergeConfig`: plain objects are deep-merged field by field; arrays, scalars, and security-sensitive objects (`service.credentials`) are replaced wholesale. The merged result is re-validated with the full Zod schema before any runtime resource is constructed, and the final config is returned frozen. Required sections are `service`, `security`, `registry`, `auth`, `observability`, `crypto` — supply them or let the file/env/defaults provide them.
 
 ## Public Exports
 
@@ -312,7 +313,7 @@ See `config.example.json` for a complete example.
 1. **Configuration file** — explicit `configPath`, `CONFIG_PATH` env var, or `./config.json`
 2. **Environment fallback** — if no file exists, config is built from `SERVICE_*`, `SECURITY_*`, `REGISTRY_*`, `REDIS_*`, `AUTH_*`, `OBSERVABILITY_*`, `CRYPTO_*`, `KAFKA_*`, `NATS_*`, `TCP_*`, `UDP_*`, `TRPC_*`, `GRPC_*`, `CONNECT_*` variables (env vars are not merged on top of an existing file)
 3. **Zod schema defaults** — applied during validation
-4. **Programmatic overrides** — `createMicroservice({ config })` applies a shallow, top-level section replacement **after** validation (no deep merge, no re-validation)
+4. **Programmatic overrides** — `createMicroservice({ config })` deep-merges overrides (plain objects merged field by field; arrays, scalars, and `service.credentials` replaced wholesale) **then re-validates the full merged result** with `MicroserviceConfigSchema` before constructing any runtime resources; the final config is returned frozen
 
 ## Architecture
 
@@ -425,12 +426,10 @@ src/
 ```bash
 pnpm install        # Install dependencies
 pnpm run build      # tsc && tsc-alias → dist/
-pnpm run test       # vitest run (54 files, ~1,427 tests)
+pnpm run test       # vitest run (73 test files)
 pnpm run typecheck  # tsc --noEmit
 pnpm run lint       # eslint src
 ```
-
-Known issue: `test/internal/shutdown.test.ts` produces one pre-existing unhandled rejection ("Shutdown timeout") — documented in `REFACTOR_REPORT.md`, unrelated to feature work.
 
 ## Testing
 

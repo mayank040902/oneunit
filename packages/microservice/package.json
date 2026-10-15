@@ -25,6 +25,10 @@
       "import": "./dist/adapters/messaging/nats/index.js",
       "types": "./dist/adapters/messaging/nats/index.d.ts"
     },
+    "./adapters/messaging/rabbitmq": {
+      "import": "./dist/adapters/messaging/rabbitmq/index.js",
+      "types": "./dist/adapters/messaging/rabbitmq/index.d.ts"
+    },
     "./adapters/rpc/grpc": {
       "import": "./dist/adapters/rpc/grpc/index.js",
       "types": "./dist/adapters/rpc/grpc/index.d.ts"
@@ -67,6 +71,7 @@
     "@oneunit/kafka": "^1.0.0",
     "@oneunit/logger": "^1.0.0",
     "@oneunit/redis": "^1.0.0",
+    "amqplib": "^0.10.3",
     "ioredis": "^5.0.0",
     "kafkajs": "^2.2.4",
     "nats": "^2.28.0",
@@ -81,6 +86,9 @@
       "optional": true
     },
     "@oneunit/redis": {
+      "optional": true
+    },
+    "amqplib": {
       "optional": true
     },
     "ioredis": {
@@ -100,6 +108,7 @@
     }
   },
   "devDependencies": {
+    "@types/amqplib": "^0.10.4",
     "@types/node": "^20.11.0",
     "@vitest/coverage-v8": "^3.2.7",
     "eslint": "^10.11.0",

@@ -64,9 +64,11 @@ export class UdpTransport extends BaseTransport implements DatagramTransport {
       this.socket.setMulticastTTL(this.config.ttl ?? 1);
       this.socket.setMulticastLoopback(true);
     }
+
+    this.started = true;
   }
 
-async close(): Promise<void> {
+  async close(): Promise<void> {
     if (this.config.multicast) {
       this.socket?.dropMembership(this.config.multicast.address);
     }
@@ -76,6 +78,8 @@ async close(): Promise<void> {
         this.socket!.close(resolve);
       });
     }
+
+    this.started = false;
   }
 
   async healthCheck(): Promise<TransportHealth> {

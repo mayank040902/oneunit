@@ -68,9 +68,7 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
       this.js = this.nc.jetstream();
     }
 
-    this.nc.closed().then(() => {
-      // this.started = false; - use isStarted() instead
-    });
+    this.started = true;
   }
 
   async close(): Promise<void> {
@@ -83,6 +81,9 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
       await this.nc.drain();
       this.nc = null;
     }
+
+    this.js = null;
+    this.started = false;
   }
 
   async healthCheck(): Promise<TransportHealth> {
@@ -94,12 +95,16 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
   }
 
   async publish(topic: string, message: unknown, options: PublishOptions = {}): Promise<void> {
+    if (!this.isStarted() || !this.nc) {
+      throw new Error('NATS transport not started');
+    }
+
     const subject = `${this.config.subjects.prefix}.${topic}`;
     const data = JSON.stringify(message);
 
     if (this.js && this.config.jetstream?.enabled) {
       await this.js.publish(subject, new TextEncoder().encode(data), { headers: recordToHeaders(options.headers) });
-    } else if (this.nc) {
+    } else {
       this.nc.publish(subject, new TextEncoder().encode(data));
     }
   }

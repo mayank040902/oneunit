@@ -90,12 +90,20 @@ export async function createKafkaAdapter(
       // Already started in createKafkaAdapter
     },
 
-    async close(): Promise<void> {
-      await client.disconnect();
+     async close(): Promise<void> {
       for (const consumer of consumers.values()) {
-        await consumer.disconnect();
+        try {
+          await consumer.disconnect();
+        } catch (err) {
+          logger?.error?.(err as Error, 'Error disconnecting Kafka consumer');
+        }
       }
       consumers.clear();
+      try {
+        await client.disconnect();
+      } catch (err) {
+        logger?.error?.(err as Error, 'Error disconnecting Kafka client');
+      }
     },
 
     async healthCheck() {
@@ -120,6 +128,16 @@ export async function createKafkaAdapter(
       const fullTopic = `${config.topics.prefix}.${topic}`;
       const groupId = options.groupId ?? `${config.clientId}-${topic}`;
 
+      const existing = consumers.get(topic);
+      if (existing) {
+        try {
+          await existing.disconnect();
+        } catch (err) {
+          logger?.error?.(err as Error, 'Error disconnecting stale consumer during re-subscribe');
+        }
+        consumers.delete(topic);
+      }
+
       const consumer = await client.consume(fullTopic, async (payload: OneUnitKafkaPayload) => {
         try {
           await handler(payload.message.value, toMessageContext(payload));
@@ -128,7 +146,7 @@ export async function createKafkaAdapter(
             await payload.ack();
           }
         } catch (err) {
-          logger?.error(`Error processing message from ${fullTopic}`, { error: err });
+          logger?.error?.(`Error processing message from ${fullTopic}`, { error: err });
           if (!options.autoAck && payload.nak) {
             await payload.nak();
           }

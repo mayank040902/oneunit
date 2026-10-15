@@ -31,6 +31,7 @@ export class KafkaTransport extends BaseTransport implements MessagePublisher, M
     this.resolvedDriver = resolved.driver;
     this.driverAdapter = await resolved.module.createAdapter(this.config, this.logger);
     await this.driverAdapter.start();
+    this.started = true;
   }
 
   async close(): Promise<void> {
@@ -38,6 +39,7 @@ export class KafkaTransport extends BaseTransport implements MessagePublisher, M
       await this.driverAdapter.close();
       this.driverAdapter = null;
     }
+    this.started = false;
   }
 
   async healthCheck(): Promise<TransportHealth> {

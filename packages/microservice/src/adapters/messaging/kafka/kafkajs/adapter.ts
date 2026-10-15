@@ -73,11 +73,16 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
         logger?.info('Kafka producer disconnected');
       }
       for (const consumer of consumers.values()) {
-        await consumer.disconnect();
+        try {
+          await consumer.disconnect();
+        } catch (err) {
+          logger?.error?.(err as Error, 'Error disconnecting Kafka consumer during close');
+        }
       }
       consumers.clear();
       logger?.info('Kafka consumers disconnected');
     },
+
 
     async healthCheck() {
       return {
@@ -108,12 +113,34 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
       const fullTopic = `${config.topics.prefix}.${topic}`;
       const groupId = options.groupId ?? `${config.clientId}-${topic}`;
 
-      const consumer = kafka.consumer({ groupId, ...config.consumer });
+      const existing = consumers.get(topic);
+      if (existing) {
+        try {
+          await existing.disconnect();
+        } catch (err) {
+          logger?.error?.(err as Error, 'Error disconnecting stale consumer during re-subscribe');
+        }
+        consumers.delete(topic);
+      }
+
+      const consumer = kafka.consumer({ groupId, ...config.consumer, retry: { retries: 3 } });
       await consumer.connect();
       await consumer.subscribe({ topic: fullTopic, fromBeginning: options.fromBeginning });
-      
+
+      consumer.on((consumer as any).events?.CRASH || (consumer as any).events?.crash || "crash", (arg: any) => {
+        const err = arg?.payload?.error || arg?.error || arg;
+        logger?.error?.(err as Error, `Kafka consumer crashed for ${fullTopic}`);
+      });
+      consumer.on((consumer as any).events?.CONNECT || (consumer as any).events?.connect || "connect", () => {
+        logger?.info('Kafka consumer connected', { topic: fullTopic, groupId });
+      });
+      consumer.on((consumer as any).events?.DISCONNECT || (consumer as any).events?.disconnect || "disconnect", () => {
+        logger?.warn('Kafka consumer disconnected', { topic: fullTopic, groupId });
+      });
+
       await consumer.run({
-        eachMessage: async ({ topic, partition: _partition, message }: EachMessagePayload) => {
+        autoCommit: false,
+        eachMessage: async ({ topic, partition, message }: EachMessagePayload) => {
           try {
             const value = message.value ? JSON.parse(message.value.toString()) : null;
             const headersRecord = headersToRecord(message.headers);
@@ -123,14 +150,15 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
               traceContext: headersRecord?.['trace-context'] ? JSON.parse(headersRecord['trace-context']) as Record<string, string> : undefined,
               headers: headersRecord,
             });
+            await consumer.commitOffsets([{ topic, partition, offset: (Number(message.offset) + 1).toString() }]);
           } catch (err) {
-            logger?.error(`Error processing message from ${fullTopic}`, { error: err });
+            logger?.error?.(`Error processing message from ${fullTopic}`, { error: err });
+            // Don't throw to prevent consumer crash
           }
         },
       });
-      
+
       consumers.set(topic, consumer);
-      logger?.info('Kafka consumer subscribed', { topic: fullTopic, groupId });
     },
 
     async unsubscribe(topic: string): Promise<void> {

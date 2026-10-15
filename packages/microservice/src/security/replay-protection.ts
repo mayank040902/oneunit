@@ -45,6 +45,11 @@ export class ReplayProtection {
     const key = `${messageId.source}:${messageId.id}`;
     const now = Date.now();
 
+    // Opportunistic cleanup: reap expired entries so correctness does
+    // not depend on start() being called. This is cheap (single scan
+    // of timestamps) and keeps memory bounded even in one-shot usage.
+    this.lazyCleanup(now);
+
     // Check if timestamp is too far in the future (beyond clock skew tolerance)
     if (messageId.timestamp > now + this.config.futureSkewMs) {
       return { allowed: false, reason: 'Message timestamp exceeds future skew tolerance' };
@@ -96,7 +101,35 @@ export class ReplayProtection {
 
   isReplay(messageId: MessageId): boolean {
     const key = `${messageId.source}:${messageId.id}`;
+    const stored = this.timestamps.get(key);
+    if (stored === undefined) {
+      return false;
+    }
+    if (Date.now() - stored > this.config.ttlMs) {
+      return false;
+    }
     return this.store.get(messageId.source)?.has(key) ?? false;
+  }
+
+  private lazyCleanup(now: number): void {
+    const cutoff = now - this.config.ttlMs;
+    let hadExpired = false;
+
+    for (const [key, timestamp] of this.timestamps.entries()) {
+      if (timestamp < cutoff) {
+        hadExpired = true;
+        const source = key.split(':', 1)[0];
+        if (!source) continue;
+        const sourceSet = this.store.get(source);
+        if (sourceSet) {
+          sourceSet.delete(key);
+          if (sourceSet.size === 0) {
+            this.store.delete(source);
+          }
+        }
+        this.timestamps.delete(key);
+      }
+    }
   }
 
   private cleanup(): void {

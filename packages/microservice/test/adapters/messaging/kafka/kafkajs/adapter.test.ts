@@ -14,6 +14,9 @@ const mockConsumer = {
   disconnect: vi.fn().mockResolvedValue(undefined),
   subscribe: vi.fn().mockResolvedValue(undefined),
   run: vi.fn().mockResolvedValue(undefined),
+  on: vi.fn(),
+  commitOffsets: vi.fn().mockResolvedValue(undefined),
+  events: { CRASH: "consumer.crash", CONNECT: "consumer.connect", DISCONNECT: "consumer.disconnect" },
 };
 
 const mockKafka = {
@@ -210,7 +213,7 @@ describe('KafkaJS Driver Adapter', () => {
     const handler = vi.fn();
     await adapter.subscribe('test-topic', handler, { groupId: 'custom-group' });
 
-    expect(mockKafka.consumer).toHaveBeenCalledWith({ groupId: 'custom-group' });
+    expect(mockKafka.consumer).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'custom-group' }));
     expect(mockConsumer.subscribe).toHaveBeenCalledWith({
       topic: 'oneunit.test-topic',
       fromBeginning: undefined,
@@ -223,7 +226,7 @@ describe('KafkaJS Driver Adapter', () => {
 
     await adapter.subscribe('test-topic', vi.fn());
 
-    expect(mockKafka.consumer).toHaveBeenCalledWith({ groupId: 'my-client-test-topic' });
+    expect(mockKafka.consumer).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'my-client-test-topic' }));
   });
 
   it('should handle fromBeginning option', async () => {
