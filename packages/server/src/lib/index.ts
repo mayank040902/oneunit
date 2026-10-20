@@ -28,6 +28,17 @@ export type {
 export { collectMetadata } from "./collect-metadata.js";
 
 export {
+    DEFAULT_MAX_VALIDATION_FIELDS,
+    toValidationFields,
+} from "./validation.js";
+
+export type {
+    ToValidationFieldsOptions,
+    ValidationErrorLike,
+    ValidationIssueLike,
+} from "./validation.js";
+
+export {
     authCookieOptions,
     accessCookieOptions,
     refreshCookieOptions,

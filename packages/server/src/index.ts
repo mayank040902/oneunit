@@ -13,6 +13,21 @@ export * from "./lib/index.js";
 export * from "./health/index.js";
 
 export type {
+    ApiResponse,
+    DeletionOptions,
+    FailedOptions,
+    FailureOptions,
+    MetadataLimits,
+    PaginatedOptions,
+    PaginationMeta,
+    ResponseOptions,
+    SensitiveMetadataKey,
+    SuccessOptions,
+    ValidationErrorPayload,
+    ValidationFailedOptions,
+} from "./plugins/index.js";
+
+export type {
     BootstrapServerOptions,
     StartedBootstrapServer,
     PluginEntry,

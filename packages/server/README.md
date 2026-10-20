@@ -106,7 +106,7 @@ await startServer({
 | :--- | :--- | :--- |
 | `logger` | `boolean \| LoggerPluginOptions` | Fastify logger or `@oneunit/logger` plugin |
 | `errorHandler` | `boolean \| ErrorHandlerPluginOptions` | Global error handler |
-| `responseManagement` | `boolean` | Response management layer |
+| `responseManagement` | `boolean \| ResponseManagementPluginOptions` | Response management layer (metadata redaction and size limits on by default) |
 | `msgpack` | `boolean \| MsgpackPluginOptions` | MessagePack serialization support |
 | `zod` | `boolean` | Zod type provider for Fastify |
 | `cors` | `boolean \| CorsPluginOptions` | CORS headers (`origin: true, credentials: true` by default) |
@@ -175,6 +175,160 @@ The canonical named exports. Accept `(port, options)` or `(options)` overloads.
 ```
 
 Disable with `health: false`.
+
+## Response layer
+
+The `responseManagement` plugin decorates every reply with typed helpers. Every
+response uses the same envelope:
+
+```json
+{
+  "success": true,
+  "code": "200",
+  "message": "Success",
+  "data": { },
+  "metadata": { }
+}
+```
+
+Every helper takes **one options object with named fields**, so no argument has
+to be identified by its position:
+
+```ts
+reply.success({ data: user, message: "Profile loaded", code: "200" });
+reply.created({ data: user });
+reply.updated({ data: user });
+reply.deleted({ data: { id } });
+reply.paginated({ data: rows, pagination: { total, page, pageSize, totalPages } });
+
+reply.badRequest({ message: "Invalid request", data: { field: "email" } });
+reply.notFound({ message: "User not found" });
+reply.conflict({ message: "Email already taken" });
+reply.failed({ message: "Gone", code: "NOT_FOUND", statusCode: 404 });
+```
+
+`data` is the payload the client asked for. `metadata` is extra context and is
+sanitised before it is sent.
+
+```ts
+app.get("/users", async (request, reply) => {
+    const { page, pageSize } = parseQuery(request.query);
+    const { rows, total } = await userService.list(page, pageSize);
+
+    return reply.paginated({
+        data: rows,
+        pagination: { total, page, pageSize, totalPages: Math.ceil(total / pageSize) },
+    });
+});
+```
+
+### Validation failures
+
+Report a field-keyed error map, which is the shape a client binds to its
+inputs. `toValidationFields` maps the issues of any validation library to it
+and keeps only the issue message — the validator's issue code, expected type,
+and constraint pattern stay on the server.
+
+```ts
+import { toValidationFields } from "@oneunit/server";
+
+app.post("/register", async (request, reply) => {
+    const result = schema.safeParse(request.body);
+    if (!result.success) {
+        return reply.validationFailed({
+            fields: toValidationFields(result.error),
+            message: "Please check the highlighted fields",
+        });
+    }
+
+    return reply.created({ data: await userService.create(result.data) });
+});
+```
+
+```json
+{
+  "success": false,
+  "code": "VALIDATION_ERROR",
+  "message": "Please check the highlighted fields",
+  "data": { "fields": { "email": ["Invalid email address"] } }
+}
+```
+
+`code` is the HTTP status as a string on a success (`"200"`, `"201"`) and the
+platform error code on a failure (`"BAD_REQUEST"`, `"NOT_FOUND"`,
+`"VALIDATION_ERROR"`), so a failure reads the same whether the handler or the
+framework raised it.
+
+### Error responses
+
+The `errorHandler` plugin answers with the errors package's payload:
+
+```json
+{
+  "error": { "name": "AppError", "message": "…", "code": "BAD_REQUEST", "statusCode": 400 },
+  "timestamp": "…",
+  "path": "/auth/register",
+  "requestId": "req-1"
+}
+```
+
+That shape covers every failure, including the ones raised before a handler
+runs: a malformed request body, an unsupported media type, an unmatched route,
+or a route schema that did not validate. Turn on `errorEnvelope` to answer all
+of them with the response layer's envelope instead, so the client only has to
+read one shape:
+
+```ts
+const app = await createBootstrapServer({
+    errorHandler: { errorEnvelope: true, redactDetails: true },
+});
+```
+
+```json
+{
+  "success": false,
+  "code": "BAD_REQUEST",
+  "message": "Body is not valid JSON but content-type is set to 'application/json'",
+  "metadata": { "requestId": "req-1", "path": "/auth/register", "timestamp": "…" }
+}
+```
+
+`details` moves to `data`, so a route schema that did not validate answers with
+`data.fields` — the same place `reply.validationFailed` puts it. A
+`customHandler` you supply yourself takes precedence over `errorEnvelope`.
+
+### Metadata safety
+
+`metadata` is sanitised before it is sent: sensitive keys are masked and the
+payload is bounded, so echoing user input cannot leak a credential. The `data`
+payload is never rewritten.
+
+```ts
+const app = await createBootstrapServer({
+    responseManagement: {
+        redactMetadata: true,                  // default; pass an array to override the key list
+        metadataLimits: { maxStringLength: 2048, maxKeys: 100 },
+    },
+});
+```
+
+### Migrating from the positional form
+
+The helpers used to take their parts positionally, and the order was not
+consistent across the family — a success took the payload first, a failure took
+the message first — so no argument could be identified by its name. Passing the
+old shape now throws instead of failing silently.
+
+| Before | After |
+| :--- | :--- |
+| `reply.success(user)` | `reply.success({ data: user })` |
+| `reply.success(user, "Loaded")` | `reply.success({ data: user, message: "Loaded" })` |
+| `reply.created(user)` | `reply.created({ data: user })` |
+| `reply.paginated(rows, pagination)` | `reply.paginated({ data: rows, pagination })` |
+| `reply.badRequest("Invalid")` | `reply.badRequest({ message: "Invalid" })` |
+| `reply.badRequest("Invalid", payload)` | `reply.badRequest({ message: "Invalid", data: payload })` |
+| `reply.failed("Gone", "404")` | `reply.failed({ message: "Gone", code: "404" })` |
+| `reply.validationFailed(fields, "Invalid")` | `reply.validationFailed({ fields, message: "Invalid" })` |
 
 ## Plugin ordering
 

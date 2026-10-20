@@ -464,7 +464,7 @@ interface BootstrapServerOptions {
   // Framework plugins
   logger?: boolean | LoggerPluginOptions | FastifyServerOptions["logger"];
   errorHandler?: PluginConfig<ErrorHandlerPluginOptions>;
-  responseManagement?: PluginConfig;
+  responseManagement?: PluginConfig<ResponseManagementPluginOptions>;
   msgpack?: PluginConfig<MsgpackPluginOptions>;
   zod?: boolean;
 
@@ -1153,6 +1153,68 @@ serialization (msgpack)
 ```
 
 The package must not impose application-specific response payloads.
+
+## Envelope
+
+```text
+success  boolean
+code     string    application-level status code
+message  string
+data     payload   present on successes, and on failures that carry one
+metadata context   pagination, trace-ids, …
+```
+
+`metadata` is the diagnostic bag, and it is sanitised before it is sent:
+sensitive keys are masked and the payload is bounded. `data` is the
+application's deliberate output and is never rewritten.
+
+## Named options
+
+Every helper takes one options object with named fields. The parts of a
+response must be identifiable by name, not by position: `data` and `metadata`
+share a type, so a positional API cannot tell a swapped argument apart, and the
+order was not consistent across the family.
+
+```ts
+reply.success({ data, message?, code?, metadata? })
+reply.paginated({ data, pagination, message?, code?, metadata? })
+reply.badRequest({ message?, data?, metadata? })
+reply.failed({ message?, code?, data?, metadata?, statusCode? })
+reply.validationFailed({ fields, message?, metadata? })
+```
+
+Passing the old positional shape throws.
+
+## Response Management Plugin Options
+
+`redactMetadata`, `metadataLimits`, `defaultMessage`, `defaultCode`.
+
+## Boundaries
+
+A symbolic `code` resolves to its HTTP status (`NOT_FOUND` → 404) rather than
+degrading to 400.
+
+`code` is the HTTP status as a string on a success (`"200"`, `"201"`) and the
+platform error code on a failure (`"BAD_REQUEST"`, `"NOT_FOUND"`,
+`"VALIDATION_ERROR"`). The HTTP status always matches.
+
+Validation failures are reported as a field-keyed map, built with
+`toValidationFields` from the issues of a validation library. Only the issue
+message crosses the wire; the validator's issue code, expected type, and
+constraint pattern stay on the server.
+
+## Error responses
+
+`errorHandler` answers with the errors package's `{ error: { … } }` payload.
+That covers the failures raised before a handler runs — a malformed body, an
+unsupported media type, an unmatched route, a route schema that did not
+validate — so those responses would otherwise use a different shape from the
+ones a handler produces.
+
+`errorHandler: { errorEnvelope: true }` re-shapes them into the envelope
+above, through the errors package's own `customHandler` hook. `details`
+becomes `data`, so a route schema that did not validate answers with
+`data.fields`, the same place `reply.validationFailed` puts it.
 
 ---
 

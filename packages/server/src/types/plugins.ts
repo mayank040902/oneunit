@@ -1,3 +1,5 @@
+import type { ResponseManagementPluginOptions } from "../plugins/core/response-management.js";
+
 export type PluginConfig<T extends object = Record<string, unknown>> = boolean | T;
 
 export interface DatabasePluginOptions {
@@ -247,4 +249,4 @@ export interface BuiltinPluginsOptions {
     swaggerUI?: PluginConfig<SwaggerUIPluginOptions>;
 }
 
-export interface ResponseManagementPluginOptions {}
+export type { ResponseManagementPluginOptions };

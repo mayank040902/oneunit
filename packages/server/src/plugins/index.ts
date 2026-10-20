@@ -1,8 +1,33 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { ResponseManagementPluginOptions } from "./core/response-management.js";
+import type { BuiltinPluginsOptions } from "../types/plugins.js";
 import { applyZodTypeProvider } from "./http/zod.js";
 
 export type { ResponseManagementPluginOptions };
+export {
+    ResponseManager,
+    resolveHttpStatus,
+    sanitizeMetadata,
+    DEFAULT_METADATA_LIMITS,
+    DEFAULT_SENSITIVE_METADATA_KEYS,
+    REDACTED_METADATA_VALUE,
+    TRUNCATED_METADATA_VALUE,
+} from "./core/response-management.js";
+export type {
+    ApiResponse,
+    DeletionOptions,
+    FailedOptions,
+    FailureOptions,
+    MetadataLimits,
+    MetadataSanitizeOptions,
+    PaginatedOptions,
+    PaginationMeta,
+    ResponseOptions,
+    SensitiveMetadataKey,
+    SuccessOptions,
+    ValidationErrorPayload,
+    ValidationFailedOptions,
+} from "./core/response-management.js";
 export { applyZodTypeProvider } from "./http/zod.js";
 
 export type PluginConfig<T extends object = Record<string, unknown>> = boolean | T;
@@ -51,28 +76,6 @@ export { responseManagementPlugin } from "./core/response-management.js";
 export { msgpackPlugin } from "./core/msgpack.js";
 export { loggerPlugin } from "./core/logger.js";
 export { registerSystemHealthProvider } from "./core/system-health.js";
-
-import {
-    type CorsPluginOptions,
-    type HelmetPluginOptions,
-    type CookiePluginOptions,
-    type CompressPluginOptions,
-    type RateLimitPluginOptions,
-    type RequestContextPluginOptions,
-    type MultipartPluginOptions,
-    type CsrfPluginOptions,
-    type UnderPressurePluginOptions,
-    type SwaggerPluginOptions,
-    type SwaggerUIPluginOptions,
-    type BuiltinPluginsOptions,
-    type LoggerPluginOptions,
-    type DatabasePluginOptions,
-    type KafkaPluginOptions,
-    type RedisPluginOptions,
-    type RealtimePluginOptions,
-    type ErrorHandlerPluginOptions,
-    type MsgpackPluginOptions,
-} from "../types/plugins.js";
 
 export const DEFAULT_BUILTIN_PLUGINS: BuiltinPluginsOptions = {
     cors: { origin: true, credentials: true },

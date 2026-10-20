@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- `ResponseManagementPluginOptions` is no longer empty: `redactMetadata`, `metadataLimits`, `defaultMessage`, and `defaultCode` configure the response layer
+- `reply.validationFailed({ fields, message?, metadata? })` — a 400 failure whose payload is a field-keyed error map, the shape a client binds to its inputs
+- `errorHandler: { errorEnvelope: true }` — answers framework errors (malformed body, unsupported media type, unmatched route, route schema that did not validate) in the response layer's envelope, so the client reads one shape for every failure
+- `toValidationFields(issues)` — maps the issues of any validation library (Zod, Joi, Yup) to that field-keyed map, keeping only the issue message and dropping validator internals
+- `sanitizeMetadata(metadata, options)` and the `DEFAULT_METADATA_LIMITS` / `DEFAULT_SENSITIVE_METADATA_KEYS` constants
+- `ResponseManager`, `ApiResponse`, `PaginationMeta`, `MetadataLimits`, `ValidationErrorPayload`, `resolveHttpStatus`, and the `ResponseOptions` / `SuccessOptions` / `PaginatedOptions` / `FailureOptions` / `FailedOptions` / `ValidationFailedOptions` types are exported from the package barrel
+
+### Changed
+
+- **Breaking** — every reply helper takes a single options object with named fields. The parts of a response must be identifiable by name: `data` and `metadata` share a type, so a positional API could not tell a swapped argument apart, and the order was not consistent across the family (a success took the payload first, a failure took the message first). Passing the old positional shape now throws
+- **Breaking** — the error helpers take `(message?, data?, metadata?)` in the positional form, which is replaced by `({ message?, data?, metadata? })`; `failed` takes `({ message?, code?, data?, metadata?, statusCode? })`
+- **Breaking** — the error helpers report the platform error code rather than the HTTP status as a string: `badRequest` → `"BAD_REQUEST"`, `unauthorized` → `"AUTHENTICATION_ERROR"`, `forbidden` → `"AUTHORIZATION_ERROR"`, `notFound` → `"NOT_FOUND"`, `conflict` → `"CONFLICT"`, `unprocessable` → `"UNPROCESSABLE_ENTITY"`, `serverError` → `"INTERNAL_ERROR"`, `validationFailed` → `"VALIDATION_ERROR"`. A success keeps the HTTP status (`"200"`, `"201"`). A numeric `code` is still accepted and still sets the HTTP status
+- Response `metadata` is sanitised before it is sent: sensitive keys are masked and the payload is bounded. The `data` payload is never rewritten
+- A symbolic `code` now resolves to its HTTP status (`NOT_FOUND` → 404) instead of silently degrading to 400; pass `statusCode` to override
+- `ApiResponse.data` is no longer limited to success responses
+
 ## 1.0.0 - 2026-09-26
 
 ### Added
