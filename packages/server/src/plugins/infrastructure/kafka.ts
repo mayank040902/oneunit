@@ -105,7 +105,7 @@ async function kafkaPlugin(
     registry.register(createKafkaHealthProvider(
         async () => {
             // Kafka health check - try to get metadata or list topics
-            const producer = await client.getProducer();
+            await client.getProducer();
             // If we can get a producer, the connection is healthy
             return;
         },

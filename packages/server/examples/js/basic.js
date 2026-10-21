@@ -1,12 +1,22 @@
-import { startServer } from "@oneunit/server";
+async function main() {
+  const { startServer } = await import("@oneunit/server");
+  const { address, close } = await startServer({
+    serviceName: "api",
+    logger: false,
+    env: false,
+    database: false,
+    kafka: false,
+    redis: false,
+    realtime: false,
+    health: false,
+    port: 0,
+    gracefulShutdown: false,
+  });
+  console.log(`listening at ${address}`);
+  await close();
+}
 
-startServer({
-  serviceName: "api",
-  logger: true,
-  gracefulShutdown: true,
-  port: 8080,
-  database: false,
-  kafka: false,
-  redis: false,
-  realtime: false,
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });

@@ -16,9 +16,18 @@
         "esModuleInterop": true,
         "forceConsistentCasingInFileNames": true,
         "verbatimModuleSyntax": true,
-        "isolatedModules": true
+        "isolatedModules": true,
+        "types": [
+            "node"
+        ]
     },
     "include": [
         "src"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        "test",
+        "examples"
     ]
 }

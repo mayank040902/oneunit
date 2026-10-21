@@ -16,6 +16,7 @@ import type {
     UnderPressurePluginOptions,
     SwaggerPluginOptions,
     SwaggerUIPluginOptions,
+    ResponseManagementPluginOptions,
 } from "../plugins/index.js";
 import type { BootstrapHooks } from "../hooks/index.js";
 import type { BootstrapHealthOptions } from "../routes/health.js";
@@ -52,7 +53,7 @@ export interface BootstrapServerOptions {
     redis?: PluginConfig<RedisPluginOptions>;
     kafka?: PluginConfig;
     realtime?: PluginConfig;
-    responseManagement?: PluginConfig;
+    responseManagement?: PluginConfig<ResponseManagementPluginOptions>;
     errorHandler?: PluginConfig;
     msgpack?: PluginConfig;
     requestContext?: PluginConfig<RequestContextPluginOptions>;
@@ -67,10 +68,16 @@ export interface BootstrapServerOptions {
     extraPlugins?: PluginEntry[];
     hooks?: BootstrapHooks;
     configure?: Configurer;
-    health?: false | BootstrapHealthOptions;
+    health?: boolean | BootstrapHealthOptions;
     listen?: FastifyListenOptions;
     env?: false | LoadEnvOptions;
     gracefulShutdown?: boolean;
+    /**
+     * Time in milliseconds the server waits for in-flight requests to finish
+     * during a shutdown before the remaining connections are dropped.
+     * Defaults to 10000.
+     */
+    shutdownTimeout?: number;
 }
 
 export interface StartedBootstrapServer {

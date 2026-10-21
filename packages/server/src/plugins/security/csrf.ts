@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 
 export interface CsrfPluginOptions {

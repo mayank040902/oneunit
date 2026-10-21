@@ -1,6 +1,3 @@
-import type { HealthRouteOptions, HealthCheckProvider } from "../routes/health.js";
-import type { BootstrapHooks } from "../hooks/index.js";
-
 export type HealthStatus = "healthy" | "degraded" | "unhealthy";
 
 export interface HealthCheckResult {

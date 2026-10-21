@@ -1,33 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import type { ResponseManagementPluginOptions } from "./core/response-management.js";
-import type { BuiltinPluginsOptions } from "../types/plugins.js";
 import { applyZodTypeProvider } from "./http/zod.js";
 
 export type { ResponseManagementPluginOptions };
-export {
-    ResponseManager,
-    resolveHttpStatus,
-    sanitizeMetadata,
-    DEFAULT_METADATA_LIMITS,
-    DEFAULT_SENSITIVE_METADATA_KEYS,
-    REDACTED_METADATA_VALUE,
-    TRUNCATED_METADATA_VALUE,
-} from "./core/response-management.js";
-export type {
-    ApiResponse,
-    DeletionOptions,
-    FailedOptions,
-    FailureOptions,
-    MetadataLimits,
-    MetadataSanitizeOptions,
-    PaginatedOptions,
-    PaginationMeta,
-    ResponseOptions,
-    SensitiveMetadataKey,
-    SuccessOptions,
-    ValidationErrorPayload,
-    ValidationFailedOptions,
-} from "./core/response-management.js";
 export { applyZodTypeProvider } from "./http/zod.js";
 
 export type PluginConfig<T extends object = Record<string, unknown>> = boolean | T;
@@ -72,10 +47,34 @@ export { kafkaPlugin } from "./infrastructure/kafka.js";
 export { redisPlugin } from "./infrastructure/redis.js";
 export { realtimePlugin } from "./realtime/realtime.js";
 export { errorHandlerPlugin } from "./core/errors.js";
-export { responseManagementPlugin } from "./core/response-management.js";
+export {
+    responseManagementPlugin,
+    ResponseManager,
+    HTTP_STATUS,
+    ERROR_RESPONSES,
+    SUCCESS_RESPONSES,
+} from "./core/response-management.js";
+export type {
+    ApiResponse,
+    SuccessResponse,
+    ErrorResponse,
+    FieldError,
+    HttpStatusCode,
+    ResponseOptions,
+    ErrorOptions,
+    ErrorResponseOptions,
+    RespondOptions,
+    PaginatedOptions,
+    PaginationMeta,
+    ResponseManagementOptions,
+    ErrorResponseName,
+    SuccessResponseName,
+} from "./core/response-management.js";
 export { msgpackPlugin } from "./core/msgpack.js";
 export { loggerPlugin } from "./core/logger.js";
 export { registerSystemHealthProvider } from "./core/system-health.js";
+
+import { type BuiltinPluginsOptions } from "../types/plugins.js";
 
 export const DEFAULT_BUILTIN_PLUGINS: BuiltinPluginsOptions = {
     cors: { origin: true, credentials: true },
@@ -212,7 +211,14 @@ export const OPTIONAL_PLUGINS: PluginSpec[] = [
 async function loadModule(specifier: string): Promise<Record<string, unknown> | null> {
     try {
         return await import(specifier) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
+        // Only a genuinely absent module is optional. A module that exists but
+        // fails to evaluate is a defect and must not be reported as "not
+        // installed", which would silently disable the plugin.
+        const code = (err as { code?: string } | undefined)?.code;
+        if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") {
+            throw err;
+        }
         return null;
     }
 }
@@ -263,14 +269,34 @@ function withoutUndefined<T extends object>(value: T): Partial<T> {
     ) as Partial<T>;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Merges the plugin layers, one level deep for the option objects.
+ *
+ * A flat merge would drop the siblings of every key the caller sets: `cors:
+ * { origin: [...] }` would lose the default `credentials: true`, and the
+ * documented default would no longer hold.
+ */
 export function mergeBuiltinPlugins(
     ...layers: Array<BuiltinPluginsOptions | undefined>
 ): BuiltinPluginsOptions {
-    return Object.assign(
-        {},
-        DEFAULT_BUILTIN_PLUGINS,
-        ...layers.filter(Boolean).map((layer) => withoutUndefined(layer as BuiltinPluginsOptions)),
-    );
+    const merged: Record<string, unknown> = { ...DEFAULT_BUILTIN_PLUGINS };
+
+    for (const layer of layers.filter(Boolean)) {
+        const entries = Object.entries(withoutUndefined(layer as BuiltinPluginsOptions));
+
+        for (const [key, value] of entries) {
+            const current = merged[key];
+            merged[key] = isPlainObject(current) && isPlainObject(value)
+                ? { ...current, ...value }
+                : value;
+        }
+    }
+
+    return merged as BuiltinPluginsOptions;
 }
 
 // Registration functions for each plugin category in the correct order
@@ -345,7 +371,7 @@ export async function registerInfrastructurePlugins(
 }
 
 export async function registerHealthPlugin(
-    server: FastifyInstance,
+    _server: FastifyInstance,
     _options: BuiltinPluginsOptions = {},
 ): Promise<void> {
     // System health provider is already registered in bootstrap.ts via

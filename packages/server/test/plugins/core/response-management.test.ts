@@ -1,166 +1,34 @@
-import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import { afterEach, describe, expect, it } from "vitest";
 import {
-  createBootstrapServer,
-  type BootstrapServerOptions,
+    createBootstrapServer,
+    type BootstrapServerOptions,
 } from "../../../src/bootstrap.js";
-import { toValidationFields } from "../../../src/lib/validation.js";
+import responseManagementPlugin, {
+    ERROR_RESPONSES,
+    HTTP_STATUS,
+    ResponseManager,
+    SUCCESS_RESPONSES,
+} from "../../../src/plugins/core/response-management.js";
 
-describe("Response Management Tests", () => {
-  const baseOptions: Partial<BootstrapServerOptions> = {
-    logger: false,
-    kafka: false,
-    realtime: false,
-    database: false,
-    redis: false,
-    env: false,
-    health: false,
-  };
+const apps: FastifyInstance[] = [];
 
-  it("centralizes successful responses", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/success", async () => ({ data: "ok" }));
-      },
-    });
+function track(app: FastifyInstance): FastifyInstance {
+    apps.push(app);
+    return app;
+}
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/success" });
-    
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.data).toBe("ok");
-    
-    await server.close();
-  });
-
-  it("centralizes error responses", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/error", async () => {
-          throw new Error("test error");
-        });
-      },
-    });
-
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/error" });
-    
-    expect(response.statusCode).toBe(500);
-    const body = response.json();
-    expect(body.error).toBeDefined();
-    
-    await server.close();
-  });
-
-  it("does not impose application-specific response schemas", async () => {
-    // This test verifies the architectural contract:
-    // Response management is centralized but doesn't enforce specific schemas
-    // Application can return any JSON-serializable data
-    
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/custom-response", async () => ({
-          custom: "format",
-          nested: { data: [1, 2, 3] },
-        }));
-      },
-    });
-
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/custom-response" });
-    
-    expect(response.statusCode).toBe(200);
-    expect(response.json().custom).toBe("format");
-    expect(response.json().nested.data).toEqual([1, 2, 3]);
-    
-    await server.close();
-  });
-
-  it("handles different status codes", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/created", async (request, reply) => {
-          return reply.code(201).send({ created: true });
-        });
-        app.get("/no-content", async (request, reply) => {
-          return reply.code(204).send();
-        });
-      },
-    });
-
-    await server.ready();
-    
-    const created = await server.inject({ method: "GET", url: "/created" });
-    expect(created.statusCode).toBe(201);
-    
-    const noContent = await server.inject({ method: "GET", url: "/no-content" });
-    expect(noContent.statusCode).toBe(204);
-    
-    await server.close();
-  });
-
-  it("handles array responses", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/array", async () => [1, 2, 3]);
-      },
-    });
-
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/array" });
-    
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual([1, 2, 3]);
-    
-    await server.close();
-  });
-
-  it("handles string responses", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/string", async () => "plain text");
-      },
-    });
-
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/string" });
-    
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toBe("plain text");
-    
-    await server.close();
-  });
-
-  it("can be disabled", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      responseManagement: false,
-    });
-
-    expect(server).toBeDefined();
-    await server.close();
-  });
-
-  it("accepts custom configuration", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      responseManagement: true,
-    });
-
-    expect(server).toBeDefined();
-    await server.close();
-  });
+afterEach(async () => {
+    for (const app of apps.splice(0)) {
+        try {
+            await app.close();
+        } catch {
+            // ignore close errors
+        }
+    }
 });
 
-describe("Response Management Metadata Safety Tests", () => {
-  const baseOptions: Partial<BootstrapServerOptions> = {
+const baseOptions: Partial<BootstrapServerOptions> = {
     logger: false,
     kafka: false,
     realtime: false,
@@ -168,481 +36,736 @@ describe("Response Management Metadata Safety Tests", () => {
     redis: false,
     env: false,
     health: false,
-  };
+};
 
-  it("redacts sensitive metadata keys by default", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/echo", async (_req, reply) =>
-          reply.success({ data: { id: "1" }, message: "OK", code: "200", metadata: { password: "hunter2", email: "a@b.c" } }),
-        );
-      },
+type RouteRegistrar = (app: FastifyInstance) => void;
+
+/** Reply decorators are looked up by name, so the catalogue can drive the tests. */
+type ReplyHelpers = Record<string, (options?: unknown) => FastifyReply>;
+
+function helpersOf(reply: FastifyReply): ReplyHelpers {
+    return reply as unknown as ReplyHelpers;
+}
+
+async function bootstrap(
+    routes: RouteRegistrar,
+    options: Partial<BootstrapServerOptions> = {},
+): Promise<FastifyInstance> {
+    const server = track(
+        await createBootstrapServer({
+            ...baseOptions,
+            ...options,
+            configure: (app) => {
+                routes(app);
+            },
+        }),
+    );
+    await server.ready();
+    return server;
+}
+
+describe("Response Management — success helpers", () => {
+    it("reply.ok() answers with the standard envelope", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/ok", async (_req, reply) => reply.ok());
+        });
+
+        const response = await server.inject({ method: "GET", url: "/ok" });
+
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.success).toBe(true);
+        expect(body.code).toBe("200");
+        expect(body.msg).toBe("Success");
+        expect(body.metadata.requestId).toBeTypeOf("string");
+        expect(body.data).toBeUndefined();
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/echo" });
+    it("reply.success() carries the payload, message and application code", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/success", async (_req, reply) =>
+                reply.success({
+                    data: { id: 1, email: "a@b.c" },
+                    message: "User created",
+                    code: "USER_CREATED",
+                }),
+            );
+        });
 
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.metadata.password).toBe("[REDACTED]");
-    expect(body.metadata.email).toBe("a@b.c");
+        const response = await server.inject({ method: "GET", url: "/success" });
 
-    await server.close();
-  });
-
-  it("redacts nested metadata", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/echo", async (_req, reply) =>
-          reply.badRequest({
-            message: "Invalid request",
-            metadata: { submitted: { token: "abc", name: "Ada" } },
-          }),
-        );
-      },
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.success).toBe(true);
+        expect(body.code).toBe("USER_CREATED");
+        expect(body.msg).toBe("User created");
+        expect(body.data).toEqual({ id: 1, email: "a@b.c" });
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/echo" });
+    it("reply.created() answers 201 with the catalogue message", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/created", async (_req, reply) => reply.created({ data: { id: 1 } }));
+        });
 
-    expect(response.statusCode).toBe(400);
-    const body = response.json();
-    expect(body.metadata.submitted.token).toBe("[REDACTED]");
-    expect(body.metadata.submitted.name).toBe("Ada");
+        const response = await server.inject({ method: "GET", url: "/created" });
 
-    await server.close();
-  });
-
-  it("never rewrites the data payload", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.post("/token", async (_req, reply) =>
-          reply.created({ data: { accessToken: "issued-token" } }),
-        );
-      },
+        expect(response.statusCode).toBe(201);
+        const body = response.json();
+        expect(body.success).toBe(true);
+        expect(body.code).toBe("201");
+        expect(body.msg).toBe(SUCCESS_RESPONSES.created.message);
+        expect(body.data).toEqual({ id: 1 });
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "POST", url: "/token" });
+    it("reply.accepted() answers 202", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/accepted", async (_req, reply) => reply.accepted());
+        });
 
-    expect(response.statusCode).toBe(201);
-    expect(response.json().data.accessToken).toBe("issued-token");
+        const response = await server.inject({ method: "GET", url: "/accepted" });
 
-    await server.close();
-  });
-
-  it("sanitises a hand-built envelope sent through reply.response", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/manual", async (_req, reply) =>
-          reply.response(
-            { success: true, code: "202", message: "Accepted", metadata: { secret: "s3cr3t" } },
-            202,
-          ),
-        );
-      },
+        expect(response.statusCode).toBe(202);
+        expect(response.json().msg).toBe(SUCCESS_RESPONSES.accepted.message);
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/manual" });
+    it("reply.noContent() answers 204 without a body", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/no-content", async (_req, reply) => reply.noContent());
+        });
 
-    expect(response.statusCode).toBe(202);
-    expect(response.json().metadata.secret).toBe("[REDACTED]");
+        const response = await server.inject({ method: "GET", url: "/no-content" });
 
-    await server.close();
-  });
-
-  it("allows redaction to be disabled", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      responseManagement: { redactMetadata: false },
-      configure: (app) => {
-        app.get("/echo", async (_req, reply) =>
-          reply.success({ data: { id: "1" }, message: "OK", code: "200", metadata: { password: "hunter2" } }),
-        );
-      },
+        expect(response.statusCode).toBe(204);
+        expect(response.body).toBe("");
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/echo" });
+    it("every catalogue success helper answers with its own status", async () => {
+        const server = await bootstrap((app) => {
+            for (const [name] of Object.entries(SUCCESS_RESPONSES)) {
+                if (name === "ok" || name === "created" || name === "accepted") continue;
+                app.get(`/${name}`, async (_req, reply) => helpersOf(reply)[name]());
+            }
+        });
 
-    expect(response.json().metadata.password).toBe("hunter2");
-
-    await server.close();
-  });
-
-  it("allows a custom redaction key list", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      responseManagement: { redactMetadata: ["apiKey"] },
-      configure: (app) => {
-        app.get("/echo", async (_req, reply) =>
-          reply.success({ data: { id: "1" }, message: "OK", code: "200", metadata: { apiKey: "abc", password: "hunter2" } }),
-        );
-      },
+        for (const [name, definition] of Object.entries(SUCCESS_RESPONSES)) {
+            if (name === "ok" || name === "created" || name === "accepted") continue;
+            const response = await server.inject({ method: "GET", url: `/${name}` });
+            expect(response.statusCode, name).toBe(definition.status);
+            const body = response.json();
+            expect(body.success, name).toBe(true);
+            expect(body.msg, name).toBe(definition.message);
+            expect(body.code, name).toBe(String(definition.status));
+        }
     });
-
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/echo" });
-
-    const body = response.json();
-    expect(body.metadata.apiKey).toBe("[REDACTED]");
-    expect(body.metadata.password).toBe("hunter2");
-
-    await server.close();
-  });
-
-  it("bounds metadata size", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      responseManagement: { metadataLimits: { maxStringLength: 10 } },
-      configure: (app) => {
-        app.get("/echo", async (_req, reply) =>
-          reply.success({ data: { id: "1" }, message: "OK", code: "200", metadata: { note: "x".repeat(50) } }),
-        );
-      },
-    });
-
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/echo" });
-
-    expect(response.json().metadata.note).toBe(`${"x".repeat(10)}[TRUNCATED]`);
-
-    await server.close();
-  });
-
-  it("honours custom default message and code", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      responseManagement: { defaultMessage: "All good", defaultCode: "OK" },
-      configure: (app) => {
-        app.get("/ok", async (_req, reply) => reply.success({ data: { id: "1" } }));
-      },
-    });
-
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/ok" });
-
-    const body = response.json();
-    expect(body.message).toBe("All good");
-    expect(body.code).toBe("OK");
-
-    await server.close();
-  });
 });
 
-describe("Response Management Error Shape Tests", () => {
-  const baseOptions: Partial<BootstrapServerOptions> = {
-    logger: false,
-    kafka: false,
-    realtime: false,
-    database: false,
-    redis: false,
-    env: false,
-    health: false,
-  };
+describe("Response Management — error helpers", () => {
+    it("reply.badRequest() answers 400 with the catalogue message", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/bad-request", async (_req, reply) => reply.badRequest());
+        });
 
-  it("maps a symbolic code to its HTTP status", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/missing", async (_req, reply) =>
-          reply.failed({ message: "Resource not found", code: "NOT_FOUND" }),
-        );
-      },
+        const response = await server.inject({ method: "GET", url: "/bad-request" });
+
+        expect(response.statusCode).toBe(400);
+        const body = response.json();
+        expect(body.success).toBe(false);
+        expect(body.code).toBe("400");
+        expect(body.msg).toBe(ERROR_RESPONSES.badRequest.message);
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/missing" });
+    it("an error helper keeps the payload it was given", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/conflict", async (_req, reply) =>
+                reply.conflict({ message: "Email already taken", data: { field: "email" } }),
+            );
+        });
 
-    expect(response.statusCode).toBe(404);
-    expect(response.json().code).toBe("NOT_FOUND");
+        const response = await server.inject({ method: "GET", url: "/conflict" });
 
-    await server.close();
-  });
-
-  it("keeps a numeric code as the HTTP status", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/missing", async (_req, reply) => reply.failed({ message: "Gone", code: "404" }));
-      },
+        expect(response.statusCode).toBe(409);
+        const body = response.json();
+        expect(body.success).toBe(false);
+        expect(body.msg).toBe("Email already taken");
+        expect(body.data).toEqual({ field: "email" });
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/missing" });
+    it("reply.validationError() carries the field errors", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/invalid", async (_req, reply) =>
+                reply.validationError({
+                    errors: [
+                        { field: "email", message: "must be an email", code: "INVALID_FORMAT" },
+                    ],
+                }),
+            );
+        });
 
-    expect(response.statusCode).toBe(404);
-    expect(response.json().code).toBe("404");
+        const response = await server.inject({ method: "GET", url: "/invalid" });
 
-    await server.close();
-  });
-
-  it("allows an explicit status override", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/limited", async (_req, reply) =>
-          reply.failed({ message: "Slow down", code: "RATE_LIMIT_EXCEEDED", statusCode: 429 }),
-        );
-      },
+        expect(response.statusCode).toBe(422);
+        const body = response.json();
+        expect(body.success).toBe(false);
+        expect(body.errors).toEqual([
+            { field: "email", message: "must be an email", code: "INVALID_FORMAT" },
+        ]);
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/limited" });
+    it("reply.error() uses the status it was given", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/error", async (_req, reply) =>
+                reply.error({ status: 409, message: "Conflict", code: "DUPLICATE" }),
+            );
+        });
 
-    expect(response.statusCode).toBe(429);
+        const response = await server.inject({ method: "GET", url: "/error" });
 
-    await server.close();
-  });
-
-  it("returns a field-keyed validation error map", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.post("/register", async (_req, reply) =>
-          reply.validationFailed({
-            fields: { email: ["Invalid email address"], name: ["Too short"] },
-            message: "Please check the highlighted fields",
-          }),
-        );
-      },
+        expect(response.statusCode).toBe(409);
+        const body = response.json();
+        expect(body.success).toBe(false);
+        expect(body.code).toBe("DUPLICATE");
+        expect(body.msg).toBe("Conflict");
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "POST", url: "/register" });
+    it("reply.failed() answers 400 by default", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/failed", async (_req, reply) => reply.failed());
+        });
 
-    expect(response.statusCode).toBe(400);
-    const body = response.json();
-    expect(body.success).toBe(false);
-    expect(body.code).toBe("VALIDATION_ERROR");
-    expect(body.message).toBe("Please check the highlighted fields");
-    expect(body.data.fields).toEqual({
-      email: ["Invalid email address"],
-      name: ["Too short"],
+        const response = await server.inject({ method: "GET", url: "/failed" });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().success).toBe(false);
     });
 
-    await server.close();
-  });
+    it("reply.failed() honours an explicit status", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/unavailable", async (_req, reply) => reply.failed({ status: 503 }));
+        });
 
-  it("carries a structured payload on a failure", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.post("/register", async (_req, reply) =>
-          reply.conflict({ message: "Account exists", data: { field: "email" } }),
-        );
-      },
+        const response = await server.inject({ method: "GET", url: "/unavailable" });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json().success).toBe(false);
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "POST", url: "/register" });
+    it("every catalogue error helper answers with its own status", async () => {
+        const server = await bootstrap((app) => {
+            for (const [name] of Object.entries(ERROR_RESPONSES)) {
+                app.get(`/${name}`, async (_req, reply) => helpersOf(reply)[name]());
+            }
+        });
 
-    expect(response.statusCode).toBe(409);
-    const body = response.json();
-    expect(body.success).toBe(false);
-    expect(body.data).toEqual({ field: "email" });
+        for (const [name, definition] of Object.entries(ERROR_RESPONSES)) {
+            const response = await server.inject({ method: "GET", url: `/${name}` });
+            expect(response.statusCode, name).toBe(definition.status);
+            const body = response.json();
+            expect(body.success, name).toBe(false);
+            expect(body.msg, name).toBe(definition.message);
+            expect(body.code, name).toBe(String(definition.status));
+        }
+    });
+});
 
-    await server.close();
-  });
+describe("Response Management — respond()", () => {
+    it("answers a 2xx status with the success envelope", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/accepted", async (_req, reply) =>
+                reply.respond({ status: 202, response: { data: { jobId: 7 } } }),
+            );
+        });
 
-  it("turns Zod issues into a field-keyed validation error map", async () => {
-    const schema = z.object({ email: z.string().email() });
+        const response = await server.inject({ method: "GET", url: "/accepted" });
 
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.post("/register", async (request, reply) => {
-          const result = schema.safeParse(request.body);
-          if (!result.success) {
-            return reply.validationFailed({
-              fields: toValidationFields(result.error),
-              message: "Please check the highlighted fields",
+        expect(response.statusCode).toBe(202);
+        const body = response.json();
+        expect(body.success).toBe(true);
+        expect(body.data).toEqual({ jobId: 7 });
+    });
+
+    it("answers a 4xx status with the error envelope", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/missing", async (_req, reply) =>
+                reply.respond({ status: 404, response: { message: "User not found" } }),
+            );
+        });
+
+        const response = await server.inject({ method: "GET", url: "/missing" });
+
+        expect(response.statusCode).toBe(404);
+        const body = response.json();
+        expect(body.success).toBe(false);
+        expect(body.msg).toBe("User not found");
+    });
+
+    it("accepts field errors at the top level", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/invalid", async (_req, reply) =>
+                reply.respond({
+                    status: 422,
+                    errors: [{ field: "email", message: "must be an email" }],
+                }),
+            );
+        });
+
+        const response = await server.inject({ method: "GET", url: "/invalid" });
+
+        expect(response.statusCode).toBe(422);
+        expect(response.json().errors).toEqual([
+            { field: "email", message: "must be an email" },
+        ]);
+    });
+
+    it("accepts field errors inside the response options", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/invalid", async (_req, reply) =>
+                reply.respond({
+                    status: 422,
+                    response: { errors: [{ field: "email", message: "must be an email" }] },
+                }),
+            );
+        });
+
+        const response = await server.inject({ method: "GET", url: "/invalid" });
+
+        expect(response.statusCode).toBe(422);
+        expect(response.json().errors).toEqual([
+            { field: "email", message: "must be an email" },
+        ]);
+    });
+
+    it("answers 204 without a body", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/empty", async (_req, reply) => reply.respond({ status: 204 }));
+        });
+
+        const response = await server.inject({ method: "GET", url: "/empty" });
+
+        expect(response.statusCode).toBe(204);
+        expect(response.body).toBe("");
+    });
+
+    it("answers 304 without a body", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/cached", async (_req, reply) => reply.respond({ status: 304 }));
+        });
+
+        const response = await server.inject({ method: "GET", url: "/cached" });
+
+        expect(response.statusCode).toBe(304);
+        expect(response.body).toBe("");
+    });
+
+    it("refuses a redirect status", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/redirect", async (_req, reply) => {
+                try {
+                    reply.respond({ status: 302 });
+                    return { thrown: false };
+                } catch (error) {
+                    return { thrown: true, message: (error as Error).message };
+                }
             });
-          }
-          return reply.created({ data: result.data });
         });
-      },
+
+        const response = await server.inject({ method: "GET", url: "/redirect" });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().thrown).toBe(true);
+        expect(response.json().message).toContain("3xx");
     });
 
-    await server.ready();
-    const response = await server.inject({
-      method: "POST",
-      url: "/register",
-      payload: { email: "not-an-email" },
-    });
-
-    expect(response.statusCode).toBe(400);
-    const body = response.json();
-    expect(body.data.fields.email).toEqual(["Invalid email address"]);
-    expect(body.data.fields.email[0]).toBeTypeOf("string");
-
-    await server.close();
-  });
-
-  it("keeps validator internals out of the client payload", async () => {
-    const schema = z.object({ email: z.string().email() });
-
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.post("/register", async (request, reply) => {
-          const result = schema.safeParse(request.body);
-          if (!result.success) {
-            return reply.validationFailed({ fields: toValidationFields(result.error) });
-          }
-          return reply.created({ data: result.data });
+    it("refuses field errors on a successful response", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/invalid", async (_req, reply) => {
+                try {
+                    reply.respond({ status: 200, errors: [{ field: "email", message: "nope" }] });
+                    return { thrown: false };
+                } catch (error) {
+                    return { thrown: true, message: (error as Error).message };
+                }
+            });
         });
-      },
+
+        const response = await server.inject({ method: "GET", url: "/invalid" });
+
+        expect(response.json().thrown).toBe(true);
+        expect(response.json().message).toContain("4xx/5xx");
     });
 
-    await server.ready();
-    const response = await server.inject({
-      method: "POST",
-      url: "/register",
-      payload: { email: "not-an-email" },
+    it("refuses field errors inside the response options of a successful response", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/invalid", async (_req, reply) => {
+                try {
+                    reply.respond({
+                        status: 200,
+                        response: { errors: [{ field: "email", message: "nope" }] },
+                    });
+                    return { thrown: false };
+                } catch (error) {
+                    return { thrown: true, message: (error as Error).message };
+                }
+            });
+        });
+
+        const response = await server.inject({ method: "GET", url: "/invalid" });
+
+        expect(response.json().thrown).toBe(true);
+        expect(response.json().message).toContain("4xx/5xx");
     });
 
-    const body = response.json();
-    const serialised = JSON.stringify(body);
-    expect(serialised).not.toContain("invalid_format");
-    expect(serialised).not.toContain("origin");
-    expect(serialised).not.toContain("pattern");
+    it("refuses field errors passed twice", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/invalid", async (_req, reply) => {
+                try {
+                    reply.respond({
+                        status: 422,
+                        response: { errors: [{ field: "email", message: "nope" }] },
+                        errors: [{ field: "email", message: "nope" }],
+                    });
+                    return { thrown: false };
+                } catch (error) {
+                    return { thrown: true, message: (error as Error).message };
+                }
+            });
+        });
 
-    await server.close();
-  });
+        const response = await server.inject({ method: "GET", url: "/invalid" });
+
+        expect(response.json().thrown).toBe(true);
+        expect(response.json().message).toContain("not both");
+    });
+
+    it("refuses a status outside the HTTP range", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/invalid", async (_req, reply) => {
+                try {
+                    reply.respond({ status: 99 });
+                    return { thrown: false };
+                } catch (error) {
+                    return { thrown: true, message: (error as Error).message };
+                }
+            });
+        });
+
+        const response = await server.inject({ method: "GET", url: "/invalid" });
+
+        expect(response.json().thrown).toBe(true);
+        expect(response.json().message).toContain("Invalid HTTP status");
+    });
 });
 
-describe("Response Management Named Options Tests", () => {
-  const baseOptions: Partial<BootstrapServerOptions> = {
-    logger: false,
-    kafka: false,
-    realtime: false,
-    database: false,
-    redis: false,
-    env: false,
-    health: false,
-  };
+describe("Response Management — pagination", () => {
+    it("reply.paginated() nests the pagination in the metadata", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/users", async (_req, reply) =>
+                reply.paginated({
+                    data: [{ id: 1 }, { id: 2 }],
+                    pagination: { total: 5, page: 1, pageSize: 2, totalPages: 3 },
+                }),
+            );
+        });
 
-  it("takes the payload by name, not by position", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/ok", async (_req, reply) =>
-          reply.success({ data: { id: "1" }, message: "Loaded", code: "200" }),
+        const response = await server.inject({ method: "GET", url: "/users" });
+
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.success).toBe(true);
+        expect(body.data).toEqual([{ id: 1 }, { id: 2 }]);
+        expect(body.metadata.pagination).toEqual({
+            total: 5,
+            page: 1,
+            pageSize: 2,
+            totalPages: 3,
+        });
+        expect(body.metadata.requestId).toBeTypeOf("string");
+    });
+
+    it("ResponseManager.pagination() computes the page count", () => {
+        expect(ResponseManager.pagination(5, 1, 2)).toEqual({
+            total: 5,
+            page: 1,
+            pageSize: 2,
+            totalPages: 3,
+        });
+        expect(ResponseManager.pagination(0, 1, 10).totalPages).toBe(0);
+    });
+
+    it("ResponseManager.pagination() rejects impossible values", () => {
+        expect(() => ResponseManager.pagination(-1, 1, 10)).toThrow(RangeError);
+        expect(() => ResponseManager.pagination(10, 0, 10)).toThrow(RangeError);
+        expect(() => ResponseManager.pagination(10, 1, 0)).toThrow(RangeError);
+        expect(() => ResponseManager.pagination(10.5, 1, 10)).toThrow(RangeError);
+    });
+
+    it("refuses a pagination that contradicts the totals", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/users", async (_req, reply) => {
+                try {
+                    reply.paginated({
+                        data: [],
+                        pagination: { total: 5, page: 1, pageSize: 2, totalPages: 99 },
+                    });
+                    return { thrown: false };
+                } catch (error) {
+                    return { thrown: true, message: (error as Error).message };
+                }
+            });
+        });
+
+        const response = await server.inject({ method: "GET", url: "/users" });
+
+        expect(response.json().thrown).toBe(true);
+        expect(response.json().message).toContain("totalPages");
+    });
+});
+
+describe("Response Management — configuration", () => {
+    it("uses the configured success message", async () => {
+        const server = await bootstrap(
+            (app) => {
+                app.get("/ok", async (_req, reply) => reply.ok());
+            },
+            { responseManagement: { defaultSuccessMessage: "All good" } },
         );
-      },
+
+        const response = await server.inject({ method: "GET", url: "/ok" });
+
+        expect(response.json().msg).toBe("All good");
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/ok" });
-
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.data).toEqual({ id: "1" });
-    expect(body.message).toBe("Loaded");
-    expect(body.code).toBe("200");
-
-    await server.close();
-  });
-
-  it("rejects the old positional payload form", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/ok", async (_req, reply) =>
-          reply.success({ id: "1" } as never),
+    it("uses the configured error message", async () => {
+        const server = await bootstrap(
+            (app) => {
+                app.get("/failed", async (_req, reply) => reply.failed());
+            },
+            { responseManagement: { defaultErrorMessage: "Something went wrong" } },
         );
-      },
+
+        const response = await server.inject({ method: "GET", url: "/failed" });
+
+        expect(response.json().msg).toBe("Something went wrong");
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/ok" });
-
-    expect(response.statusCode).toBe(500);
-    expect(response.body).toContain("options object");
-    expect(response.body).toContain("data");
-
-    await server.close();
-  });
-
-  it("rejects the old positional message form", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/bad", async (_req, reply) =>
-          reply.badRequest("Invalid request" as never),
+    it("omits the request id when includeRequestId is false", async () => {
+        const server = await bootstrap(
+            (app) => {
+                app.get("/ok", async (_req, reply) => reply.ok());
+            },
+            { responseManagement: { includeRequestId: false } },
         );
-      },
+
+        const response = await server.inject({ method: "GET", url: "/ok" });
+
+        const body = response.json();
+        expect(body.metadata).toBeUndefined();
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/bad" });
+    it("keeps the caller metadata alongside the request id", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/ok", async (_req, reply) =>
+                reply.ok({ metadata: { traceId: "trace-1" } }),
+            );
+        });
 
-    expect(response.statusCode).toBe(500);
-    expect(response.body).toContain("options object");
+        const response = await server.inject({ method: "GET", url: "/ok" });
 
-    await server.close();
-  });
-
-  it("accepts an empty options object on a failure helper", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/missing", async (_req, reply) => reply.notFound());
-      },
+        const body = response.json();
+        expect(body.metadata.traceId).toBe("trace-1");
+        expect(body.metadata.requestId).toBeTypeOf("string");
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/missing" });
-
-    expect(response.statusCode).toBe(404);
-    expect(response.json().message).toBe("Resource not found");
-
-    await server.close();
-  });
-
-  it("accepts an empty options object on a deletion helper", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.delete("/users/:id", async (_req, reply) => reply.deleted());
-      },
-    });
-
-    await server.ready();
-    const response = await server.inject({ method: "DELETE", url: "/users/1" });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().message).toBe("Resource deleted successfully");
-
-    await server.close();
-  });
-
-  it("keeps the payload and the context distinguishable", async () => {
-    const server = await createBootstrapServer({
-      ...baseOptions,
-      configure: (app) => {
-        app.get("/ok", async (_req, reply) =>
-          reply.success({
-            data: { password: "not-redacted" },
-            metadata: { password: "redacted" },
-          }),
+    it("can be disabled", async () => {
+        const server = await bootstrap(
+            (app) => {
+                app.get("/ok", async (_req, reply) => reply.ok());
+            },
+            { responseManagement: false },
         );
-      },
+
+        expect(server.hasReplyDecorator("ok")).toBe(false);
     });
 
-    await server.ready();
-    const response = await server.inject({ method: "GET", url: "/ok" });
+    it("refuses to register the same decorators twice", async () => {
+        const app = track(Fastify());
+        await app.register(responseManagementPlugin);
+        app.register(responseManagementPlugin);
 
-    const body = response.json();
-    expect(body.data.password).toBe("not-redacted");
-    expect(body.metadata.password).toBe("[REDACTED]");
+        await expect(app.ready()).rejects.toThrow(/name already exists/);
+    });
+});
 
-    await server.close();
-  });
+describe("Response Management — framework contract", () => {
+    it("does not impose a schema on a plain handler result", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/custom", async () => ({
+                custom: "format",
+                nested: { data: [1, 2, 3] },
+            }));
+        });
+
+        const response = await server.inject({ method: "GET", url: "/custom" });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().custom).toBe("format");
+        expect(response.json().nested.data).toEqual([1, 2, 3]);
+    });
+
+    it("leaves an array result untouched", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/array", async () => [1, 2, 3]);
+        });
+
+        const response = await server.inject({ method: "GET", url: "/array" });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual([1, 2, 3]);
+    });
+
+    it("leaves a framework error to the error handler", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/throw", async () => {
+                throw new Error("test error");
+            });
+        });
+
+        const response = await server.inject({ method: "GET", url: "/throw" });
+
+        expect(response.statusCode).toBe(500);
+        expect(response.json().error).toBeDefined();
+    });
+
+    it("handles different status codes", async () => {
+        const server = await bootstrap((app) => {
+            app.get("/created", async (_req, reply) => reply.code(201).send({ created: true }));
+            app.get("/no-content", async (_req, reply) => reply.code(204).send());
+        });
+
+        const created = await server.inject({ method: "GET", url: "/created" });
+        expect(created.statusCode).toBe(201);
+        expect(created.json().created).toBe(true);
+
+        const noContent = await server.inject({ method: "GET", url: "/no-content" });
+        expect(noContent.statusCode).toBe(204);
+    });
+});
+
+describe("Response Management — catalogue", () => {
+    it("exposes the HTTP status catalog", () => {
+        expect(HTTP_STATUS.OK).toBe(200);
+        expect(HTTP_STATUS.CREATED).toBe(201);
+        expect(HTTP_STATUS.NO_CONTENT).toBe(204);
+        expect(HTTP_STATUS.NOT_MODIFIED).toBe(304);
+        expect(HTTP_STATUS.BAD_REQUEST).toBe(400);
+        expect(HTTP_STATUS.NOT_FOUND).toBe(404);
+        expect(HTTP_STATUS.TOO_MANY_REQUESTS).toBe(429);
+        expect(HTTP_STATUS.INTERNAL_SERVER_ERROR).toBe(500);
+    });
+
+    it("keeps every error helper on a 4xx or 5xx status", () => {
+        for (const [name, definition] of Object.entries(ERROR_RESPONSES)) {
+            expect(definition.status, name).toBeGreaterThanOrEqual(400);
+            expect(definition.status, name).toBeLessThanOrEqual(599);
+            expect(definition.message.length, name).toBeGreaterThan(0);
+        }
+    });
+
+    it("keeps every success helper on a 2xx status", () => {
+        for (const [name, definition] of Object.entries(SUCCESS_RESPONSES)) {
+            expect(definition.status, name).toBeGreaterThanOrEqual(200);
+            expect(definition.status, name).toBeLessThanOrEqual(299);
+            expect(definition.message.length, name).toBeGreaterThan(0);
+        }
+    });
+});
+
+describe("Response Management — ResponseManager", () => {
+    it("builds a success envelope", () => {
+        const manager = new ResponseManager();
+
+        expect(manager.success()).toEqual({
+            success: true,
+            code: "200",
+            msg: "Success",
+        });
+    });
+
+    it("builds a success envelope for a custom status", () => {
+        const manager = new ResponseManager();
+
+        expect(manager.success({ data: { id: 1 } }, 201)).toEqual({
+            success: true,
+            code: "201",
+            msg: "Success",
+            data: { id: 1 },
+        });
+    });
+
+    it("refuses a success status outside the 2xx range", () => {
+        const manager = new ResponseManager();
+
+        expect(() => manager.success({}, 100)).toThrow(RangeError);
+        expect(() => manager.success({}, 302)).toThrow(RangeError);
+        expect(() => manager.success({}, 500)).toThrow(RangeError);
+    });
+
+    it("refuses a body on a status that cannot carry one", () => {
+        const manager = new ResponseManager();
+
+        expect(() => manager.success({}, 204)).toThrow(RangeError);
+        expect(() => manager.success({}, 205)).toThrow(RangeError);
+    });
+
+    it("builds an error envelope", () => {
+        const manager = new ResponseManager();
+
+        expect(
+            manager.error({
+                status: 404,
+                message: "Not found",
+                code: "NOT_FOUND",
+                errors: [{ field: "id", message: "unknown" }],
+            }),
+        ).toEqual({
+            success: false,
+            code: "NOT_FOUND",
+            msg: "Not found",
+            errors: [{ field: "id", message: "unknown" }],
+        });
+    });
+
+    it("refuses an error status outside the 4xx/5xx range", () => {
+        const manager = new ResponseManager();
+
+        expect(() => manager.error({ status: 200 })).toThrow(RangeError);
+        expect(() => manager.error({ status: 302 })).toThrow(RangeError);
+        expect(() => manager.error({ status: 600 })).toThrow(RangeError);
+    });
+
+    it("uses the configured defaults", () => {
+        const manager = new ResponseManager({
+            defaultSuccessMessage: "Yay",
+            defaultErrorMessage: "Oops",
+        });
+
+        expect(manager.success().msg).toBe("Yay");
+        expect(manager.error({ status: 500 }).msg).toBe("Oops");
+    });
+
+    it("nests the pagination in the metadata", () => {
+        const manager = new ResponseManager();
+        const response = manager.paginated({
+            data: [1, 2],
+            pagination: { total: 2, page: 1, pageSize: 2, totalPages: 1 },
+        });
+
+        expect(response.success).toBe(true);
+        expect(response.data).toEqual([1, 2]);
+        expect(response.metadata?.pagination).toEqual({
+            total: 2,
+            page: 1,
+            pageSize: 2,
+            totalPages: 1,
+        });
+    });
 });

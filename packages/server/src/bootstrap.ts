@@ -1,22 +1,18 @@
 import fastify, {
     type FastifyInstance,
-    type FastifyListenOptions,
-    type FastifyPluginOptions,
-    type FastifyServerOptions,
 } from "fastify";
-import { createHealthPlugin, type BootstrapHealthOptions } from "./routes/health.js";
+import { createHealthPlugin } from "./routes/health.js";
 import { serviceConfig } from "./config/env-services.js";
-import { loadEnv, type LoadEnvOptions } from "./config/load-env.js";
+import { loadEnv } from "./config/load-env.js";
 import {
     mergeBuiltinPlugins,
     registerBuiltinPlugins,
     type BuiltinPluginsOptions,
-    type LoggerPluginOptions,
-    type DatabasePluginOptions,
 } from "./plugins/index.js";
-import { registerHooks, type BootstrapHooks } from "./hooks/index.js";
+import { registerHooks } from "./hooks/index.js";
+import { installBoundedClose } from "./lib/close.js";
 import { registerHealthRegistry, registerSystemHealthProvider, type SystemHealthOptions } from "./health/index.js";
-import type { PluginEntry, Configurer, BootstrapServerOptions, StartedBootstrapServer } from "./types/bootstrap.js";
+import type { PluginEntry, BootstrapServerOptions, StartedBootstrapServer } from "./types/bootstrap.js";
 
 function isPluginList(value: BootstrapServerOptions["plugins"]): value is PluginEntry[] {
     return Array.isArray(value);
@@ -54,8 +50,13 @@ function resolveBuiltinPluginOptions(options: BootstrapServerOptions): BuiltinPl
         compress: options.compress,
         rateLimit: options.rateLimit,
         zod: options.zod,
+        // The service name of the bootstrap wins when it is set; otherwise the
+        // one the caller gave to the logger plugin has to survive.
         logger: typeof loggerOptions === "object" && loggerOptions !== null
-            ? { ...loggerOptions, serviceName: options.serviceName }
+            ? {
+                ...loggerOptions,
+                ...(options.serviceName ? { serviceName: options.serviceName } : {}),
+            }
             : loggerOptions,
         database: databaseOptions,
         redis: redisOptions,
@@ -148,7 +149,7 @@ export async function createBootstrapServer(
     await registerBuiltinPlugins(server, resolveBuiltinPluginOptions(resolved));
 
     if (resolved.health !== false) {
-        const healthOptions = resolved.health ?? {};
+        const healthOptions = resolved.health === true ? {} : (resolved.health ?? {});
         await server.register(createHealthPlugin({
             serviceName: resolved.serviceName ?? defaults.serviceName,
             ...healthOptions,
@@ -160,6 +161,10 @@ export async function createBootstrapServer(
     }
 
     await resolved.configure?.(server);
+
+    // A keep-alive client can hold the close open forever; the bounded close
+    // releases the sockets once the in-flight requests are done.
+    installBoundedClose(server, { timeoutMs: resolved.shutdownTimeout });
 
     return server;
 }

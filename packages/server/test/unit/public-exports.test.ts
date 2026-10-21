@@ -101,4 +101,12 @@ describe("Public Export Tests", () => {
   it("exports hook registration", () => {
     expect(server.registerHooks).toBeDefined();
   });
+
+  it("exports the response management layer", () => {
+    expect(server.responseManagementPlugin).toBeDefined();
+    expect(server.ResponseManager).toBeDefined();
+    expect(server.HTTP_STATUS).toBeDefined();
+    expect(server.ERROR_RESPONSES).toBeDefined();
+    expect(server.SUCCESS_RESPONSES).toBeDefined();
+  });
 });

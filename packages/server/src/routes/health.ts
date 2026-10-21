@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { createHealthRoute, getHealthRegistry } from "../health/index.js";
-import { getSystemInfo } from "../lib/system.js";
 import type { HealthCheckResult } from "../health/types.js";
 
 export interface HealthRouteOptions {

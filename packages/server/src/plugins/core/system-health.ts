@@ -51,7 +51,15 @@ export function registerSystemHealthProvider(server: FastifyInstance, options: S
 
             return {
                 status,
-                details: systemInfo,
+                // The identity of the host and its network topology are not
+                // diagnostics: they would hand an unauthenticated caller the
+                // user account and the internal addresses of the machine.
+                details: {
+                    process: systemInfo.process,
+                    performance: systemInfo.performance,
+                    memory: systemInfo.memory,
+                    cpu: systemInfo.cpu,
+                },
             };
         },
         critical: false,

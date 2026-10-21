@@ -2,6 +2,8 @@ import type { ResponseManagementPluginOptions } from "../plugins/core/response-m
 
 export type PluginConfig<T extends object = Record<string, unknown>> = boolean | T;
 
+export type { ResponseManagementPluginOptions };
+
 export interface DatabasePluginOptions {
     connectionString?: string;
     host?: string;
@@ -248,5 +250,3 @@ export interface BuiltinPluginsOptions {
     swagger?: PluginConfig<SwaggerPluginOptions>;
     swaggerUI?: PluginConfig<SwaggerUIPluginOptions>;
 }
-
-export type { ResponseManagementPluginOptions };

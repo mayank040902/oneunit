@@ -1,8 +1,11 @@
 src
 test
 coverage
+/docs/agent.md
+docs/.gitignore
 *.tsbuildinfo
 tsconfig.json
+tsconfig.examples.json
 vitest.config.ts
 package-lock.json
 node_modules

@@ -22,7 +22,7 @@ async function loggerPlugin(
         };
         createLogger = loggerModule.createLogger;
     } catch (err) {
-        server.log.warn({ err }, "logger package not installed, using default Fastify logger");
+        server.log?.warn?.({ err }, "logger package not installed, using default Fastify logger");
         return;
     }
 
@@ -30,9 +30,16 @@ async function loggerPlugin(
 
     const effectiveServiceName = serviceName ?? (server as { name?: string }).name;
 
+    // The caller's bindings and the service name are both kept: dropping one
+    // of them would silently remove context from every log line.
+    const bindings: Record<string, unknown> = {
+        ...childBindings,
+        ...(effectiveServiceName ? { service: effectiveServiceName } : {}),
+    };
+
     const loggerOptions = {
         mode,
-        childBindings: effectiveServiceName ? { service: effectiveServiceName } : childBindings,
+        childBindings: Object.keys(bindings).length > 0 ? bindings : undefined,
         serializers,
         pino,
         ...rest,

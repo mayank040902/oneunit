@@ -28,15 +28,15 @@ export type {
 export { collectMetadata } from "./collect-metadata.js";
 
 export {
-    DEFAULT_MAX_VALIDATION_FIELDS,
-    toValidationFields,
-} from "./validation.js";
+    DEFAULT_CLOSE_TIMEOUT_MS,
+    closeWithDeadline,
+    drainAndClose,
+    installBoundedClose,
+} from "./close.js";
 
 export type {
-    ToValidationFieldsOptions,
-    ValidationErrorLike,
-    ValidationIssueLike,
-} from "./validation.js";
+    BoundedCloseOptions,
+} from "./close.js";
 
 export {
     authCookieOptions,
