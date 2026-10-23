@@ -73,8 +73,12 @@ export async function createPinoLogger(config: PinoLoggerConfig = {}): Promise<L
         '*.privateKey',
         '*.credentials',
         '*.authorization',
+        '*.jwtSecret',
+        '*.rootKey',
         'req.headers.authorization',
         'req.headers.cookie',
+        'req.headers.x-api-key',
+        'req.headers.x-auth-token',
       ],
       censor: '[REDACTED]',
     };

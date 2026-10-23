@@ -1,5 +1,6 @@
 import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, RpcClient, RpcServer, RpcMethodHandler } from '@/core/capabilities';
+import { createMicroserviceError, ErrorCodes } from '@/core/errors.js';
 
 export interface TrpcConfig {
   endpoint: string;
@@ -72,6 +73,21 @@ export class TrpcTransport extends BaseTransport implements RpcClient, RpcServer
 
   unregisterMethod(service: string, method: string): void {
     this.methods.get(service)?.delete(method);
+  }
+
+  async handle(service: string, method: string, input: unknown, context: unknown): Promise<unknown> {
+    const handlers = this.methods.get(service);
+    const handler = handlers?.get(method);
+    if (!handler) {
+      throw createMicroserviceError(
+        ErrorCodes.NOT_FOUND,
+        `Method ${service}.${method} not found`,
+        'NOT_FOUND',
+        false,
+        { details: { service, method } }
+      );
+    }
+    return handler(input, context as import('@/core/capabilities').RpcContext);
   }
 
   async call<TInput, TOutput>(service: string, method: string, input: TInput): Promise<TOutput> {

@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  ReplayProtectionConfig,
   MessageId,
   ReplayProtection,
   createReplayProtection,
 } from '../../src/security/replay-protection.js';
+
+// Fake timers are enabled per test; restore real timers so a failing test
+// cannot leave the remaining tests in fake-timer mode.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('ReplayProtection', () => {
   let protection: ReplayProtection;
@@ -276,34 +281,6 @@ describe('ReplayProtection', () => {
     const stats = protection.getStats();
     expect(stats.sources).toBe(1);
     expect(stats.totalEntries).toBe(10);
-  });
-});
-
-describe('ReplayProtectionConfig', () => {
-  it('should define correct structure', () => {
-    const config: ReplayProtectionConfig = {
-      windowSize: 10000,
-      maxEntries: 100000,
-      ttlMs: 300000,
-    };
-    
-    expect(config.windowSize).toBe(10000);
-    expect(config.maxEntries).toBe(100000);
-    expect(config.ttlMs).toBe(300000);
-  });
-});
-
-describe('MessageId', () => {
-  it('should define correct structure', () => {
-    const messageId: MessageId = {
-      id: 'msg-123',
-      timestamp: Date.now(),
-      source: 'service-1',
-    };
-    
-    expect(messageId.id).toBe('msg-123');
-    expect(typeof messageId.timestamp).toBe('number');
-    expect(messageId.source).toBe('service-1');
   });
 });
 

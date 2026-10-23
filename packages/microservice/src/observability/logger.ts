@@ -52,6 +52,45 @@ function isLevelEnabled(current: LogLevel, target: LogLevel): boolean {
   return loggerLevels[target] >= loggerLevels[current];
 }
 
+function serializeValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+    };
+  }
+  if (typeof value === 'object' && value !== null) {
+    if (seen.has(value)) return { '[Circular]': true };
+    seen.add(value);
+    if (Array.isArray(value)) {
+      return value.map(v => serializeValue(v, seen));
+    }
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) {
+      result[key] = serializeValue(val, seen);
+    }
+    return result;
+  }
+  return value;
+}
+
+function serializeContext(context: LoggerContext): LoggerContext {
+  if (context instanceof Error) {
+    return {
+      name: context.name,
+      message: context.message,
+      stack: context.stack,
+    };
+  }
+  const seen = new WeakSet<object>();
+  const result: LoggerContext = {};
+  for (const [key, value] of Object.entries(context)) {
+    result[key] = serializeValue(value, seen);
+  }
+  return result;
+}
+
 function mergeContext(base: LoggerContext | undefined, extra: LoggerContext | undefined): LoggerContext {
   if (!base && !extra) return {};
   if (!base) return { ...extra };
@@ -78,9 +117,22 @@ export class FrameworkLogger implements Logger {
     this.base = { ...base };
   }
 
-  private write(_level: LogLevel, _message: string, _context: LoggerContext): void {
-    // Framework-owned no-op sink. Applications inject a real logger via
-    // createLogger({ logger }) or by supplying their own Logger instance.
+  private write(level: LogLevel, message: string, context: LoggerContext): void {
+    const output = {
+      level,
+      message,
+      timestamp: new Date().toISOString(),
+      ...serializeContext(context),
+    };
+    const str = JSON.stringify(output);
+
+    if (level === 'error' || level === 'fatal') {
+      console.error(str);
+    } else if (level === 'warn') {
+      console.warn(str);
+    } else {
+      console.info(str);
+    }
   }
 
   trace(message: string, context?: LoggerContext): void;

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { UdpTransport } from '../../src/adapters/network/udp/index.js';
 import { DatagramTransport } from '../../src/core/capabilities.js';
 
@@ -132,5 +132,27 @@ describe('UdpTransport.close', () => {
   it('should not throw when closed before start', async () => {
     const transport = createTransport();
     await expect(transport.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('UdpTransport.healthCheck', () => {
+  it('should report unhealthy when the socket is not open', async () => {
+    const transport = createTransport();
+
+    const health = await transport.healthCheck();
+
+    expect(health.status).toBe('unhealthy');
+  });
+
+  it('should report healthy when the socket is open', async () => {
+    const transport = createTransport({ port: 0 });
+    await transport.start();
+
+    try {
+      const health = await transport.healthCheck();
+      expect(health.status).toBe('healthy');
+    } finally {
+      await transport.close();
+    }
   });
 });

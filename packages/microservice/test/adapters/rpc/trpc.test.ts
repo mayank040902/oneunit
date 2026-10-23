@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TrpcTransport, TrpcConfig } from '@adapters/rpc/trpc/index.js';
-import { RpcMethodHandler, RpcContext } from '@core/capabilities.js';
+import { RpcMethodHandler } from '@core/capabilities.js';
 
 let portCounter = 34567;
 

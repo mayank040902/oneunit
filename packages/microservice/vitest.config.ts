@@ -25,7 +25,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(dirname, 'src'),
-      '@crypto': resolve(dirname, 'src/crypto'),
       '@transport': resolve(dirname, 'src/transport'),
       '@registry': resolve(dirname, 'src/registry'),
       '@config': resolve(dirname, 'src/config'),

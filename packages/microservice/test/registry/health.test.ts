@@ -1,10 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  HealthChecker,
-  DefaultHealthChecker,
-  createHealthChecker,
-  HealthCheckResult,
-} from '../../src/registry/health.js';
+import { HealthChecker, DefaultHealthChecker, createHealthChecker } from '../../src/registry/health.js';
 import { ServiceRegistry, ServiceInstance, InMemoryRegistryStore, ServiceRegistryImpl } from '../../src/registry/registry.js';
 
 describe('DefaultHealthChecker', () => {

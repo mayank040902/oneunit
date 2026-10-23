@@ -1,6 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  SigningService,
   Ed25519SigningService,
   RsaSigningService,
   KeyPair,
@@ -155,18 +154,6 @@ describe('RsaSigningService', () => {
     expect(typeof pem).toBe('string');
     expect(pem).toContain('-----BEGIN PUBLIC KEY-----');
     expect(pem).toContain('-----END PUBLIC KEY-----');
-  });
-});
-
-describe('SigningService interface', () => {
-  it('should define correct structure', () => {
-    const service: SigningService = {
-      sign: async () => new Uint8Array(),
-      verify: async () => false,
-    };
-    
-    expect(typeof service.sign).toBe('function');
-    expect(typeof service.verify).toBe('function');
   });
 });
 

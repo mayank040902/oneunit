@@ -7,8 +7,9 @@ import {
   createKeyRotationManager,
 } from '../../src/security/key-rotation.js';
 import { MemoryKeyProvider } from '../../src/security/key-provider.js';
-import { EncryptionService } from '../../src/security/encryption.js';
-import { KeyExchangeService } from '../../src/security/key-exchange.js';
+
+;
+;
 
 describe('KeyRotationManager', () => {
   let provider: MemoryKeyProvider;
@@ -162,36 +163,6 @@ describe('KeyRotationManager', () => {
     // Other values should remain
     expect(manager.getPolicy().gracePeriodMs).toBe(policy.gracePeriodMs);
     expect(manager.getPolicy().autoRotate).toBe(policy.autoRotate);
-  });
-});
-
-describe('KeyRotationEvent', () => {
-  it('should define correct structure', () => {
-    const event: KeyRotationEvent = {
-      serviceId: 'service-1',
-      oldVersion: 1,
-      newVersion: 2,
-      rotatedAt: Date.now(),
-    };
-    
-    expect(event.serviceId).toBe('service-1');
-    expect(event.oldVersion).toBe(1);
-    expect(event.newVersion).toBe(2);
-    expect(event.rotatedAt).toBeDefined();
-  });
-});
-
-describe('KeyRotationPolicy', () => {
-  it('should define correct structure', () => {
-    const policy: KeyRotationPolicy = {
-      intervalMs: 86400000,
-      gracePeriodMs: 3600000,
-      maxVersions: 3,
-      autoRotate: true,
-    };
-    
-    expect(policy.intervalMs).toBe(86400000);
-    expect(policy.autoRotate).toBe(true);
   });
 });
 

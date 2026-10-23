@@ -35,6 +35,8 @@ export class MemoryCredentialStore implements CredentialStore {
   }
 }
 
+const SERVICE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+
 export class FileCredentialStore implements CredentialStore {
   private basePath: string;
 
@@ -42,20 +44,49 @@ export class FileCredentialStore implements CredentialStore {
     this.basePath = basePath;
   }
 
-  private getPath(serviceId: string): string {
-    return `${this.basePath}/${serviceId}.json`;
+  private validateServiceId(serviceId: string): void {
+    if (typeof serviceId !== 'string' || serviceId.length === 0) {
+      throw new Error('Invalid service ID: must be non-empty string');
+    }
+    if (serviceId.includes('/') || serviceId.includes('\\') || serviceId.includes('\0')) {
+      throw new Error('Invalid service ID: contains path separator or null byte');
+    }
+    if (serviceId === '.' || serviceId === '..') {
+      throw new Error('Invalid service ID: traversal detected');
+    }
+    if (!SERVICE_ID_RE.test(serviceId)) {
+      throw new Error('Invalid service ID: must match strict format');
+    }
+  }
+
+  private async resolvePath(serviceId: string): Promise<string> {
+    this.validateServiceId(serviceId);
+    const pathMod = await import('node:path');
+    const resolvedBase = pathMod.resolve(this.basePath);
+    const resolvedFile = pathMod.resolve(resolvedBase, `${serviceId}.json`);
+    if (!resolvedFile.startsWith(resolvedBase + pathMod.sep)) {
+      throw new Error('Invalid service ID: resolved path escapes credential directory');
+    }
+    return resolvedFile;
   }
 
   async store(serviceId: string, credentials: ServiceCredentials): Promise<void> {
-    const { writeFile } = await import('fs/promises');
-    await writeFile(this.getPath(serviceId), JSON.stringify(credentials, null, 2));
+    const { writeFile, mkdir } = await import('fs/promises');
+    const filePath = await this.resolvePath(serviceId);
+    const pathMod = await import('node:path');
+    const dir = pathMod.dirname(filePath);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeFile(filePath, JSON.stringify(credentials, null, 2), { mode: 0o600, flag: 'w' });
   }
 
   async retrieve(serviceId: string): Promise<ServiceCredentials | null> {
     const { readFile } = await import('fs/promises');
     try {
-      const data = await readFile(this.getPath(serviceId), 'utf-8');
-      return JSON.parse(data);
+      const filePath = await this.resolvePath(serviceId);
+      const data = await readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (!parsed || typeof parsed !== 'object') return null;
+      return parsed as ServiceCredentials;
     } catch {
       return null;
     }
@@ -64,7 +95,8 @@ export class FileCredentialStore implements CredentialStore {
   async delete(serviceId: string): Promise<void> {
     const { unlink } = await import('fs/promises');
     try {
-      await unlink(this.getPath(serviceId));
+      const filePath = await this.resolvePath(serviceId);
+      await unlink(filePath);
     } catch {
       // Ignore if file doesn't exist
     }
@@ -74,9 +106,18 @@ export class FileCredentialStore implements CredentialStore {
     const { readdir } = await import('fs/promises');
     try {
       const files = await readdir(this.basePath);
-      return files
-        .filter(f => f.endsWith('.json'))
-        .map(f => f.slice(0, -5));
+      const result: string[] = [];
+      for (const f of files) {
+        if (!f.endsWith('.json')) continue;
+        const id = f.slice(0, -5);
+        try {
+          this.validateServiceId(id);
+          result.push(id);
+        } catch {
+          // skip malformed entries
+        }
+      }
+      return result;
     } catch {
       return [];
     }

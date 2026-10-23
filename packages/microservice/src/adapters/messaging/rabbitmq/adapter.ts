@@ -6,8 +6,8 @@ import type { RabbitMQAdapterConfig } from './types.js';
 interface AmqpConnection {
   createChannel(): Promise<AmqpChannel>;
   close(): Promise<unknown>;
-  on(event: 'error' | 'close' | string, listener: (...args: any[]) => void): this;
-  off(event: 'error' | 'close' | string, listener: (...args: any[]) => void): this;
+  on(event: 'error' | 'close' | string, listener: (...args: unknown[]) => void): this;
+  off(event: 'error' | 'close' | string, listener: (...args: unknown[]) => void): this;
 }
 
 interface AmqpChannel {
@@ -24,8 +24,8 @@ interface AmqpChannel {
   ack(msg: AmqpMsg): void;
   nack(msg: AmqpMsg, allUpTo?: boolean, requeue?: boolean): void;
   close(): Promise<unknown>;
-  on(event: 'error' | 'close' | string, listener: (...args: any[]) => void): this;
-  off(event: 'error' | 'close' | string, listener: (...args: any[]) => void): this;
+  on(event: 'error' | 'close' | string, listener: (...args: unknown[]) => void): this;
+  off(event: 'error' | 'close' | string, listener: (...args: unknown[]) => void): this;
 }
 
 interface AmqpMsg {
@@ -39,6 +39,8 @@ interface AmqpModule {
 }
 
 interface SubscriptionEntry {
+  topic: string;
+  queueName: string;
   handler: (msg: unknown, context: MessageContext) => Promise<void>;
   consumerTag: string;
   options: SubscribeOptions;
@@ -129,18 +131,23 @@ export class RabbitMQTransport extends BaseTransport implements MessagePublisher
 
     const attempt = this.establishAndWatch();
     this.connectPromise = attempt;
-    attempt.finally(() => {
-      if (this.connectPromise === attempt) {
-        this.connectPromise = null;
-      }
-    });
+    attempt
+      .finally(() => {
+        if (this.connectPromise === attempt) {
+          this.connectPromise = null;
+        }
+      })
+      .catch(() => {
+        // Swallow here: the caller awaits `attempt` directly and handles
+        // the rejection. This chain exists only for housekeeping.
+      });
     return attempt;
   }
 
   private async establishAndWatch(): Promise<void> {
     const amqp = await this.loadAmqp();
-    let connection: AmqpConnection;
-    let channel: AmqpChannel;
+    let connection!: AmqpConnection;
+    let channel!: AmqpChannel;
     try {
       this.logger?.info?.(`Connecting to RabbitMQ at ${this.config.url}...`);
       connection = await amqp.connect(this.config.url);
@@ -161,6 +168,12 @@ export class RabbitMQTransport extends BaseTransport implements MessagePublisher
       });
       await channel.bindQueue(this.config.defaultQueue, this.config.exchangeName, '#');
     } catch (error) {
+      try {
+        await channel?.close();
+      } catch { void 0; }
+      try {
+        await connection?.close();
+      } catch { void 0; }
       this.logger?.error?.(error as Error, 'Failed to connect to RabbitMQ');
       throw error;
     }
@@ -185,15 +198,15 @@ export class RabbitMQTransport extends BaseTransport implements MessagePublisher
     const onError = (err: Error) => onLost(`connection error: ${err?.message ?? err}`);
 
     connection.on('close', onClose);
-    connection.on('error', onError);
+    connection.on('error', onError as (...args: unknown[]) => void);
     channel.on('close', onClose);
-    channel.on('error', onError);
+    channel.on('error', onError as (...args: unknown[]) => void);
 
     this.detachLifecycle = () => {
       connection.off('close', onClose);
-      connection.off('error', onError);
+      connection.off('error', onError as (...args: unknown[]) => void);
       channel.off('close', onClose);
-      channel.off('error', onError);
+      channel.off('error', onError as (...args: unknown[]) => void);
     };
   }
 
@@ -222,10 +235,15 @@ export class RabbitMQTransport extends BaseTransport implements MessagePublisher
       return;
     }
 
+    const extendedConfig = this.config as Record<string, unknown>;
+    const minDelay = Number((extendedConfig as Record<string, unknown>)['reconnectMinDelay'] ?? (extendedConfig as Record<string, unknown>)['minReconnectDelay'] ?? this.config.reconnectDelay);
+    const maxDelay = Number((extendedConfig as Record<string, unknown>)['reconnectMaxDelay'] ?? (extendedConfig as Record<string, unknown>)['maxReconnectDelay'] ?? this.config.reconnectDelay * Math.max(1, this.config.maxRetries));
     this.reconnectAttempts++;
-    const delay = this.config.reconnectDelay * this.reconnectAttempts;
+    const exponential = Math.min(maxDelay, minDelay * 2 ** (this.reconnectAttempts - 1));
+    const jitter = Math.random() * minDelay;
+    const delay = Math.min(maxDelay, exponential + jitter);
     this.logger?.warn?.(
-      `Reconnecting to RabbitMQ in ${delay}ms (attempt ${this.reconnectAttempts}/${this.config.maxRetries})...`,
+      `Reconnecting to RabbitMQ in ${Math.round(delay)}ms (attempt ${this.reconnectAttempts}/${this.config.maxRetries})...`,
     );
     this.reconnectTimer = setTimeout(() => {
       if (this.closed) {
@@ -306,8 +324,8 @@ export class RabbitMQTransport extends BaseTransport implements MessagePublisher
     });
     await this.channel.bindQueue(queueName, this.config.exchangeName, topic);
 
-    // Replacing a subscription for the same queue replaces the consumer on it.
-    const existing = this.subscriptions.get(queueName);
+    // Replacing a subscription for the same topic replaces the consumer on it.
+    const existing = this.subscriptions.get(topic);
     if (existing) {
       try {
         await this.channel.cancel(existing.consumerTag);
@@ -324,7 +342,7 @@ export class RabbitMQTransport extends BaseTransport implements MessagePublisher
       { noAck: this.config.noAck || options.autoAck },
     );
 
-    this.subscriptions.set(queueName, { handler, consumerTag: result.consumerTag, options });
+    this.subscriptions.set(topic, { topic, queueName, handler, consumerTag: result.consumerTag, options });
   }
 
   private async dispatchMessage(
@@ -370,21 +388,16 @@ export class RabbitMQTransport extends BaseTransport implements MessagePublisher
   async unsubscribe(topic: string): Promise<void> {
     if (!this.channel) return;
 
-    const computed = `${this.config.defaultQueue}.${topic}`;
-    let key: string | undefined = this.subscriptions.has(computed) ? computed : undefined;
-    if (!key) {
-      key = this.subscriptions.has(topic) ? topic : undefined;
-    }
-    if (!key) return;
+    const entry = this.subscriptions.get(topic);
+    if (!entry) return;
 
-    const entry = this.subscriptions.get(key)!;
     try {
       await this.channel.cancel(entry.consumerTag);
     } catch (err) {
-      this.logger?.warn?.(`Failed to cancel consumer ${entry.consumerTag} for ${key}`, { error: err });
+      this.logger?.warn?.(`Failed to cancel consumer ${entry.consumerTag} for ${entry.queueName}`, { error: err });
     }
-    this.subscriptions.delete(key);
-    this.dispatchResetForQueue(key);
+    this.subscriptions.delete(topic);
+    this.dispatchResetForQueue(entry.queueName);
   }
 
   private dispatchResetForQueue(queueName: string): void {

@@ -1,43 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   ContractVersion,
-  VersionedContract,
   parseVersion,
   formatVersion,
   isCompatible,
   getLatestVersion,
   isDeprecated,
 } from '../../src/contracts/versions.js';
-
-describe('ContractVersion', () => {
-  it('should define version structure', () => {
-    const version: ContractVersion = { major: 1, minor: 2, patch: 3 };
-    expect(version.major).toBe(1);
-    expect(version.minor).toBe(2);
-    expect(version.patch).toBe(3);
-  });
-
-  it('should allow zero versions', () => {
-    const version: ContractVersion = { major: 0, minor: 0, patch: 0 };
-    expect(version.major).toBe(0);
-  });
-});
-
-describe('VersionedContract', () => {
-  it('should define versioned contract structure', () => {
-    const contract: VersionedContract<{ name: string }> = {
-      version: { major: 1, minor: 0, patch: 0 },
-      contract: { name: 'test' },
-      supportedVersions: [{ major: 1, minor: 0, patch: 0 }],
-      deprecatedVersions: [],
-    };
-
-    expect(contract.version.major).toBe(1);
-    expect(contract.contract.name).toBe('test');
-    expect(contract.supportedVersions).toHaveLength(1);
-    expect(contract.deprecatedVersions).toHaveLength(0);
-  });
-});
 
 describe('parseVersion', () => {
   it('should parse valid version string', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createLogger, createChildLogger, loggerLevels, LoggerConfig } from '@/observability/logger.js';
+import { createLogger, createChildLogger, loggerLevels } from '@/observability/logger.js';
 import type { Logger } from 'pino';
 
 describe('createLogger', () => {
@@ -368,25 +368,3 @@ describe('loggerLevels', () => {
   });
 });
 
-describe('LoggerConfig type', () => {
-  it('should accept all valid config options', () => {
-    const config: LoggerConfig = {
-      level: 'debug',
-      pretty: true,
-      serviceId: 'test-service',
-      instanceId: 'instance-1',
-      redactSecrets: false,
-    };
-    expect(createLogger(config)).toBeDefined();
-  });
-
-  it('should accept partial config', () => {
-    const config: LoggerConfig = { level: 'warn' };
-    expect(createLogger(config)).toBeDefined();
-  });
-
-  it('should accept empty config', () => {
-    const config: LoggerConfig = {};
-    expect(createLogger(config)).toBeDefined();
-  });
-});

@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { LifecycleManager, createLifecycleManager, LifecycleState, LifecycleHooks } from '../../src/core/lifecycle.js';
+import { LifecycleManager, createLifecycleManager, LifecycleState } from '../../src/core/lifecycle.js';
 import { Transport, TransportCapabilities, TransportHealth } from '../../src/core/capabilities.js';
-import { createMicroserviceError, isMicroserviceError } from '../../src/core/errors.js';
 
 describe('Lifecycle Manager', () => {
   let lifecycle: LifecycleManager;
@@ -168,6 +167,21 @@ describe('Lifecycle Manager', () => {
       lifecycle.setHooks({ onStart, onStop, onHealthCheck });
       // Hooks are private, tested indirectly through start/stop/healthCheck
     });
+
+    it('should preserve onStart when setHooks is called with only onStop', async () => {
+      const onStart = vi.fn().mockResolvedValue(undefined);
+      const onStop = vi.fn().mockResolvedValue(undefined);
+
+      lifecycle.setHooks({ onStart });
+      lifecycle.setHooks({ onStop });
+
+      lifecycle.registerTransport(createMockTransport('t1'));
+      await lifecycle.start();
+      await lifecycle.stop();
+
+      expect(onStart).toHaveBeenCalled();
+      expect(onStop).toHaveBeenCalled();
+    });
   });
 
   describe('start', () => {
@@ -252,6 +266,25 @@ describe('Lifecycle Manager', () => {
         expect((err as any).code).toBe('TRANSPORT_START_FAILED');
       }
       expect(lifecycle.getState()).toBe('failed');
+    });
+
+    it('should roll back previously started transports when a later transport fails', async () => {
+      const goodTransport = createMockTransport('good');
+      const failingTransport = createMockTransport('failing');
+      failingTransport.start.mockRejectedValue(new Error('start failed'));
+      lifecycle.registerTransport(goodTransport);
+      lifecycle.registerTransport(failingTransport);
+
+      try {
+        await lifecycle.start();
+      } catch {
+        // Expected
+      }
+
+      expect(goodTransport.close).toHaveBeenCalled();
+      expect(failingTransport.close).not.toHaveBeenCalled();
+      expect(lifecycle.getState()).toBe('failed');
+      expect(goodTransport.start).toHaveBeenCalled();
     });
 
     it('should emit transportStartError on transport failure', async () => {
@@ -417,7 +450,7 @@ describe('Lifecycle Manager', () => {
         expect((err as any).code).toBe('STOP_ERRORS');
       }
       
-      const error = lifecycle.getState(); // state should be stopped even with errors
+      // State should be stopped even when transports fail to close.
       expect(lifecycle.getState()).toBe('stopped');
     });
 
@@ -589,6 +622,100 @@ describe('Lifecycle Manager', () => {
       await lifecycle.start();
       // Both should start without error
       expect(lifecycle.getState()).toBe('running');
+    });
+  });
+
+  describe('concurrent start and stop', () => {
+    it('should start only once when start is called concurrently', async () => {
+      const transport = createMockTransport('t1');
+      lifecycle.registerTransport(transport);
+
+      const results = await Promise.allSettled([
+        lifecycle.start(),
+        lifecycle.start(),
+        lifecycle.start(),
+      ]);
+
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter((r) => r.status === 'rejected')).toHaveLength(2);
+      expect(transport.start).toHaveBeenCalledTimes(1);
+      expect(lifecycle.getState()).toBe('running');
+    });
+
+    it('should reject the extra starts with INVALID_STATE when start is called concurrently', async () => {
+      lifecycle.registerTransport(createMockTransport('t1'));
+
+      const results = await Promise.allSettled([lifecycle.start(), lifecycle.start()]);
+      const rejected = results.find((r) => r.status === 'rejected');
+
+      expect(rejected).toBeDefined();
+      expect((rejected as PromiseRejectedResult).reason.code).toBe('INVALID_STATE');
+    });
+
+    it('should stop without error when stop is called concurrently', async () => {
+      const transport = createMockTransport('t1');
+      lifecycle.registerTransport(transport);
+      await lifecycle.start();
+
+      const results = await Promise.allSettled([
+        lifecycle.stop(),
+        lifecycle.stop(),
+        lifecycle.stop(),
+      ]);
+
+      expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+      expect(transport.close).toHaveBeenCalledTimes(1);
+      expect(lifecycle.getState()).toBe('stopped');
+    });
+  });
+
+  describe('hook ordering', () => {
+    it('should run the onStart hook before the transports start', async () => {
+      const order: string[] = [];
+      const transport = createMockTransport('t1');
+      transport.start = vi.fn(async () => {
+        order.push('transport');
+      });
+      lifecycle.registerTransport(transport);
+      lifecycle.setHooks({
+        onStart: vi.fn(async () => {
+          order.push('hook');
+        }),
+      });
+
+      await lifecycle.start();
+
+      expect(order).toEqual(['hook', 'transport']);
+    });
+
+    it('should run the onStop hook after the transports close', async () => {
+      const order: string[] = [];
+      const transport = createMockTransport('t1');
+      transport.close = vi.fn(async () => {
+        order.push('transport');
+      });
+      lifecycle.registerTransport(transport);
+      await lifecycle.start();
+
+      lifecycle.setHooks({
+        onStop: vi.fn(async () => {
+          order.push('hook');
+        }),
+      });
+
+      await lifecycle.stop();
+
+      expect(order).toEqual(['transport', 'hook']);
+    });
+
+    it('should fail the start when the onStart hook rejects', async () => {
+      lifecycle.registerTransport(createMockTransport('t1'));
+      lifecycle.setHooks({
+        onStart: vi.fn().mockRejectedValue(new Error('hook start failed')),
+      });
+
+      await expect(lifecycle.start()).rejects.toThrow('hook start failed');
+      expect(lifecycle.getState()).toBe('failed');
     });
   });
 });

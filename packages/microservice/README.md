@@ -10,9 +10,9 @@ Provides a consistent application API and shared infrastructure for configuratio
 |-------|--------------|
 | **Runtime** | Node.js ≥ 20 (ESM only, `"type": "module"`); workspace `.nvmrc` pins 24.19.0 |
 | **Language** | TypeScript 5.3+ (strict, `isolatedModules`, `noUncheckedIndexedAccess`, `noImplicitOverride`) |
-| **Package Manager** | pnpm 11.9.0 |
-| **Build** | `tsc && tsc-alias` — `tsc-alias` rewrites `@/*`, `@crypto/*`, `@transport/*`, `@registry/*`, `@config/*`, `@adapters/*` path aliases to relative ESM imports in `dist/` |
-| **Testing** | Vitest 3.2 (v8 coverage, `forks` pool, single fork) — 73 test files |
+| **Package Manager** | pnpm 12.11.2 |
+| **Build** | `tsc && tsc-alias` — `tsc-alias` rewrites `@/*`, `@transport/*`, `@registry/*`, `@config/*`, `@adapters/*` path aliases to relative ESM imports in `dist/` |
+| **Testing** | Vitest 3.2 (v8 coverage, `forks` pool, single fork) |
 | **Validation** | Zod 3.22 — every configuration section is Zod-validated at load time |
 | **Cryptography** | Node.js Web Crypto API (`crypto.subtle`) + `node:crypto` (`X509Certificate`) — no third-party crypto libraries |
 | **Logging Contract** | Framework-owned `Logger` interface (6 levels, dual overloads, `child(bindings)`); concrete loggers are application-injected or loaded via optional adapters |
@@ -78,9 +78,9 @@ Provides a consistent application API and shared infrastructure for configuratio
 - **Replay Protection** — per-source sliding windows, TTL 5 min, future-skew tolerance 10 s, max 100k entries per source (oldest 50% evicted when full)
 
 ### Observability
-- **Logger Contract** — `Logger` interface with 6 levels, context-first/message-first overloads, `error(err, message)`, `child(bindings)`; `FrameworkLogger` (framework-owned no-op with level gating), `NoopLogger`
+- **Logger Contract** — `Logger` interface with 6 levels, context-first/message-first overloads, `error(err, message)`, `child(bindings)`; `FrameworkLogger` (framework-owned structured JSON logger writing to stdout/stderr with level gating and secret redaction), `NoopLogger`
 - **Logger Adapters** — Pino (secret redaction on `*.password`, `*.secret`, `*.token`, `*.apiKey`, `*.privateKey`, `*.credentials`, `*.authorization`, `req.headers.authorization`, `req.headers.cookie`; optional `pino-pretty` transport) and `@oneunit/logger` (development/production/test modes; type-only import so the core never requires it)
-- **Metrics** — in-memory `InMemoryMetricsCollector`: counters, gauges, histograms, summaries; 1,000-sample FIFO cap per metric name; sorted-label keys. Standalone — not wired into transports
+- **Metrics** — in-memory `InMemoryMetricsCollector`: counters, gauges, histograms, summaries; cardinality-bounded series (default 1,000 series, 1,000 samples per series); sorted-label keys; Prometheus text exposition via `toPrometheus()`. Sensitive label keys (`user_id`, `password`, `token`, `secret`, `api_key`, `authorization`, `cookie`, `session`) are redacted. Standalone — not wired into transports
 - **Tracing** — `NoopTracer`/`InMemoryTracer` plus W3C `traceparent` extract/inject helpers. Standalone — adapters do not currently propagate trace context
 - **Auditing** — `InMemoryAuditLogger`: structured security events, 10,000-event FIFO cap, filtered queries (eventType, actor, resource, time window, outcome, risk level)
 - **Health Checks** — per-transport + application-level, interval configurable (30 s default)
@@ -116,7 +116,7 @@ const app = await createMicroservice({
     },
     adapters: {
       kafka: {
-        enabled: true,
+        enabled: false,  // enable only when @oneunit/kafka or kafkajs is installed
         driver: 'oneunit',  // or 'kafkajs', 'auto'
         brokers: ['localhost:9092'],
         clientId: 'my-service',
@@ -124,14 +124,13 @@ const app = await createMicroservice({
       },
     },
     registry: {
-      backend: 'redis',
-      redis: { driver: 'ioredis', host: 'localhost', port: 6379 },
+      backend: 'memory',
     },
   },
 });
 
-// Kafka messaging (app-level facade — @oneunit/kafka driver only;
-// the `driver` field is honored by KafkaTransport, not here)
+// Kafka messaging (only available when kafka.enabled is true and the
+// selected driver peer dependency is installed)
 await app.kafka?.publish('users.created', { userId: '123' });
 await app.kafka?.subscribe('users.created', async (msg, ctx) => {
   console.log('Received:', msg, 'on', ctx.topic);
@@ -183,9 +182,11 @@ Configuration merging uses `mergeConfig`: plain objects are deep-merged field by
 | `@oneunit/microservice/adapters/logging/oneunit` | `createOneUnitLogger` — `@oneunit/logger` adapter (development/production/test modes) |
 | `@oneunit/microservice/adapters/messaging/kafka` | `KafkaTransport`, `createKafkaTransport`, `createKafkaClient`, `isKafkaAvailable`, `resetKafkaClient` |
 | `@oneunit/microservice/adapters/messaging/nats` | `NatsTransport`, `createNatsTransport` |
+| `@oneunit/microservice/adapters/messaging/rabbitmq` | RabbitMQ transport (amqplib peer dependency) |
+| `@oneunit/microservice/adapters/rpc/grpc` | `GrpcTransport`, `createGrpcTransport` |
 | `@oneunit/microservice/registry/redis` | `RedisRegistryStore`, `createRedisStore`, `resolveRedisDriver`, Redis driver types |
 
-TCP, UDP, tRPC, gRPC, and Connect adapters have **no subpath exports** — import them from the main entry.
+UDP and tRPC adapters have **no subpath exports** — import them from the main entry.
 
 ## Kafka Integration (Dual Driver)
 
@@ -193,7 +194,7 @@ TCP, UDP, tRPC, gRPC, and Connect adapters have **no subpath exports** — impor
 import { createKafkaClient, isKafkaAvailable, KafkaTransport } from '@oneunit/microservice/adapters/messaging/kafka';
 
 // Standalone usage
-if (isKafkaAvailable()) {   // NOTE: uses require.resolve — always false in ESM contexts
+if (isKafkaAvailable()) {   // NOTE: uses dynamic import resolution — false when the Kafka peer dep is not installed
   const kafka = await createKafkaClient({
     config: { brokers: ['localhost:9092'], clientId: 'app', topics: { prefix: 'app' } },
     logger: app.logger,
@@ -271,7 +272,7 @@ const pinoLogger = await createPinoLogger({ level: 'info', pretty: true });
 - `level` — current log level (`trace` | `debug` | `info` | `warn` | `error` | `fatal`; numeric map 10–60)
 
 **Built-in implementations:**
-- `FrameworkLogger` — framework-owned no-op sink with level gating and base bindings (the default)
+- `FrameworkLogger` — framework-owned structured JSON logger writing to stdout/stderr with level gating and secret redaction (the default when no logger is injected)
 - `NoopLogger` — completely silent; `child()` returns itself
 - `PinoLogger` adapter — wraps Pino with secret redaction and optional `pino-pretty`
 - `OneUnitLogger` adapter — wraps `@oneunit/logger` with mode support
@@ -349,7 +350,7 @@ src/
 │   └── server.ts                     # MicroserviceServer (method registry)
 ├── config/                           # Configuration
 │   ├── schema.ts                     # Zod schemas for all config sections + defaults
-│   └── loader.ts                     # loadConfig (file → env fallback), createDefaultConfig
+│   └── loader.ts                     # loadConfig, createDefaultConfig, createConfigFile (auto-write defaults)
 ├── contracts/                        # Shared contracts
 │   ├── messages.ts                   # MessageEnvelope, EncryptedEnvelope
 │   ├── events.ts                     # Event, EventSubscription, SystemEvents
@@ -367,8 +368,7 @@ src/
 │   ├── signing.ts                    # Ed25519SigningService, RsaSigningService
 │   ├── key-provider.ts               # Memory/Composite key providers
 │   ├── key-rotation.ts               # KeyRotationManager (interval timers, events)
-│   ├── replay-protection.ts          # Sliding-window replay detection
-│   └── crypto-types.ts               # Branded crypto types (internal)
+│   └── replay-protection.ts          # Sliding-window replay detection
 ├── registry/                         # Service registry & discovery
 │   ├── registry.ts                   # ServiceRegistry, InMemoryRegistryStore, createRegistry
 │   ├── leases.ts                     # DefaultLeaseManager
@@ -385,7 +385,6 @@ src/
 ├── transport/                        # Transport abstraction
 │   ├── transport.ts                  # BaseTransport abstract class
 │   ├── manager.ts                    # TransportManager (registration, health, metrics)
-│   └── capabilities.ts               # Re-exports core capability types
 ├── adapters/                         # Protocol adapters
 │   ├── logging/                      # Logger adapters
 │   │   ├── shared/adapter-utils.ts   # Logger adaptation helpers
@@ -415,10 +414,22 @@ src/
 │   ├── tracing.ts                    # Noop/InMemory tracers, W3C extract/inject
 │   └── audit.ts                      # InMemoryAuditLogger
 ├── internal/                         # Internal utilities
-│   ├── ids.ts                        # Prefixed ID generators
+│   ├── ids.ts                        # Lightweight id() utility + prefixed ID generators
 │   └── shutdown.ts                   # ShutdownManager (priority hooks, signals)
-└── crypto/                           # Interface-only crypto provider abstractions
-    └── index.ts
+```
+
+## Configuration file
+
+```typescript
+import { ensureConfigFile } from '@oneunit/microservice';
+
+// CRYPTO_ROOT_KEY must be set (≥ 32 chars) before calling ensureConfigFile.
+// It is never generated implicitly. The file is never overwritten if it
+// already exists.
+if (!process.env.CRYPTO_ROOT_KEY || process.env.CRYPTO_ROOT_KEY.length < 32) {
+  throw new Error('CRYPTO_ROOT_KEY must be set (≥ 32 characters)');
+}
+ensureConfigFile();
 ```
 
 ## Development
@@ -426,9 +437,9 @@ src/
 ```bash
 pnpm install        # Install dependencies
 pnpm run build      # tsc && tsc-alias → dist/
-pnpm run test       # vitest run (73 test files)
+pnpm run test       # vitest run
 pnpm run typecheck  # tsc --noEmit
-pnpm run lint       # eslint src
+pnpm run lint       # eslint src test
 ```
 
 ## Testing
@@ -442,3 +453,28 @@ pnpm run lint       # eslint src
 ## License
 
 MIT
+
+## ID generation
+
+The `id()` utility generates compact, URL-safe, unique IDs with zero dependencies.
+
+```ts
+import { id } from '@oneunit/microservice';
+
+id();                                   // "V1StGXR8_Z5jdHi6B-myT"
+id('user_');                            // "user_V1StGXR8_Z5jdHi6B-myT"
+id({ length: 12, alphabet: '0123456789' }); // "482931057482"
+```
+
+Usage examples:
+
+```ts
+// React keys
+const users = data.map((user) => <li key={id('row_')}>{user.name}</li>);
+
+// Database records
+const record = { id: id({ prefix: 'usr_', length: 12, alphabet: '0123456789abcdef' }) };
+
+// Logging correlation IDs
+const correlationId = id('corr-');
+```

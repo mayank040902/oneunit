@@ -39,6 +39,7 @@ export interface RpcClient {
 export interface RpcServer {
   registerMethod(service: string, method: string, handler: RpcMethodHandler): void;
   unregisterMethod(service: string, method: string): void;
+  handle(service: string, method: string, input: unknown, context: RpcContext): Promise<unknown>;
 }
 
 export type RpcMethodHandler = (input: unknown, context: RpcContext) => Promise<unknown>;

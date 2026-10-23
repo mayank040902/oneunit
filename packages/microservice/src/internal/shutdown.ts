@@ -9,6 +9,7 @@ export interface ShutdownHook {
 export interface ShutdownManagerOptions {
   timeoutMs?: number;
   signals?: NodeJS.Signals[];
+  logger?: { error: (...args: unknown[]) => void };
 }
 
 export class ShutdownManager extends EventEmitter {
@@ -82,7 +83,7 @@ export class ShutdownManager extends EventEmitter {
         this.emit('hook:complete', hook.name);
       } catch (err) {
         this.emit('hook:error', hook.name, err);
-        console.error(`Shutdown hook ${hook.name} failed:`, err);
+        (this.options.logger ?? console).error(`Shutdown hook ${hook.name} failed:`, err);
       }
     }
   }
@@ -91,7 +92,7 @@ export class ShutdownManager extends EventEmitter {
     for (const signal of this.options.signals!) {
       process.on(signal, () => {
         this.shutdown(`Received ${signal}`).catch(err => {
-          console.error('Shutdown failed:', err);
+          (this.options.logger ?? console).error('Shutdown failed:', err);
           process.exit(1);
         });
       });
@@ -113,7 +114,7 @@ export function createShutdownManager(options?: ShutdownManagerOptions): Shutdow
 
 export async function gracefulShutdown(
   services: Array<{ name: string; stop: () => Promise<void> }>,
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; logger?: { error: (...args: unknown[]) => void } } = {}
 ): Promise<void> {
   const timeout = options.timeoutMs ?? 30000;
   const startTime = Date.now();
@@ -142,7 +143,7 @@ export async function gracefulShutdown(
           throw new Error('Shutdown timeout exceeded');
         }
         errors.push(err as Error);
-        console.error(`Failed to stop ${service.name}:`, err);
+        (options.logger ?? console).error(`Failed to stop ${service.name}:`, err);
       }
     }
 

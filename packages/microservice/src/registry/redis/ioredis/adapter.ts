@@ -122,31 +122,42 @@ export async function createRedisStore(
 
     async query(query: ServiceQuery): Promise<ServiceInstance[]> {
       const pattern = `${keyPrefix}*`;
-      const keys = await collectKeys(client, pattern);
-
-      if (keys.length === 0) return [];
-
-      const pipeline = client.multi();
-      for (const key of keys) {
-        pipeline.get(key);
-      }
-
-      const results = await pipeline.exec();
-      if (!results) return [];
       const instances: ServiceInstance[] = [];
+      const count = 100;
+      let cursor = '0';
 
-      for (const result of results) {
-        if (result && result[1]) {
-          const instance = JSON.parse(result[1] as string) as ServiceInstance;
+      while (true) {
+        const [nextCursor, batch] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', count);
+        cursor = nextCursor;
 
-          if (query.serviceId && instance.serviceId !== query.serviceId) continue;
-          if (query.serviceName && instance.serviceName !== query.serviceName) continue;
-          if (query.status && instance.status !== query.status) continue;
-          if (query.capability && !instance.capabilities.includes(query.capability)) continue;
-          if (instance.leaseExpiresAt < Date.now()) continue;
+        if (batch.length > 0) {
+          const pipeline = client.multi();
+          for (const key of batch) {
+            pipeline.get(key);
+          }
+          const results = await pipeline.exec();
+          if (results) {
+            for (const result of results) {
+              if (result && result[1]) {
+                const instance = JSON.parse(result[1] as string) as ServiceInstance;
 
-          instances.push(instance);
-          if (query.limit && instances.length >= query.limit) break;
+                if (query.serviceId && instance.serviceId !== query.serviceId) continue;
+                if (query.serviceName && instance.serviceName !== query.serviceName) continue;
+                if (query.status && instance.status !== query.status) continue;
+                if (query.capability && !instance.capabilities.includes(query.capability)) continue;
+                if (instance.leaseExpiresAt < Date.now()) continue;
+
+                instances.push(instance);
+                if (query.limit && instances.length >= query.limit) {
+                  return instances;
+                }
+              }
+            }
+          }
+        }
+
+        if (cursor === '0') {
+          break;
         }
       }
 
@@ -210,6 +221,16 @@ export async function createRedisStore(
         return true;
       }
       return false;
+    },
+    async disconnect() {
+      try {
+        await client.quit();
+      } catch { void 0; }
+    },
+    async close() {
+      try {
+        await client.quit();
+      } catch { void 0; }
     },
   };
 }

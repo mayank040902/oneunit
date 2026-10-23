@@ -1,11 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   ServiceRegistry,
-  ServiceLease,
   ServiceInstance,
-  ServiceQuery,
   ServiceRegistration,
-  RegistryStore,
   InMemoryRegistryStore,
   ServiceRegistryImpl,
   createRegistry,
@@ -234,6 +231,50 @@ describe('InMemoryRegistryStore', () => {
 
     expect(await store.get('lease-1')).toBeNull();
   });
+
+  it('should report not-found when renewing an unknown lease', async () => {
+    const result = await store.renew('unknown-lease', 5000);
+
+    expect(result).toBe('not-found');
+  });
+
+  it('should report expired when renewing a lease whose expiry has passed', async () => {
+    const instance: ServiceInstance = {
+      serviceId: 'svc-1',
+      instanceId: 'inst-1',
+      endpoints: [],
+      status: 'healthy',
+      lastHeartbeat: Date.now(),
+      leaseExpiresAt: Date.now() - 1000,
+      capabilities: [],
+      metadata: {},
+    };
+    await store.set('lease-expired', instance);
+
+    const result = await store.renew('lease-expired', 5000);
+
+    expect(result).toBe('expired');
+  });
+
+  it('should report renewed when renewing a live lease', async () => {
+    const instance: ServiceInstance = {
+      serviceId: 'svc-1',
+      instanceId: 'inst-1',
+      endpoints: [],
+      status: 'healthy',
+      lastHeartbeat: Date.now(),
+      leaseExpiresAt: Date.now() + 30000,
+      capabilities: [],
+      metadata: {},
+    };
+    await store.set('lease-live', instance);
+
+    const result = await store.renew('lease-live', 60000);
+
+    expect(result).toBe('renewed');
+    const renewed = await store.get('lease-live');
+    expect(renewed!.leaseExpiresAt).toBeGreaterThan(instance.leaseExpiresAt);
+  });
 });
 
 describe('ServiceRegistryImpl', () => {
@@ -271,6 +312,8 @@ describe('ServiceRegistryImpl', () => {
   });
 
   it('should renew lease', async () => {
+    vi.useFakeTimers();
+
     const registration: ServiceRegistration = {
       serviceId: 'svc-1',
       serviceName: 'test-service',
@@ -284,13 +327,14 @@ describe('ServiceRegistryImpl', () => {
     const lease = await registry.register(registration);
     const originalExpiry = lease.expiresAt;
 
-    // Wait a bit
-    await new Promise(resolve => setTimeout(resolve, 10));
+    vi.advanceTimersByTime(1000);
 
     await registry.renew(lease.leaseId);
 
     const instance = await registry.getInstance(lease.leaseId);
     expect(instance!.leaseExpiresAt).toBeGreaterThan(originalExpiry);
+
+    vi.useRealTimers();
   });
 
   it('should throw when renewing non-existent lease', async () => {
@@ -388,7 +432,7 @@ describe('ServiceRegistryImpl', () => {
       registeredAt: Date.now(),
     };
 
-    const lease = await registry.register(registration);
+    await registry.register(registration);
 
     await registry.updateHealth({
       serviceId: 'svc-1',
@@ -627,5 +671,25 @@ describe('Registry - Adversarial and Edge Case Tests', () => {
         timestamp: Date.now(),
       })
     ).resolves.not.toThrow();
+  });
+
+  it('should reject the registration when the registry reached its maxServices capacity', async () => {
+    const limited = new ServiceRegistryImpl(new InMemoryRegistryStore(), 30000, 2);
+    const registration: ServiceRegistration = {
+      serviceId: 'svc-1',
+      serviceName: 'test-service',
+      instanceId: 'inst-1',
+      endpoints: [],
+      capabilities: [],
+      metadata: {},
+      registeredAt: Date.now(),
+    };
+
+    await limited.register({ ...registration, instanceId: 'inst-1' });
+    await limited.register({ ...registration, instanceId: 'inst-2' });
+
+    await expect(limited.register({ ...registration, instanceId: 'inst-3' })).rejects.toThrow(
+      /capacity reached/,
+    );
   });
 });

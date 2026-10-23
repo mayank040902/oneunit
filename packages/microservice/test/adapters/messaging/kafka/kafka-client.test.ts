@@ -143,11 +143,14 @@ describe('createKafkaClient driver selection', () => {
       'kafkajs is not installed',
     );
 
-    // The failure is cached: a retry surfaces the same error
-    // rather than silently falling back to another driver.
-    await expect(createKafkaClient({ config: makeConfig({ driver: 'kafkajs' }) })).rejects.toThrow(
-      'kafkajs is not installed',
-    );
+    // The failure is not permanently cached: clearing the transient
+    // resolution failure allows the next initialization to proceed.
+    const adapter = makeAdapter();
+    mockResolveKafkaDriver.mockResolvedValueOnce({
+      driver: 'kafkajs',
+      module: { createAdapter: vi.fn().mockResolvedValue(adapter) },
+    });
+    await expect(createKafkaClient({ config: makeConfig({ driver: 'kafkajs' }) })).resolves.toBeDefined();
   });
 
   it('should report @oneunit/kafka availability via ESM resolution', () => {

@@ -1,7 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  CredentialProvider,
-  CredentialStore,
   MemoryCredentialStore,
   FileCredentialStore,
   createCredentialProvider,
@@ -10,57 +8,6 @@ import {
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { tmpdir } from 'os';
-
-describe('ServiceCredentials', () => {
-  it('should define the correct structure for x509', () => {
-    const creds: ServiceCredentials = {
-      type: 'x509',
-      certificate: 'cert-data',
-      privateKey: 'key-data',
-      caCert: 'ca-data',
-      issuedAt: Date.now(),
-      issuer: 'test-issuer',
-    };
-
-    expect(creds.type).toBe('x509');
-    expect(creds.certificate).toBe('cert-data');
-    expect(creds.privateKey).toBe('key-data');
-    expect(creds.caCert).toBe('ca-data');
-  });
-
-  it('should define the correct structure for jwt', () => {
-    const creds: ServiceCredentials = {
-      type: 'jwt',
-      jwtSecret: 'jwt-secret',
-      issuedAt: Date.now(),
-    };
-
-    expect(creds.type).toBe('jwt');
-    expect(creds.jwtSecret).toBe('jwt-secret');
-  });
-
-  it('should define the correct structure for api-key', () => {
-    const creds: ServiceCredentials = {
-      type: 'api-key',
-      apiKey: 'api-key-data',
-      issuedAt: Date.now(),
-    };
-
-    expect(creds.type).toBe('api-key');
-    expect(creds.apiKey).toBe('api-key-data');
-  });
-
-  it('should define the correct structure for mtls', () => {
-    const creds: ServiceCredentials = {
-      type: 'mtls',
-      certificate: 'cert-data',
-      privateKey: 'key-data',
-      issuedAt: Date.now(),
-    };
-
-    expect(creds.type).toBe('mtls');
-  });
-});
 
 describe('MemoryCredentialStore', () => {
   let store: MemoryCredentialStore;
@@ -199,13 +146,6 @@ describe('FileCredentialStore', () => {
 });
 
 describe('createCredentialProvider', () => {
-  const testCredentials: ServiceCredentials = {
-    type: 'x509',
-    certificate: 'cert-data',
-    privateKey: 'key-data',
-    issuedAt: Date.now(),
-  };
-
   it('should create memory credential provider', async () => {
     const provider = await createCredentialProvider('memory');
 

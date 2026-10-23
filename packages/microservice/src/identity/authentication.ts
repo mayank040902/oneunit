@@ -41,11 +41,17 @@ export class X509Authenticator implements Authenticator {
         return { authenticated: false, error: 'Certificate expired' };
       }
 
-      if (this.trustedCAs.length > 0) {
-        const trusted = await this.verifyChain(cert);
-        if (!trusted) {
-          return { authenticated: false, error: 'Certificate not trusted' };
-        }
+      if (this.trustedCAs.length === 0) {
+        return { authenticated: false, error: 'No trusted CAs configured' };
+      }
+
+      if (this.isNotYetValid(cert)) {
+        return { authenticated: false, error: 'Certificate not yet valid' };
+      }
+
+      const trusted = await this.verifyChain(cert);
+      if (!trusted) {
+        return { authenticated: false, error: 'Certificate not trusted' };
       }
 
       const identity = this.extractIdentity(cert);
@@ -57,9 +63,9 @@ export class X509Authenticator implements Authenticator {
           serviceName: identity.serviceName,
           instanceId: identity.instanceId,
           credentials,
-          getRegistration: () => ({} as ServiceRegistration),
-          sign: async () => new Uint8Array(),
-          verify: async () => false,
+          getRegistration: () => { throw new Error('NotSupportedError: getRegistration is not supported by authenticator identity'); },
+          sign: async () => { throw new Error('NotSupportedError: signing is not supported by authenticator identity'); },
+          verify: async () => { throw new Error('NotSupportedError: verification is not supported by authenticator identity'); },
         },
       };
     } catch (err) {
@@ -89,10 +95,17 @@ export class X509Authenticator implements Authenticator {
     return Date.now() > new Date(cert.validTo).getTime();
   }
 
+  private isNotYetValid(cert: X509Certificate): boolean {
+    return Date.now() < new Date(cert.validFrom).getTime();
+  }
+
   private async verifyChain(cert: X509Certificate): Promise<boolean> {
     for (const caPem of this.trustedCAs) {
       try {
         const ca = await this.parseCertificate(caPem);
+        if (ca.subject !== cert.issuer) continue;
+        if (Date.now() > new Date(ca.validTo).getTime()) continue;
+        if (Date.now() < new Date(ca.validFrom).getTime()) continue;
         const verified = cert.verify(ca.publicKey);
         if (verified) return true;
       } catch {
@@ -121,6 +134,9 @@ export class JwtAuthenticator implements Authenticator {
   private audience: string;
 
   constructor(secret: string, issuer: string, audience: string) {
+    if (!secret || secret.trim() === '') throw new Error('JWT secret is required');
+    if (!issuer || issuer.trim() === '') throw new Error('JWT issuer is required');
+    if (!audience || audience.trim() === '') throw new Error('JWT audience is required');
     this.secret = secret;
     this.issuer = issuer;
     this.audience = audience;
@@ -139,16 +155,20 @@ export class JwtAuthenticator implements Authenticator {
         { issuer: this.issuer, audience: this.audience }
       );
 
+      if (!payload.sub || typeof payload.sub !== 'string' || payload.sub.trim() === '') {
+        return { authenticated: false, error: 'Missing or invalid subject claim' };
+      }
+
       return {
         authenticated: true,
         identity: {
-          serviceId: payload.sub as string,
+          serviceId: payload.sub,
           serviceName: (payload as Record<string, unknown>)['name'] as string,
           instanceId: payload.jti as string,
           credentials,
-          getRegistration: () => ({} as ServiceRegistration),
-          sign: async () => new Uint8Array(),
-          verify: async () => false,
+          getRegistration: () => { throw new Error('NotSupportedError: getRegistration is not supported by authenticator identity'); },
+          sign: async () => { throw new Error('NotSupportedError: signing is not supported by authenticator identity'); },
+          verify: async () => { throw new Error('NotSupportedError: verification is not supported by authenticator identity'); },
         },
       };
     } catch (err) {
@@ -204,8 +224,8 @@ export class ApiKeyAuthenticator implements Authenticator {
         instanceId: crypto.randomUUID(),
         credentials,
         getRegistration: () => ({} as ServiceRegistration),
-        sign: async () => new Uint8Array(),
-        verify: async () => false,
+        sign: async () => { throw new Error('NotSupportedError: signing is not supported by authenticator identity'); },
+        verify: async () => { throw new Error('NotSupportedError: verification is not supported by authenticator identity'); },
       },
     };
   }

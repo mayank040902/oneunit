@@ -1,6 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  KeyProvider,
   ServiceKeys,
   MemoryKeyProvider,
   CompositeKeyProvider,
@@ -9,6 +8,12 @@ import {
 import { EncryptionService } from '../../src/security/encryption.js';
 import { KeyExchangeService } from '../../src/security/key-exchange.js';
 import { Ed25519SigningService } from '../../src/security/signing.js';
+
+// Fake timers are enabled per test; restore real timers so a failing test
+// cannot leave the remaining tests in fake-timer mode.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('MemoryKeyProvider', () => {
   let provider: MemoryKeyProvider;
@@ -214,22 +219,6 @@ describe('createKeyProvider', () => {
   });
 });
 
-describe('ServiceKeys interface', () => {
-  it('should define correct structure', () => {
-    const keys: ServiceKeys = {
-      encryptionKey: new Uint8Array(32),
-      signingKeyPair: { publicKey: new Uint8Array(32), privateKey: {} as CryptoKey },
-      keyExchangeKeyPair: { publicKey: new Uint8Array(32), privateKey: {} as CryptoKey },
-      issuedAt: Date.now(),
-      expiresAt: Date.now() + 86400000,
-      version: 1,
-    };
-    
-    expect(keys.encryptionKey.length).toBe(32);
-    expect(keys.version).toBe(1);
-  });
-});
-
 describe('MemoryKeyProvider - Adversarial and Edge Case Tests', () => {
   let provider: MemoryKeyProvider;
 
@@ -300,6 +289,7 @@ describe('MemoryKeyProvider - Adversarial and Edge Case Tests', () => {
   it('should handle revocation during active use', async () => {
     await provider.rotateKeys('service-revoke');
     const encryptionKey = await provider.getEncryptionKey('service-revoke');
+    expect(encryptionKey).not.toBeNull();
     
     await provider.revokeKeys('service-revoke');
     
@@ -311,18 +301,19 @@ describe('MemoryKeyProvider - Adversarial and Edge Case Tests', () => {
     // This documents the behavior
   });
 
-  it('should handle rapid rotation and expiration', async () => {
+  it('should expire a key when its ttl elapsed', async () => {
+    vi.useFakeTimers();
     const shortTtlProvider = new MemoryKeyProvider(10); // 10ms TTL
-    
+
     await shortTtlProvider.rotateKeys('service-short');
     const key1 = await shortTtlProvider.getEncryptionKey('service-short');
     expect(key1).not.toBeNull();
-    
-    // Wait for expiration
-    await new Promise(resolve => setTimeout(resolve, 20));
-    
+
+    vi.advanceTimersByTime(20);
+
     const key2 = await shortTtlProvider.getEncryptionKey('service-short');
     expect(key2).toBeNull();
+    vi.useRealTimers();
   });
 
   it('should not leak key material in error paths', async () => {
@@ -348,7 +339,7 @@ describe('CompositeKeyProvider - Adversarial Tests', () => {
   });
 
   it('should return first matching key', async () => {
-    const keys1 = await provider1.rotateKeys('service-priority');
+    await provider1.rotateKeys('service-priority');
     await provider2.rotateKeys('service-priority');
     
     const result = await compositeProvider.getEncryptionKey('service-priority');
@@ -472,16 +463,18 @@ describe('MemoryKeyProvider - Security and Edge Cases', () => {
   });
 
   it('should not allow access to expired keys', async () => {
+    vi.useFakeTimers();
     const shortTtlProvider = new MemoryKeyProvider(10); // 10ms TTL
-    
+
     await shortTtlProvider.rotateKeys('service-short');
     const key1 = await shortTtlProvider.getEncryptionKey('service-short');
     expect(key1).not.toBeNull();
-    
-    await new Promise(resolve => setTimeout(resolve, 20));
-    
+
+    vi.advanceTimersByTime(20);
+
     const key2 = await shortTtlProvider.getEncryptionKey('service-short');
     expect(key2).toBeNull();
+    vi.useRealTimers();
   });
 });
 
@@ -583,25 +576,3 @@ describe('CompositeKeyProvider - Security and Edge Cases', () => {
   });
 });
 
-describe('KeyProvider Interface Compliance', () => {
-  it('should enforce all required methods', () => {
-    // This test ensures the interface is complete
-    const provider: KeyProvider = {
-      getEncryptionKey: async () => null,
-      getSigningKey: async () => null,
-      getKeyExchangeKey: async () => null,
-      storeKeys: async () => {},
-      rotateKeys: async () => ({} as any),
-      revokeKeys: async () => {},
-      getKeyVersion: async () => 0,
-    };
-    
-    expect(typeof provider.getEncryptionKey).toBe('function');
-    expect(typeof provider.getSigningKey).toBe('function');
-    expect(typeof provider.getKeyExchangeKey).toBe('function');
-    expect(typeof provider.storeKeys).toBe('function');
-    expect(typeof provider.rotateKeys).toBe('function');
-    expect(typeof provider.revokeKeys).toBe('function');
-    expect(typeof provider.getKeyVersion).toBe('function');
-  });
-});

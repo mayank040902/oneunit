@@ -1,6 +1,7 @@
 import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities.js';
 import { connect, NatsConnection, Subscription, JetStreamClient, JetStreamSubscription, headers as createHeaders, MsgHdrs } from 'nats';
+import { Logger, noopLogger } from '@/observability/logger.js';
 import { NatsAdapterConfig } from '@/config/schema.js';
 
 interface JetStreamMessage {
@@ -33,9 +34,12 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
   private config: NatsAdapterConfig;
   private nc: NatsConnection | null = null;
   private js: JetStreamClient | null = null;
+  private logger: Logger;
   private subscriptions: Map<string, Subscription | JetStreamSubscription> = new Map();
+  private processingActive: Set<string> = new Set();
+  private closed = false;
 
-  constructor(config: NatsAdapterConfig) {
+  constructor(config: NatsAdapterConfig, logger?: Logger) {
     super({
       name: 'nats',
       capabilities: {
@@ -48,6 +52,7 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
       },
     });
     this.config = config;
+    this.logger = (config as { logger?: Logger }).logger ?? logger ?? noopLogger;
   }
 
   async start(): Promise<void> {
@@ -62,6 +67,7 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
       ...(this.config.tls && { tls: this.config.tls }),
     };
 
+    this.closed = false;
     this.nc = await connect(options);
 
     if (this.config.jetstream?.enabled) {
@@ -72,10 +78,12 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     for (const [, sub] of this.subscriptions) {
       await sub.unsubscribe();
     }
     this.subscriptions.clear();
+    this.processingActive.clear();
 
     if (this.nc) {
       await this.nc.drain();
@@ -87,10 +95,11 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
   }
 
   async healthCheck(): Promise<TransportHealth> {
+    const connected = this.nc !== null && !this.closed;
     return {
-      status: this.isStarted() ? 'healthy' : 'unhealthy',
+      status: this.isStarted() && connected ? 'healthy' : 'unhealthy',
       checkedAt: Date.now(),
-      details: { connected: this.nc !== null, jetstream: this.js !== null },
+      details: { connected, jetstream: this.js !== null },
     };
   }
 
@@ -128,35 +137,79 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
 
     this.subscriptions.set(topic, subscription);
 
-    (async () => {
-      for await (const msg of subscription) {
-        try {
-          const data = JSON.parse(new TextDecoder().decode(msg.data));
-          // NATS message headers may be MsgHdrs or undefined
-          // Convert to Record<string, string> for our context
-          const msgHeaders = msg.headers ? headersToRecord(msg.headers) : undefined;
-          await handler(data, {
-            topic: msg.subject,
-            headers: msgHeaders,
-          });
-          
-          if (this.config.jetstream?.enabled && !options.autoAck) {
-            const jsMsg = msg as JetStreamMessage;
-            if (typeof jsMsg.ack === 'function') {
-              await jsMsg.ack();
+    const extendedConfig = this.config as Record<string, unknown>;
+    const ext = extendedConfig as Record<string, unknown>;
+    const maxAttempts = Number(ext['maxDeliveryAttempts'] ?? ext['maxAttempts'] ?? (this.config.jetstream as { maxDeliveryAttempts?: number } | undefined)?.maxDeliveryAttempts ?? 3);
+    const retryDelayMs = Number(ext['retryDelayMs'] ?? ext['retryDelay'] ?? 100);
+    const deadLetterSubject = (ext['deadLetterSubject'] ?? ext['deadLetterQueue'] ?? (this.config.jetstream as { deadLetterSubject?: string } | undefined)?.deadLetterSubject) as string | undefined;
+
+    const processSubscription = async () => {
+      this.processingActive.add(topic);
+      try {
+        for await (const msg of subscription) {
+          if (this.closed) { this.processingActive.delete(topic); break; }
+          try {
+            const data = JSON.parse(new TextDecoder().decode(msg.data));
+            const msgHeaders = msg.headers ? headersToRecord(msg.headers) : undefined;
+            await handler(data, {
+              topic: msg.subject,
+              headers: msgHeaders,
+            });
+
+            if (this.config.jetstream?.enabled && !options.autoAck) {
+              const jsMsg = msg as JetStreamMessage;
+              if (typeof jsMsg.ack === 'function') {
+                await jsMsg.ack();
+              }
             }
-          }
-        } catch (err) {
-          console.error(`Error processing message from ${subject}:`, err);
-          if (this.config.jetstream?.enabled && !options.autoAck) {
-            const jsMsg = msg as JetStreamMessage;
-            if (typeof jsMsg.nak === 'function') {
-              await jsMsg.nak();
+          } catch (err) {
+            const deliveryCount = ((msg as unknown as { info?: { deliveryCount?: number } }).info?.deliveryCount) ?? 1;
+            this.logger.error(err instanceof Error ? err : new Error(String(err)), `Error processing message from ${subject}`);
+            if (this.config.jetstream?.enabled && !options.autoAck) {
+              const jsMsg = msg as JetStreamMessage;
+              if (deliveryCount >= Math.max(1, maxAttempts)) {
+                if (deadLetterSubject && this.nc) {
+                  try {
+                    const failedPayload = JSON.stringify({ originalSubject: msg.subject, deliveryCount, error: err instanceof Error ? err.message : String(err), data: new TextDecoder().decode(msg.data) });
+                    if (this.js) {
+                      await this.js.publish(deadLetterSubject, new TextEncoder().encode(failedPayload));
+                    } else {
+                      this.nc.publish(deadLetterSubject, new TextEncoder().encode(failedPayload));
+                    }
+                    if (typeof jsMsg.ack === 'function') await jsMsg.ack();
+                  } catch (deliveryError) {
+                    this.logger.error(deliveryError instanceof Error ? deliveryError : new Error(String(deliveryError)), `Failed to dead-letter NATS message to ${deadLetterSubject}`);
+                  }
+                } else if (typeof jsMsg.nak === 'function') {
+                  await jsMsg.nak();
+                }
+              } else if (typeof jsMsg.nak === 'function') {
+                await jsMsg.nak();
+              }
             }
           }
         }
+      } catch (err) {
+        this.processingActive.delete(topic);
+        this.logger.error(err instanceof Error ? err : new Error(String(err)), `NATS subscription iteration failed for ${subject}`);
+        if (!this.closed) {
+          // Wait for reconnection before re-entering the processing loop
+          // to avoid duplicate handlers and uncontrolled retry storms.
+          const waitAndRetry = () => {
+            if (this.closed || this.processingActive.has(topic)) return;
+            if (!this.nc) {
+              setTimeout(waitAndRetry, retryDelayMs).unref();
+              return;
+            }
+            this.processingActive.add(topic);
+            void processSubscription();
+          };
+          setTimeout(waitAndRetry, retryDelayMs).unref();
+        }
       }
-    })();
+    };
+
+    void processSubscription();
   }
 
   async unsubscribe(topic: string): Promise<void> {

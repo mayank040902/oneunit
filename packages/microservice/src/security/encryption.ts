@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { EncryptedEnvelope, MessageEnvelope } from '../contracts/messages.js';
+import { z } from 'zod';
 
 export type EncryptionAlgorithmId = 'aes-256-gcm' | 'chacha20-poly1305';
 
@@ -55,6 +56,12 @@ export class EncryptionService {
     algorithm: 'aes-256-gcm' | 'chacha20-poly1305',
     keyMaterial: Uint8Array
   ): Promise<EncryptionService> {
+    if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
+      throw new Error(`Unsupported algorithm: ${algorithm}`);
+    }
+     if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
+      throw new Error(`Unsupported algorithm: ${algorithm}`);
+    }
     const algo = SUPPORTED_ALGORITHMS[algorithm];
     if (!algo) {
       throw new Error(`Unsupported algorithm: ${algorithm}`);
@@ -74,6 +81,12 @@ export class EncryptionService {
       return new EncryptionService(null, algo, rawKey, algorithm);
     }
 
+    if (keyMaterial.length !== algo.keyLength) {
+      throw new Error(
+        `aes-256-gcm requires a ${algo.keyLength * 8}-bit (${algo.keyLength}-byte) key`,
+      );
+    }
+
     const cryptoKey = await crypto.subtle.importKey(
       'raw',
       keyMaterial as BufferSource,
@@ -86,6 +99,12 @@ export class EncryptionService {
   }
 
   static async generateKey(algorithm: 'aes-256-gcm' | 'chacha20-poly1305'): Promise<Uint8Array> {
+    if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
+      throw new Error(`Unsupported algorithm: ${algorithm}`);
+    }
+     if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
+      throw new Error(`Unsupported algorithm: ${algorithm}`);
+    }
     const algo = SUPPORTED_ALGORITHMS[algorithm];
     if (!algo) {
       throw new Error(`Unsupported algorithm: ${algorithm}`);
@@ -261,7 +280,7 @@ export class EncryptionService {
       associatedData: encrypted.authenticatedMetadata,
     });
 
-    const metadata = JSON.parse(new TextDecoder().decode(encrypted.authenticatedMetadata));
+    const metadata = z.any().parse(JSON.parse(new TextDecoder().decode(encrypted.authenticatedMetadata)));
     const payload = JSON.parse(new TextDecoder().decode(plaintext)) as TPayload;
 
     return {

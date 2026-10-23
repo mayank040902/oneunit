@@ -1,14 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  AuthorizationPolicy,
-  AuthorizationContext,
-  AuthorizationDecision,
-  AllowlistEntry,
-  AllowlistPolicy,
-  RbacPolicy,
-  CompositePolicy,
-  createAuthorizationPolicy,
-} from '../../src/identity/authorization.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { AuthorizationContext, AllowlistEntry, AllowlistPolicy, RbacPolicy, CompositePolicy, createAuthorizationPolicy } from '../../src/identity/authorization.js';
 import { ServiceIdentity } from '../../src/identity/service-identity.js';
 
 function createMockIdentity(serviceId: string): ServiceIdentity {
@@ -263,7 +254,7 @@ describe('RbacPolicy', () => {
     policy.addPermission('permission-1', ['read']);
     policy.assignRole('service-1', 'admin');
 
-    let context = createContext({ operation: 'read' });
+    const context = createContext({ operation: 'read' });
     let decision = await policy.evaluate(context);
     expect(decision.allowed).toBe(true);
 
@@ -413,41 +404,6 @@ describe('createAuthorizationPolicy', () => {
     expect(() => createAuthorizationPolicy('unknown' as any)).toThrow(
       'Unknown authorization policy type: unknown'
     );
-  });
-});
-
-describe('Authorization types', () => {
-  it('should define AllowlistEntry structure', () => {
-    const entry: AllowlistEntry = {
-      serviceId: 'svc-1',
-      allowedOperations: ['read', 'write'],
-      allowedResources: ['res-1'],
-      allowedTargets: ['target-1'],
-    };
-    expect(entry.serviceId).toBe('svc-1');
-    expect(entry.allowedOperations).toContain('read');
-  });
-
-  it('should define AuthorizationContext structure', () => {
-    const context: AuthorizationContext = {
-      caller: createMockIdentity('svc-1'),
-      targetService: 'target-1',
-      operation: 'read',
-      resource: 'res-1',
-      attributes: { key: 'value' },
-    };
-    expect(context.operation).toBe('read');
-    expect(context.attributes.key).toBe('value');
-  });
-
-  it('should define AuthorizationDecision structure', () => {
-    const decision: AuthorizationDecision = {
-      allowed: true,
-      reason: 'allowed',
-      obligations: ['log', 'audit'],
-    };
-    expect(decision.allowed).toBe(true);
-    expect(decision.obligations).toContain('log');
   });
 });
 
@@ -645,7 +601,7 @@ describe('AllowlistPolicy - Security and Edge Cases', () => {
 
   it('should handle dynamic policy changes', async () => {
     // Initially deny
-    let context = createContext({ caller: createMockIdentity('service-3'), operation: 'read' });
+    const context = createContext({ caller: createMockIdentity('service-3'), operation: 'read' });
     let decision = await policy.evaluate(context);
     expect(decision.allowed).toBe(false);
     
@@ -661,7 +617,7 @@ describe('AllowlistPolicy - Security and Edge Cases', () => {
   });
 
   it('should handle default policy change', async () => {
-    let context = createContext({ caller: createMockIdentity('service-3'), operation: 'read' });
+    const context = createContext({ caller: createMockIdentity('service-3'), operation: 'read' });
     let decision = await policy.evaluate(context);
     expect(decision.allowed).toBe(false);
     
@@ -741,7 +697,7 @@ describe('RbacPolicy - Security and Edge Cases', () => {
     policy.addPermission('perm-1', ['read']);
     policy.assignRole('service-1', 'admin');
     
-    let context = createContext({ operation: 'read' });
+    const context = createContext({ operation: 'read' });
     let decision = await policy.evaluate(context);
     expect(decision.allowed).toBe(true);
     

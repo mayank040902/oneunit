@@ -18,8 +18,22 @@ export class RedisRegistryStore implements RegistryStore {
   }
 
   async disconnect(): Promise<void> {
-    // The driver adapters don't need explicit disconnect if they handle it internally
-    this.driverAdapter = null;
+    const adapter = this.driverAdapter as { disconnect?: () => Promise<void>; close?: () => Promise<void> } | null;
+    try {
+      if (adapter?.disconnect) {
+        await adapter.disconnect();
+      } else if (adapter?.close) {
+        await adapter.close();
+      }
+    } catch (err) {
+      console.error('Redis cleanup failed', err);
+    } finally {
+      this.driverAdapter = null;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.disconnect();
   }
 
   isConnected(): boolean {

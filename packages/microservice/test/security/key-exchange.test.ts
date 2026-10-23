@@ -1,7 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
-  KeyPair,
-  KeyExchangeResult,
   KeyExchangeService,
 } from '../../src/security/key-exchange.js';
 
@@ -456,7 +454,6 @@ describe('KeyExchangeService - Adversarial and Edge Case Tests', () => {
       // out-of-band authentication does not prove peer identity
       
       const aliceKeyPair = await KeyExchangeService.generateX25519KeyPair();
-      const bobKeyPair = await KeyExchangeService.generateX25519KeyPair();
       const malloryKeyPair = await KeyExchangeService.generateX25519KeyPair(); // Attacker
       
       // Alice thinks she's talking to Bob, but Mallory intercepts

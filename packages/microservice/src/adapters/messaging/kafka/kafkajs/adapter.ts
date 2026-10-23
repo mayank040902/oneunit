@@ -127,33 +127,95 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
       await consumer.connect();
       await consumer.subscribe({ topic: fullTopic, fromBeginning: options.fromBeginning });
 
-      consumer.on((consumer as any).events?.CRASH || (consumer as any).events?.crash || "crash", (arg: any) => {
-        const err = arg?.payload?.error || arg?.error || arg;
+      const consumerEvents = (consumer as { events?: Record<string, unknown> }).events ?? {};
+      const crashEvent = (consumerEvents["CRASH"] || consumerEvents["crash"] || "crash") as Parameters<typeof consumer.on>[0];
+      consumer.on(crashEvent, (arg: unknown) => {
+        const eventArg = arg as { payload?: { error?: unknown }; error?: unknown } | undefined;
+        const err = eventArg?.payload?.error || eventArg?.error || arg;
         logger?.error?.(err as Error, `Kafka consumer crashed for ${fullTopic}`);
       });
-      consumer.on((consumer as any).events?.CONNECT || (consumer as any).events?.connect || "connect", () => {
+      const connectEvent = (consumerEvents["CONNECT"] || consumerEvents["connect"] || "connect") as unknown as Parameters<typeof consumer.on>[0];
+      consumer.on(connectEvent, () => {
         logger?.info('Kafka consumer connected', { topic: fullTopic, groupId });
       });
-      consumer.on((consumer as any).events?.DISCONNECT || (consumer as any).events?.disconnect || "disconnect", () => {
+      const disconnectEvent = (consumerEvents["DISCONNECT"] || consumerEvents["disconnect"] || "disconnect") as unknown as Parameters<typeof consumer.on>[0];
+      consumer.on(disconnectEvent, () => {
         logger?.warn('Kafka consumer disconnected', { topic: fullTopic, groupId });
       });
+
+      const extendedConfig = config as unknown as Record<string, unknown>;
+      const maxAttempts = Number(
+        extendedConfig['maxDeliveryAttempts'] ??
+          extendedConfig['maxAttempts'] ??
+          ((config.consumer as unknown as Record<string, unknown> | undefined)?.['maxDeliveryAttempts']) ??
+          ((config.consumer as unknown as Record<string, unknown> | undefined)?.['maxAttempts']) ??
+          3,
+      );
+      const retryDelayMs = Number(
+        extendedConfig['retryDelayMs'] ??
+          extendedConfig['retryDelay'] ??
+          ((config.consumer as unknown as Record<string, unknown> | undefined)?.['retryDelayMs']) ??
+          ((config.consumer as unknown as Record<string, unknown> | undefined)?.['retryDelay']) ??
+          100,
+      );
+      const deadLetterTopic = (
+        extendedConfig['deadLetterTopic'] ??
+        extendedConfig['deadLetterQueue'] ??
+        ((config.consumer as unknown as Record<string, unknown> | undefined)?.['deadLetterTopic']) ??
+        ((config.consumer as unknown as Record<string, unknown> | undefined)?.['deadLetterQueue'])
+      ) as string | undefined;
 
       await consumer.run({
         autoCommit: false,
         eachMessage: async ({ topic, partition, message }: EachMessagePayload) => {
-          try {
-            const value = message.value ? JSON.parse(message.value.toString()) : null;
-            const headersRecord = headersToRecord(message.headers);
-            await handler(value, {
-              topic,
-              correlationId: headersRecord?.['correlation-id'],
-              traceContext: headersRecord?.['trace-context'] ? JSON.parse(headersRecord['trace-context']) as Record<string, string> : undefined,
-              headers: headersRecord,
-            });
-            await consumer.commitOffsets([{ topic, partition, offset: (Number(message.offset) + 1).toString() }]);
-          } catch (err) {
-            logger?.error?.(`Error processing message from ${fullTopic}`, { error: err });
-            // Don't throw to prevent consumer crash
+          const value = message.value ? JSON.parse(message.value.toString()) : null;
+          const headersRecord = headersToRecord(message.headers);
+          const context = {
+            topic,
+            correlationId: headersRecord?.['correlation-id'],
+            traceContext: headersRecord?.['trace-context'] ? JSON.parse(headersRecord['trace-context']) as Record<string, string> : undefined,
+            headers: headersRecord,
+          };
+
+          const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+          let lastError: unknown;
+
+          for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
+            try {
+              await handler(value, context);
+              await consumer.commitOffsets([{ topic, partition, offset: (Number(message.offset) + 1).toString() }]);
+              return;
+            } catch (err) {
+              lastError = err;
+              logger?.error?.(`Error processing message from ${fullTopic} (attempt ${attempt})`, { error: err });
+              if (attempt < Math.max(1, maxAttempts) && retryDelayMs > 0) {
+                await sleep(retryDelayMs);
+              }
+            }
+          }
+
+          if (deadLetterTopic) {
+            try {
+              await producer?.send({
+                topic: deadLetterTopic,
+                messages: [{
+                  key: message.key ?? undefined,
+                  value: JSON.stringify({
+                    originalTopic: topic,
+                    partition,
+                    offset: message.offset,
+                    headers: headersRecord,
+                    value,
+                    error: lastError instanceof Error ? lastError.message : String(lastError),
+                    attempts: Math.max(1, maxAttempts),
+                  }),
+                  headers: headersRecord,
+                }],
+              });
+              await consumer.commitOffsets([{ topic, partition, offset: (Number(message.offset) + 1).toString() }]);
+            } catch (deliveryError) {
+              logger?.error?.(`Failed to publish Kafka message to dead-letter topic ${deadLetterTopic}`, { error: deliveryError });
+            }
           }
         },
       });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MicroserviceServer, createServer, ServerOptions } from '../../src/core/server.js';
-import { Transport, TransportCapabilities, RpcServer, RpcMethodHandler, RpcContext } from '../../src/core/capabilities.js';
+import { Transport, TransportCapabilities, RpcServer, RpcMethodHandler } from '../../src/core/capabilities.js';
 import { ServiceIdentity } from '../../src/identity/service-identity.js';
 import { AuthorizationPolicy } from '../../src/identity/authorization.js';
 
@@ -281,7 +281,7 @@ describe('MicroserviceServer edge cases', () => {
   });
 
   it('should handle async handler', () => {
-    const handler: RpcMethodHandler = async (input, context) => {
+    const handler: RpcMethodHandler = async (input, _context) => {
       await Promise.resolve();
       return { processed: true, input };
     };

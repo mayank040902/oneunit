@@ -121,6 +121,9 @@ export const KafkaAdapterConfigSchema = z.object({
 });
 
 export const NatsAdapterConfigSchema = z.object({
+  // Informational flag: the framework does not auto-start NATS.
+  // Users register the transport via registerTransport(). Kept for
+  // configuration consistency and backward compatibility.
   enabled: z.boolean().default(false),
   servers: z.array(z.string()).default(['nats://localhost:4222']),
   clientName: z.string().optional(),
@@ -142,6 +145,8 @@ export const NatsAdapterConfigSchema = z.object({
 });
 
 export const TcpAdapterConfigSchema = z.object({
+  // Informational flag: the framework does not auto-start TCP.
+  // Users register the transport via registerTransport().
   enabled: z.boolean().default(false),
   host: z.string().default('0.0.0.0'),
   port: z.number().int().positive().default(8080),
@@ -155,6 +160,7 @@ export const TcpAdapterConfigSchema = z.object({
 });
 
 export const UdpAdapterConfigSchema = z.object({
+  // Informational flag: the framework does not auto-start UDP.
   enabled: z.boolean().default(false),
   host: z.string().default('0.0.0.0'),
   port: z.number().int().positive().default(8081),
@@ -167,6 +173,7 @@ export const UdpAdapterConfigSchema = z.object({
 });
 
 export const TrpcAdapterConfigSchema = z.object({
+  // Informational flag: the framework does not auto-start tRPC.
   enabled: z.boolean().default(false),
   endpoint: z.string().default('http://localhost:3000/trpc'),
   router: z.record(z.unknown()).optional(),
@@ -174,6 +181,7 @@ export const TrpcAdapterConfigSchema = z.object({
 });
 
 export const GrpcAdapterConfigSchema = z.object({
+  // Informational flag: the framework does not auto-start gRPC.
   enabled: z.boolean().default(false),
   endpoint: z.string().default('localhost:50051'),
   protoPath: z.string().default(''),
@@ -183,6 +191,7 @@ export const GrpcAdapterConfigSchema = z.object({
 });
 
 export const ConnectAdapterConfigSchema = z.object({
+  // Informational flag: the framework does not auto-start Connect.
   enabled: z.boolean().default(false),
   endpoint: z.string().default('http://localhost:3000'),
   transport: z.any().optional(),

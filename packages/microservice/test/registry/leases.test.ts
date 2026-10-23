@@ -4,7 +4,7 @@ import {
   DefaultLeaseManager,
   createLeaseManager,
 } from '../../src/registry/leases.js';
-import { ServiceRegistry, ServiceInstance, ServiceRegistration, InMemoryRegistryStore, ServiceRegistryImpl } from '../../src/registry/registry.js';
+import { ServiceRegistry, InMemoryRegistryStore, ServiceRegistryImpl } from '../../src/registry/registry.js';
 
 describe('DefaultLeaseManager', () => {
   let store: InMemoryRegistryStore;
@@ -39,6 +39,7 @@ describe('DefaultLeaseManager', () => {
   });
 
   it('should renew lease', async () => {
+    vi.useFakeTimers();
     const lease = await leaseManager.acquire({
       serviceId: 'svc-1',
       instanceId: 'inst-1',
@@ -48,12 +49,13 @@ describe('DefaultLeaseManager', () => {
     });
 
     const originalExpiry = lease.expiresAt;
-    await new Promise(resolve => setTimeout(resolve, 10));
+    vi.advanceTimersByTime(1000);
 
     await leaseManager.renew(lease.leaseId);
 
     const updatedLease = await leaseManager.getLease(lease.leaseId);
     expect(updatedLease!.expiresAt).toBeGreaterThan(originalExpiry);
+    vi.useRealTimers();
   });
 
   it('should release lease', async () => {

@@ -6,7 +6,6 @@ import {
   type ServiceRegistration,
   type ServiceInstance,
   type HealthCheck,
-  ServiceQuery,
   Schemas,
 } from '../../src/contracts/schemas.js';
 
@@ -102,7 +101,7 @@ describe('ServiceRegistrationSchema', () => {
   });
 
   it('should default capabilities to empty array', () => {
-    const { capabilities, ...registration } = validRegistration;
+    const { capabilities: _capabilities, ...registration } = validRegistration;
     const result = ServiceRegistrationSchema.safeParse(registration);
     expect(result.success).toBe(true);
     if (result.success) {
@@ -111,7 +110,7 @@ describe('ServiceRegistrationSchema', () => {
   });
 
   it('should default metadata to empty object', () => {
-    const { metadata, ...registration } = validRegistration;
+    const { metadata: _metadata, ...registration } = validRegistration;
     const result = ServiceRegistrationSchema.safeParse(registration);
     expect(result.success).toBe(true);
     if (result.success) {
@@ -184,7 +183,7 @@ describe('ServiceInstanceSchema', () => {
   });
 
   it('should default capabilities to empty array', () => {
-    const { capabilities, ...instance } = validInstance;
+    const { capabilities: _capabilities, ...instance } = validInstance;
     const result = ServiceInstanceSchema.safeParse(instance);
     expect(result.success).toBe(true);
     if (result.success) {
@@ -193,7 +192,7 @@ describe('ServiceInstanceSchema', () => {
   });
 
   it('should default metadata to empty object', () => {
-    const { metadata, ...instance } = validInstance;
+    const { metadata: _metadata, ...instance } = validInstance;
     const result = ServiceInstanceSchema.safeParse(instance);
     expect(result.success).toBe(true);
     if (result.success) {
@@ -241,7 +240,7 @@ describe('HealthCheckSchema', () => {
   });
 
   it('should make details optional', () => {
-    const { details, ...healthCheck } = validHealthCheck;
+    const { details: _details, ...healthCheck } = validHealthCheck;
     const result = HealthCheckSchema.safeParse(healthCheck);
     expect(result.success).toBe(true);
     if (result.success) {
@@ -258,36 +257,6 @@ describe('HealthCheckSchema', () => {
   it('should infer correct TypeScript type', () => {
     const healthCheck: HealthCheck = validHealthCheck;
     expect(healthCheck.serviceId).toBeDefined();
-  });
-});
-
-describe('ServiceQuery', () => {
-  it('should define query structure with optional fields', () => {
-    const query: ServiceQuery = {
-      serviceId: '123e4567-e89b-12d3-a456-426614174000',
-      serviceName: 'test-service',
-      status: 'healthy',
-      capability: 'rpc',
-      limit: 10,
-    };
-
-    expect(query.serviceId).toBeDefined();
-    expect(query.serviceName).toBeDefined();
-    expect(query.status).toBe('healthy');
-    expect(query.capability).toBe('rpc');
-    expect(query.limit).toBe(10);
-  });
-
-  it('should allow empty query', () => {
-    const query: ServiceQuery = {};
-    expect(query.serviceId).toBeUndefined();
-    expect(query.limit).toBeUndefined();
-  });
-
-  it('should allow partial query', () => {
-    const query: ServiceQuery = { serviceName: 'test' };
-    expect(query.serviceName).toBe('test');
-    expect(query.serviceId).toBeUndefined();
   });
 });
 

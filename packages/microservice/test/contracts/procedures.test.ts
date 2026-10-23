@@ -1,13 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import {
-  ProcedureContract,
-  ProcedureContext,
-  ProcedureHandler,
-  createProcedureContract,
-  validateProcedureInput,
-  validateProcedureOutput,
-} from '../../src/contracts/procedures.js';
+import { ProcedureHandler, createProcedureContract, validateProcedureInput, validateProcedureOutput } from '../../src/contracts/procedures.js';
 
 describe('ProcedureContract', () => {
   const inputSchema = z.object({ name: z.string(), age: z.number().int().positive() });
@@ -159,38 +152,9 @@ describe('validateProcedureOutput', () => {
   });
 });
 
-describe('ProcedureContext', () => {
-  it('should define the correct structure', () => {
-    const context: ProcedureContext = {
-      serviceId: '123e4567-e89b-12d3-a456-426614174000',
-      instanceId: '123e4567-e89b-12d3-a456-426614174001',
-      correlationId: 'corr-123',
-      traceContext: { 'trace-id': 'trace-123' },
-      metadata: new Map([['key', 'value']]),
-    };
-
-    expect(context.serviceId).toBeDefined();
-    expect(context.instanceId).toBeDefined();
-    expect(context.correlationId).toBeDefined();
-    expect(context.traceContext).toBeDefined();
-    expect(context.metadata).toBeInstanceOf(Map);
-  });
-
-  it('should allow optional traceContext', () => {
-    const context: ProcedureContext = {
-      serviceId: '123e4567-e89b-12d3-a456-426614174000',
-      instanceId: '123e4567-e89b-12d3-a456-426614174001',
-      correlationId: 'corr-123',
-      metadata: new Map(),
-    };
-
-    expect(context.traceContext).toBeUndefined();
-  });
-});
-
 describe('ProcedureHandler', () => {
   it('should accept a handler function with correct signature', async () => {
-    const handler: ProcedureHandler<{ name: string }, { id: string }> = async (input, context) => {
+    const handler: ProcedureHandler<{ name: string }, { id: string }> = async (_input, _context) => {
       return { id: '123' };
     };
 

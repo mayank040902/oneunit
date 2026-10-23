@@ -11,6 +11,7 @@ vi.mock('@connectrpc/connect-node', () => ({
 }));
 
 import { createPromiseClient } from '@connectrpc/connect';
+
 const mockCreatePromiseClient = vi.mocked(createPromiseClient);
 
 function makeConfig(overrides: Partial<ConnectConfig> = {}): ConnectConfig {

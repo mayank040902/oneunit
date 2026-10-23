@@ -6,8 +6,10 @@ import { ServiceRegistry, createRegistry } from '../registry/registry.js';
 import { ServiceIdentity, createServiceIdentity } from '../identity/service-identity.js';
 import { AuthorizationPolicy, createAuthorizationPolicy } from '../identity/authorization.js';
 import { Logger, createLogger } from '../observability/logger.js';
+import { AuditEventTypes, createAuditLogger, AuditLogger } from '../observability/audit.js';
 import { createKafkaClient } from '../adapters/messaging/kafka/kafka-client.js';
 import { MessageContext } from '../core/capabilities.js';
+import { ShutdownManager } from '../internal/shutdown.js';
 
 export interface KafkaMessaging {
   publish(topic: string, message: unknown, options?: { key?: string; headers?: Record<string, string> }): Promise<void>;
@@ -24,10 +26,12 @@ export interface MicroserviceApp {
   readonly authorization: AuthorizationPolicy;
   readonly lifecycle: LifecycleManager;
   readonly logger: Logger;
+  readonly audit: AuditLogger;
   readonly kafka?: KafkaMessaging;
 
   start(): Promise<void>;
   stop(): Promise<void>;
+  isReady(): boolean;
   getTransport(name: string): Transport | undefined;
   registerTransport(transport: Transport): void;
   unregisterTransport(name: string): boolean;
@@ -97,6 +101,15 @@ export async function createMicroservice(options: CreateAppOptions = {}): Promis
   // configuration fails here, before sockets or clients open.
   const config = mergeConfig(loaded, options.config ?? {});
 
+  // Validate that a root cryptographic key is present. It must be
+  // supplied explicitly via config or the CRYPTO_ROOT_KEY env var;
+  // it is never generated implicitly by application construction.
+  if (!config.crypto.rootKey || config.crypto.rootKey.length < 32) {
+    throw new Error(
+      'Missing or invalid crypto.rootKey: a root key of at least 32 characters is required. Set it in configuration or via the CRYPTO_ROOT_KEY environment variable.',
+    );
+  }
+
   const identity = createServiceIdentity(config.service);
   const registry = createRegistry(config.registry);
 const authorization = createAuthorizationPolicy(config.auth.type, {
@@ -104,10 +117,32 @@ const authorization = createAuthorizationPolicy(config.auth.type, {
     defaultPolicy: config.auth.defaultPolicy,
     roles: config.auth.roles,
     serviceRoles: config.auth.serviceRoles,
+    authenticationEnabled: config.security?.authenticationEnabled,
   });
   const lifecycle = new LifecycleManager(config.registry.healthCheckIntervalMs || 30000);
   
   const logger = await createAppLogger(options, config);
+
+  // Audit logger for security-sensitive lifecycle events.
+  const audit = createAuditLogger('memory', { maxEvents: 10000 });
+
+  // Shutdown manager wired to the application lifecycle. Signal handlers
+  // are installed once per process by the first manager instance; subsequent
+  // instances share the same process-level signal handlers.
+  const shutdownManager = new ShutdownManager({
+    timeoutMs: config.registry.healthCheckIntervalMs || 30000,
+    signals: ['SIGTERM', 'SIGINT'],
+  });
+
+  // Register application shutdown as an ordered cleanup hook on the
+  // shutdown manager so signal-triggered shutdown drains the app.
+  shutdownManager.registerHook({
+    name: 'microservice-app',
+    priority: 100,
+    handler: async () => {
+      await app.stop();
+    },
+  });
 
   // Auto-initialize Kafka if enabled in config (non-blocking)
   let kafkaMessaging: KafkaMessaging | undefined;
@@ -123,6 +158,9 @@ const authorization = createAuthorizationPolicy(config.auth.type, {
     }
   }
 
+  let leaseId: string | null = null;
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+
   const app: MicroserviceApp = {
     service: config.service,
     config,
@@ -131,13 +169,85 @@ const authorization = createAuthorizationPolicy(config.auth.type, {
     authorization,
     lifecycle,
     logger,
+    audit,
     kafka: kafkaMessaging,
 
     start: async () => {
-      await registry.register(identity.getRegistration());
+      // Register the service lease and retain the exact lease returned.
+      const lease = await registry.register(identity.getRegistration());
+      leaseId = lease.leaseId;
+
+      const ttlMs = config.registry.ttlMs ?? 30000;
+
+      // Audit the service registration.
+      await audit.log({
+        eventId: `reg-${Date.now()}`,
+        eventType: AuditEventTypes.SERVICE_REGISTERED,
+        timestamp: Date.now(),
+        actor: { serviceId: identity.serviceId, instanceId: identity.instanceId },
+        action: 'register',
+        resource: { type: 'service', id: identity.serviceId },
+        outcome: 'success',
+        details: { leaseId, ttlMs },
+        riskLevel: 'low',
+      });
+
+      // Start periodic heartbeat renewal before expiration.
+      const heartbeatIntervalMs = config.registry.heartbeatIntervalMs ?? Math.floor(ttlMs / 2);
+      heartbeatTimer = setInterval(async () => {
+        try {
+          await registry.renew(leaseId!);
+          logger.debug('Registry lease renewed', { leaseId: leaseId!, ttlMs });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn('Registry lease renewal failed', { leaseId: leaseId!, error: msg });
+        }
+      }, heartbeatIntervalMs);
+      heartbeatTimer.unref();
+
       lifecycle.setHooks({
         onStop: async () => {
-          await registry.deregister(identity.serviceId);
+          // Stop renewal before deregistering.
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+          }
+          if (leaseId) {
+            try {
+              await registry.deregister(leaseId);
+              logger.info('Registry lease deregistered', { leaseId });
+
+              // Audit the service deregistration.
+              await audit.log({
+                eventId: `dereg-${Date.now()}`,
+                eventType: AuditEventTypes.SERVICE_DEREGISTERED,
+                timestamp: Date.now(),
+                actor: { serviceId: identity.serviceId, instanceId: identity.instanceId },
+                action: 'deregister',
+                resource: { type: 'service', id: identity.serviceId },
+                outcome: 'success',
+                details: { leaseId },
+                riskLevel: 'low',
+              });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ leaseId, error: msg }, 'Registry lease deregistration failed');
+
+          // Audit the failed deregistration.
+          await audit.log({
+            eventId: `dereg-fail-${Date.now()}`,
+            eventType: AuditEventTypes.SECURITY_ALERT,
+            timestamp: Date.now(),
+            actor: { serviceId: identity.serviceId, instanceId: identity.instanceId },
+            action: 'deregister',
+            resource: { type: 'service', id: identity.serviceId },
+            outcome: 'failure',
+            details: { leaseId, error: msg },
+            riskLevel: 'high',
+          });
+        }
+        leaseId = null;
+          }
           if (kafkaMessaging) {
             await kafkaMessaging.disconnect();
           }
@@ -147,10 +257,63 @@ const authorization = createAuthorizationPolicy(config.auth.type, {
     },
 
     stop: async () => {
+      // Stop renewal before completing deregistration.
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      if (leaseId) {
+        try {
+          await registry.deregister(leaseId);
+          logger.info('Registry lease deregistered on stop', { leaseId });
+
+          // Audit the service deregistration.
+          await audit.log({
+            eventId: `dereg-stop-${Date.now()}`,
+            eventType: AuditEventTypes.SERVICE_DEREGISTERED,
+            timestamp: Date.now(),
+            actor: { serviceId: identity.serviceId, instanceId: identity.instanceId },
+            action: 'deregister',
+            resource: { type: 'service', id: identity.serviceId },
+            outcome: 'success',
+            details: { leaseId },
+            riskLevel: 'low',
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ leaseId, error: msg }, 'Registry lease deregistration failed on stop');
+
+          // Audit the failed deregistration.
+          await audit.log({
+            eventId: `dereg-stop-fail-${Date.now()}`,
+            eventType: AuditEventTypes.SECURITY_ALERT,
+            timestamp: Date.now(),
+            actor: { serviceId: identity.serviceId, instanceId: identity.instanceId },
+            action: 'deregister',
+            resource: { type: 'service', id: identity.serviceId },
+            outcome: 'failure',
+            details: { leaseId, error: msg },
+            riskLevel: 'high',
+          });
+        }
+        leaseId = null;
+      }
       if (kafkaMessaging) {
         await kafkaMessaging.disconnect();
       }
+      if (typeof (registry as { close?: () => Promise<void> }).close === 'function') {
+        try {
+          await (registry as unknown as { close: () => Promise<void> }).close();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error({ error: msg }, 'Registry close failed on stop');
+        }
+      }
       await lifecycle.stop();
+    },
+
+    isReady(): boolean {
+      return lifecycle.getState() === 'running' || lifecycle.getState() === 'degraded';
     },
 
     getTransport: (name: string) => {
@@ -170,4 +333,3 @@ const authorization = createAuthorizationPolicy(config.auth.type, {
 }
 
 export type { MicroserviceConfig, ServiceConfig } from '../config/schema.js';
-export { loadConfig } from '../config/loader.js';

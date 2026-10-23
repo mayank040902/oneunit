@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createOneUnitLogger } from '@/adapters/logging/oneunit/adapter.js';
-import type { Logger } from '@/observability/logger.js';
+
+;
 
 describe('createOneUnitLogger', () => {
   describe('with provided logger instance', () => {
@@ -13,7 +14,7 @@ describe('createOneUnitLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => ({
+        child: vi.fn((_bindings) => ({
           level: 'info' as const,
           trace: vi.fn(),
           debug: vi.fn(),
@@ -58,7 +59,7 @@ describe('createOneUnitLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => ({
+        child: vi.fn((_bindings) => ({
           level: 'trace' as const,
           trace: vi.fn(),
           debug: vi.fn(),
@@ -91,7 +92,7 @@ describe('createOneUnitLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => mockOneUnitLogger),
+        child: vi.fn((_bindings) => mockOneUnitLogger),
       };
 
       const logger = await createOneUnitLogger({ logger: mockOneUnitLogger });
@@ -112,7 +113,7 @@ describe('createOneUnitLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => mockOneUnitLogger),
+        child: vi.fn((_bindings) => mockOneUnitLogger),
       };
 
       const logger = await createOneUnitLogger({ logger: mockOneUnitLogger });
@@ -164,7 +165,7 @@ describe('createOneUnitLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => mockChild2),
+        child: vi.fn((_bindings) => mockChild2),
       };
 
       const mockChild2 = {
@@ -191,7 +192,7 @@ describe('createOneUnitLogger', () => {
 
       const logger = await createOneUnitLogger({ logger: mockOneUnitLogger });
       const child1 = logger.child({ a: 1 });
-      const child2 = child1.child({ b: 2 });
+      child1.child({ b: 2 });
 
       expect(mockOneUnitLogger.child).toHaveBeenCalledTimes(1);
       expect(mockChild1.child).toHaveBeenCalledWith({ b: 2 });

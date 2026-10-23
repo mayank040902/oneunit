@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { InMemoryAuditLogger, createAuditLogger, AuditEventTypes } from '../../src/observability/audit.js';
 import { AuditEvent } from '../../src/observability/audit.js';
 

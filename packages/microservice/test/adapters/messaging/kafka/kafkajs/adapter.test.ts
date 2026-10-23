@@ -44,11 +44,9 @@ function makeConfig(overrides: Partial<KafkaAdapterConfig> = {}): KafkaAdapterCo
 
 describe('KafkaJS Driver Adapter', () => {
   let adapter: KafkaDriverAdapter;
-  let mockConsumers: Map<string, any>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockConsumers = new Map();
     (mockKafka.producer as any).mockClear();
     (mockKafka.consumer as any).mockClear();
     mockProducer.connect.mockClear();

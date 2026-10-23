@@ -1,11 +1,17 @@
 import { RpcClient, MessagePublisher, MessageSubscriber, Transport } from './capabilities.js';
 import { ServiceIdentity } from '../identity/service-identity.js';
 import { AuthorizationPolicy } from '../identity/authorization.js';
-import { getErrorCategory, isMicroserviceError } from './errors.js';
+import { createMicroserviceError, ErrorCodes, getErrorCategory, isMicroserviceError } from './errors.js';
+
+export interface CallOptions {
+  timeout?: number;
+  idempotent?: boolean;
+}
 
 export interface ClientOptions {
   service: ServiceIdentity;
   authorization: AuthorizationPolicy;
+  authenticationEnabled?: boolean;
   defaultTimeout?: number;
   retryPolicy?: RetryPolicy;
 }
@@ -16,6 +22,8 @@ export interface RetryPolicy {
   maxDelayMs: number;
   jitter: boolean;
   retryableCategories: string[];
+  idempotent?: boolean;
+  deadlineMs?: number;
 }
 
 // Retry safety: a retried call may execute more
@@ -67,7 +75,7 @@ export class MicroserviceClient implements RpcClient, MessagePublisher, MessageS
     return this.transports.get(name);
   }
 
-  async call<TInput, TOutput>(service: string, method: string, input: TInput): Promise<TOutput> {
+  async call<TInput, TOutput>(service: string, method: string, input: TInput, callOptions: CallOptions = {}): Promise<TOutput> {
     const transport = this.getRpcTransport();
     if (!transport) {
       throw new Error('No RPC transport available');
@@ -79,14 +87,74 @@ export class MicroserviceClient implements RpcClient, MessagePublisher, MessageS
       );
     }
 
-    if (!this.options.retryPolicy) {
-      return transport.call(service, method, input);
+    if (this.options.authenticationEnabled !== false) {
+      const decision = await this.options.authorization.evaluate({
+        caller: this.options.service,
+        targetService: service,
+        operation: `${service}.${method}`,
+        resource: method,
+        attributes: {},
+      });
+      if (!decision.allowed) {
+        throw createMicroserviceError(
+          ErrorCodes.FORBIDDEN,
+          decision.reason ?? `Outbound call to ${service}.${method} is not authorized`,
+          'AUTHORIZATION',
+          false,
+          { details: { service, method, reason: decision.reason } },
+        );
+      }
     }
 
-    return this.executeWithRetry(
-      () => transport.call<TInput, TOutput>(service, method, input),
-      this.options.retryPolicy,
-    );
+    const timeoutMs = callOptions.timeout ?? this.options.defaultTimeout;
+    const operation = (): Promise<TOutput> => transport.call<TInput, TOutput>(service, method, input);
+
+    const makeTimedOperation = (): (() => Promise<TOutput>) => {
+      return async () => {
+        const op = operation();
+        // Swallow late rejections so they never become unhandled rejections
+        // after the timeout has already settled the outer promise.
+        void op.catch(() => {});
+
+        let timer: NodeJS.Timeout | null = null;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            timer = null;
+            reject(
+              createMicroserviceError(
+                ErrorCodes.TIMEOUT,
+                `RPC call to ${service}.${method} timed out after ${timeoutMs}ms`,
+                'TIMEOUT',
+                true,
+                { details: { service, method, timeoutMs } },
+              ),
+            );
+          }, timeoutMs!);
+        });
+        // Attach a rejection handler synchronously so the timeout promise is
+        // never reported as unhandled, even under fake timers.
+        void timeoutPromise.catch(() => {});
+
+        try {
+          return await Promise.race([op, timeoutPromise]);
+        } finally {
+          if (timer) {
+            clearTimeout(timer);
+            timer = null;
+          }
+        }
+      };
+    };
+
+    const baseOperation = timeoutMs ? makeTimedOperation() : operation;
+
+    if (!this.options.retryPolicy) {
+      return baseOperation();
+    }
+    const rp = callOptions.idempotent !== undefined
+      ? { ...this.options.retryPolicy, idempotent: callOptions.idempotent }
+      : this.options.retryPolicy;
+    return this.executeWithRetry(baseOperation, rp, service, method);
   }
 
   stream<TInput, TOutput>(service: string, method: string, input: TInput): AsyncIterable<TOutput> {
@@ -159,24 +227,41 @@ export class MicroserviceClient implements RpcClient, MessagePublisher, MessageS
   // blindly retried (§reliability rules).
   private async executeWithRetry<T>(
     operation: () => Promise<T>,
-    policy: RetryPolicy
+    policy: RetryPolicy,
+    _service?: string,
+    _method?: string
   ): Promise<T> {
-    const { maxRetries, baseDelayMs, maxDelayMs, jitter, retryableCategories } = policy;
+    const { maxRetries, baseDelayMs, maxDelayMs, jitter, retryableCategories, idempotent, deadlineMs } = policy;
 
+    if (idempotent === false) {
+      return operation();
+    }
+
+    const deadline = deadlineMs ? Date.now() + deadlineMs : undefined;
     let attempt = 0;
     while (true) {
       try {
         return await operation();
       } catch (err) {
         const category = isMicroserviceError(err) ? getErrorCategory(err) : undefined;
-        const retryable = category !== undefined && retryableCategories.includes(category);
+        const errRetryable = isMicroserviceError(err) ? err.retryable : true;
+        const retryable = errRetryable !== false && category !== undefined && retryableCategories.includes(category);
         if (!retryable || attempt >= maxRetries) {
+          throw err;
+        }
+        if (deadline && Date.now() >= deadline) {
           throw err;
         }
 
         const exponential = baseDelayMs * 2 ** attempt;
         const capped = Math.min(exponential, maxDelayMs);
-        const delay = jitter ? capped * (0.5 + Math.random()) : capped;
+        let delay = jitter ? capped * (0.5 + Math.random()) : capped;
+        if (deadline) {
+          if (Date.now() + delay > deadline) {
+            throw err;
+          }
+          delay = Math.min(delay, Math.max(0, deadline - Date.now()));
+        }
         await sleep(delay);
         attempt++;
       }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GrpcTransport, GrpcConfig } from '@adapters/rpc/grpc/index.js';
-import { RpcMethodHandler, RpcContext } from '@core/capabilities.js';
+import { RpcMethodHandler } from '@core/capabilities.js';
 
 vi.mock('@grpc/grpc-js', () => ({
   Server: vi.fn().mockImplementation(() => ({
@@ -41,13 +41,13 @@ function makeConfig(overrides: Partial<GrpcConfig> = {}): GrpcConfig {
 
 const mockGrpcServer = {
   addService: vi.fn(),
-  bindAsync: vi.fn((addr: string, creds: any, cb: Function) => cb(null)),
+  bindAsync: vi.fn((addr: string, creds: any, cb: (error: Error | null) => void) => cb(null)),
   start: vi.fn(),
-  tryShutdown: vi.fn((cb: Function) => cb()),
+  tryShutdown: vi.fn((cb: () => void) => cb()),
 };
 
 const mockGrpcClient = {
-  Unary: vi.fn((input: any, cb: Function) => cb(null, { success: true, input })),
+  Unary: vi.fn((input: any, cb: (error: Error | null, response?: unknown) => void) => cb(null, { success: true, input })),
   ServerStream: vi.fn(() => ({
     on: vi.fn(),
     [Symbol.asyncIterator]: async function* () {
@@ -55,7 +55,7 @@ const mockGrpcClient = {
       yield { success: true, done: true };
     },
   })),
-  ClientStream: vi.fn((cb: Function) => ({
+  ClientStream: vi.fn((_cb: (error: Error | null) => void) => ({
     write: vi.fn(),
     end: vi.fn(),
     on: vi.fn(),
@@ -380,7 +380,7 @@ describe('GrpcTransport call', () => {
   it('should handle call errors', async () => {
     const errorClient = {
       ...mockGrpcClient,
-      Unary: vi.fn((input: any, cb: Function) => cb(new Error('RPC error'), null)),
+      Unary: vi.fn((input: any, cb: (error: Error | null, response?: unknown) => void) => cb(new Error('RPC error'), null)),
     };
     (grpc.loadPackageDefinition as any).mockReturnValue({
       test: {

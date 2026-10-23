@@ -1,10 +1,14 @@
-import { RpcServer, Transport, RpcMethodHandler } from './capabilities.js';
+import { RpcServer, Transport, RpcMethodHandler, RpcContext } from './capabilities.js';
 import { ServiceIdentity } from '../identity/service-identity.js';
 import { AuthorizationPolicy } from '../identity/authorization.js';
+import { createMicroserviceError, ErrorCodes, isMicroserviceError, sanitizeErrorDetails } from './errors.js';
+import { AuditEventTypes, AuditLogger } from '../observability/audit.js';
 
 export interface ServerOptions {
   service: ServiceIdentity;
   authorization: AuthorizationPolicy;
+  authenticationEnabled?: boolean;
+  audit?: AuditLogger;
 }
 
 export class MicroserviceServer implements RpcServer {
@@ -51,6 +55,78 @@ export class MicroserviceServer implements RpcServer {
       }
     }
     return result;
+  }
+
+  async handle(service: string, method: string, input: unknown, context: RpcContext): Promise<unknown> {
+    // Step 1: Method lookup
+    const handler = this.getMethodHandler(service, method);
+    if (!handler) {
+      throw createMicroserviceError(
+        ErrorCodes.NOT_FOUND,
+        `Method ${service}.${method} not found`,
+        'NOT_FOUND',
+        false,
+        { details: { service, method } }
+      );
+    }
+
+    // Step 2: Authorization check (skipped when authentication is disabled)
+    if (this.options.authenticationEnabled !== false) {
+      const decision = await this.options.authorization.evaluate({
+        caller: this.options.service,
+        targetService: service,
+        operation: `${service}.${method}`,
+        resource: method,
+        attributes: {},
+      });
+
+      if (!decision.allowed) {
+      // Audit the authorization denial.
+      if (this.options.audit) {
+        try {
+          await this.options.audit.log({
+            eventId: `authz-${Date.now()}`,
+            eventType: AuditEventTypes.AUTHORIZATION_DENIED,
+            timestamp: Date.now(),
+            actor: { serviceId: this.options.service.serviceId, instanceId: this.options.service.instanceId },
+            action: 'call',
+            resource: { type: 'method', id: `${service}.${method}` },
+            outcome: 'failure',
+            details: { service, method, reason: decision.reason },
+            riskLevel: 'high',
+          });
+        } catch {
+          // Audit logging must not block the request path.
+        }
+      }
+
+      throw createMicroserviceError(
+        ErrorCodes.FORBIDDEN,
+        decision.reason ?? `Authorization denied for ${service}.${method}`,
+        'AUTHORIZATION',
+        false,
+        { details: { service, method, reason: decision.reason } }
+      );
+      }
+    }
+
+    // Step 3: Execute the handler
+    try {
+      return await handler(input, context);
+    } catch (err) {
+      if (isMicroserviceError(err)) {
+        throw err;
+      }
+      throw createMicroserviceError(
+        ErrorCodes.INTERNAL,
+        err instanceof Error ? err.message : String(err),
+        'INTERNAL',
+        false,
+        {
+          details: { service, method, originalError: sanitizeErrorDetails(err) },
+        },
+      );
+    }
   }
 }
 

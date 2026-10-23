@@ -1,6 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { loadConfig, buildConfigFromEnv, mergeConfig } from '../../src/config/loader.js';
 import { MicroserviceConfig, ServiceCredentials } from '../../src/config/schema.js';
+
+/**
+ * Every file based case writes into a throwaway directory under the OS temp
+ * folder, so the suite never leaves artifacts inside the repository.
+ */
+function withTempDir<T>(fn: (dir: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), 'oneunit-config-'));
+  try {
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 describe('Config Loader', () => {
   const originalEnv = { ...process.env };
@@ -112,6 +128,60 @@ describe('Config Loader', () => {
       expect(config.adapters.kafka.topics.prefix).toBe('myapp');
     });
 
+    it('should accept various truthy values for adapter enablement flags', () => {
+      for (const truthy of ['true', 'True', 'TRUE', '1', 'yes', 'Yes', 'YES', 'on']) {
+        process.env.KAFKA_ENABLED = truthy;
+        process.env.NATS_ENABLED = truthy;
+        process.env.TCP_ENABLED = truthy;
+        process.env.UDP_ENABLED = truthy;
+        process.env.TRPC_ENABLED = truthy;
+        process.env.GRPC_ENABLED = truthy;
+        process.env.CONNECT_ENABLED = truthy;
+
+        const config = buildConfigFromEnv();
+
+        expect(config.adapters.kafka.enabled).toBe(true);
+        expect(config.adapters.nats.enabled).toBe(true);
+        expect(config.adapters.tcp.enabled).toBe(true);
+        expect(config.adapters.udp.enabled).toBe(true);
+        expect(config.adapters.trpc.enabled).toBe(true);
+        expect(config.adapters.grpc.enabled).toBe(true);
+        expect(config.adapters.connect.enabled).toBe(true);
+      }
+    });
+
+    it('should treat falsy values as disabled for adapter enablement flags', () => {
+      for (const falsy of ['false', 'False', 'FALSE', '0', 'no', 'NO', 'off', '', undefined]) {
+        delete process.env.KAFKA_ENABLED;
+        delete process.env.NATS_ENABLED;
+        delete process.env.TCP_ENABLED;
+        delete process.env.UDP_ENABLED;
+        delete process.env.TRPC_ENABLED;
+        delete process.env.GRPC_ENABLED;
+        delete process.env.CONNECT_ENABLED;
+
+        if (falsy !== undefined) {
+          process.env.KAFKA_ENABLED = falsy;
+          process.env.NATS_ENABLED = falsy;
+          process.env.TCP_ENABLED = falsy;
+          process.env.UDP_ENABLED = falsy;
+          process.env.TRPC_ENABLED = falsy;
+          process.env.GRPC_ENABLED = falsy;
+          process.env.CONNECT_ENABLED = falsy;
+        }
+
+        const config = buildConfigFromEnv();
+
+        expect(config.adapters.kafka.enabled).toBe(false);
+        expect(config.adapters.nats.enabled).toBe(false);
+        expect(config.adapters.tcp.enabled).toBe(false);
+        expect(config.adapters.udp.enabled).toBe(false);
+        expect(config.adapters.trpc.enabled).toBe(false);
+        expect(config.adapters.grpc.enabled).toBe(false);
+        expect(config.adapters.connect.enabled).toBe(false);
+      }
+    });
+
     it('should build nats adapter config from env', () => {
       process.env.NATS_ENABLED = 'true';
       process.env.NATS_SERVERS = 'nats://server1:4222,nats://server2:4222';
@@ -159,51 +229,52 @@ describe('Config Loader', () => {
 
   describe('loadConfig', () => {
     it('should throw when config file does not exist and no env vars set', () => {
-      // Remove all relevant env vars
+      // Clear every variable that could make the environment fallback
+      // configuration valid, so the outcome does not depend on the ambient
+      // environment of the worker process.
       delete process.env.CONFIG_PATH;
       delete process.env.SERVICE_NAME;
       delete process.env.SERVICE_ID;
+      delete process.env.CRYPTO_ROOT_KEY;
 
       expect(() => loadConfig('/nonexistent/path/config.json')).toThrow();
     });
 
     it('should load config from file when it exists', () => {
-      const fs = require('fs');
-      const path = './test-tmp-runtime/test-config.json';
-      const validConfig = {
-        service: { id: '123e4567-e89b-12d3-a456-426614174000', name: 'file-service' },
-        security: {},
-        registry: {},
-        auth: {},
-        observability: {},
-        crypto: { rootKey: 'a'.repeat(32) },
-      };
-      const dir = require("path").dirname(path); fs.mkdirSync(dir, {recursive:true}); fs.writeFileSync(path, JSON.stringify(validConfig));
+      withTempDir((dir) => {
+        const path = join(dir, 'config.json');
+        const validConfig = {
+          service: { id: '123e4567-e89b-12d3-a456-426614174000', name: 'file-service' },
+          security: {},
+          registry: {},
+          auth: {},
+          observability: {},
+          crypto: { rootKey: 'a'.repeat(32) },
+        };
+        writeFileSync(path, JSON.stringify(validConfig));
 
-      const config = loadConfig(path);
+        const config = loadConfig(path);
 
-      expect(config.service.name).toBe('file-service');
-      fs.unlinkSync(path);
+        expect(config.service.name).toBe('file-service');
+      });
     });
 
     it('should throw with actionable error for invalid config file', () => {
-      const fs = require('fs');
-      const path = './test-tmp-runtime/invalid-config.json';
-      const dir = require("path").dirname(path); fs.mkdirSync(dir, {recursive:true}); fs.writeFileSync(path, JSON.stringify({ service: { name: 'test' } })); // missing required fields
+      withTempDir((dir) => {
+        const path = join(dir, 'invalid-config.json');
+        writeFileSync(path, JSON.stringify({ service: { name: 'test' } })); // missing required fields
 
-      expect(() => loadConfig(path)).toThrow('Invalid configuration:');
-
-      fs.unlinkSync(path);
+        expect(() => loadConfig(path)).toThrow('Invalid configuration:');
+      });
     });
 
     it('should throw with actionable error for malformed JSON', () => {
-      const fs = require('fs');
-      const path = './test-tmp-runtime/malformed-config.json';
-      const dir = require("path").dirname(path); fs.mkdirSync(dir, {recursive:true}); fs.writeFileSync(path, '{ invalid json }');
+      withTempDir((dir) => {
+        const path = join(dir, 'malformed-config.json');
+        writeFileSync(path, '{ invalid json }');
 
-      expect(() => loadConfig(path)).toThrow('Failed to load config');
-
-      fs.unlinkSync(path);
+        expect(() => loadConfig(path)).toThrow('Failed to load config');
+      });
     });
   });
 

@@ -30,6 +30,8 @@ export interface RegistryStore {
   query(query: ServiceQuery): Promise<ServiceInstance[]>;
   expire(leaseId: string): Promise<void>;
   renew(leaseId: string, ttlMs: number): Promise<LeaseRenewalResult>;
+  disconnect?(): Promise<void>;
+  close?(): Promise<void>;
   updateInstanceHealth(
     serviceId: string,
     instanceId: string,
@@ -41,6 +43,7 @@ export interface RegistryStore {
 export class InMemoryRegistryStore implements RegistryStore {
   private store: Map<string, ServiceInstance> = new Map();
   private expiries: Map<string, NodeJS.Timeout> = new Map();
+  private expiryGenerations: Map<string, number> = new Map();
 
   async set(leaseId: string, instance: ServiceInstance): Promise<void> {
     this.store.set(leaseId, instance);
@@ -48,11 +51,18 @@ export class InMemoryRegistryStore implements RegistryStore {
   }
 
   async get(leaseId: string): Promise<ServiceInstance | null> {
-    return this.store.get(leaseId) ?? null;
+    const instance = this.store.get(leaseId);
+    if (!instance) return null;
+    if (instance.leaseExpiresAt <= Date.now()) {
+      await this.delete(leaseId);
+      return null;
+    }
+    return instance;
   }
 
   async delete(leaseId: string): Promise<void> {
     this.clearExpiry(leaseId);
+    this.expiryGenerations.delete(leaseId);
     this.store.delete(leaseId);
   }
 
@@ -64,7 +74,7 @@ export class InMemoryRegistryStore implements RegistryStore {
     if (query.serviceName && instance.serviceName !== query.serviceName) continue;
     if (query.status && instance.status !== query.status) continue;
       if (query.capability && !instance.capabilities.includes(query.capability)) continue;
-      if (instance.leaseExpiresAt < Date.now()) continue;
+      if (instance.leaseExpiresAt <= Date.now()) continue;
       
       results.push(instance);
       if (query.limit && results.length >= query.limit) break;
@@ -84,7 +94,8 @@ export class InMemoryRegistryStore implements RegistryStore {
     }
 
     const now = Date.now();
-    if (instance.leaseExpiresAt < now) {
+    if (instance.leaseExpiresAt <= now) {
+      await this.delete(leaseId);
       return 'expired';
     }
 
@@ -106,7 +117,7 @@ export class InMemoryRegistryStore implements RegistryStore {
   ): Promise<boolean> {
     for (const [leaseId, instance] of this.store) {
       if (instance.serviceId !== serviceId || instance.instanceId !== instanceId) continue;
-      if (instance.leaseExpiresAt < Date.now()) continue;
+      if (instance.leaseExpiresAt <= Date.now()) continue;
 
       const updated: ServiceInstance = {
         ...instance,
@@ -122,13 +133,27 @@ export class InMemoryRegistryStore implements RegistryStore {
 
   private scheduleExpiry(leaseId: string, expiresAt: number): void {
     this.clearExpiry(leaseId);
+    const generation = (this.expiryGenerations.get(leaseId) ?? 0) + 1;
+    this.expiryGenerations.set(leaseId, generation);
     const delay = expiresAt - Date.now();
-    if (delay > 0) {
-      const timer = setTimeout(() => {
-        this.expire(leaseId);
-      }, delay);
-      this.expiries.set(leaseId, timer);
+    const callback = () => {
+      const currentGeneration = this.expiryGenerations.get(leaseId);
+      if (currentGeneration !== generation) {
+        return;
+      }
+      const current = this.store.get(leaseId);
+      if (!current || current.leaseExpiresAt !== expiresAt || current.leaseExpiresAt > Date.now()) {
+        return;
+      }
+      this.expiryGenerations.delete(leaseId);
+      this.expiries.delete(leaseId);
+      this.store.delete(leaseId);
+    };
+    if (delay <= 0) {
+      return;
     }
+    const timer = setTimeout(callback, delay);
+    this.expiries.set(leaseId, timer);
   }
 
   private clearExpiry(leaseId: string): void {
@@ -144,6 +169,7 @@ export class ServiceRegistryImpl implements ServiceRegistry {
   private store: RegistryStore;
   private defaultTtlMs: number;
   private maxServices: number;
+  private registrationLock: Promise<void> = Promise.resolve();
 
   constructor(store: RegistryStore, defaultTtlMs = 30000, maxServices = 1000) {
     this.store = store;
@@ -152,38 +178,56 @@ export class ServiceRegistryImpl implements ServiceRegistry {
   }
 
   async register(registration: ServiceRegistration): Promise<ServiceLease> {
-    const active = await this.store.query({});
-    if (active.length >= this.maxServices) {
-      throw new Error(
-        `Service registry capacity reached (maxServices=${this.maxServices}). Cannot register service ${registration.serviceId}.`,
-      );
+    const execute = async (): Promise<ServiceLease> => {
+      const active = await this.store.query({});
+      if (active.length >= this.maxServices) {
+        throw new Error(
+          `Service registry capacity reached (maxServices=${this.maxServices}). Cannot register service ${registration.serviceId}.`,
+        );
+      }
+
+      const leaseId = crypto.randomUUID();
+      const now = Date.now();
+      const expiresAt = now + this.defaultTtlMs;
+
+      const instance: ServiceInstance = {
+        serviceId: registration.serviceId,
+        serviceName: registration.serviceName,
+        instanceId: registration.instanceId,
+        endpoints: registration.endpoints,
+        status: 'healthy',
+        lastHeartbeat: now,
+        leaseExpiresAt: expiresAt,
+        capabilities: registration.capabilities,
+        metadata: registration.metadata,
+      };
+
+      await this.store.set(leaseId, instance);
+
+      return {
+        leaseId,
+        serviceId: registration.serviceId,
+        instanceId: registration.instanceId,
+        expiresAt,
+        ttlMs: this.defaultTtlMs,
+      };
+    };
+
+    if (this.store instanceof InMemoryRegistryStore) {
+      const previous = this.registrationLock;
+      let release!: () => void;
+      this.registrationLock = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        return await execute();
+      } finally {
+        release();
+      }
     }
 
-    const leaseId = crypto.randomUUID();
-    const now = Date.now();
-    const expiresAt = now + this.defaultTtlMs;
-
-    const instance: ServiceInstance = {
-      serviceId: registration.serviceId,
-      serviceName: registration.serviceName,
-      instanceId: registration.instanceId,
-      endpoints: registration.endpoints,
-      status: 'healthy',
-      lastHeartbeat: now,
-      leaseExpiresAt: expiresAt,
-      capabilities: registration.capabilities,
-      metadata: registration.metadata,
-    };
-
-    await this.store.set(leaseId, instance);
-
-    return {
-      leaseId,
-      serviceId: registration.serviceId,
-      instanceId: registration.instanceId,
-      expiresAt,
-      ttlMs: this.defaultTtlMs,
-    };
+    return execute();
   }
 
   async renew(leaseId: string): Promise<void> {

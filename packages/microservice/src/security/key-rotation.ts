@@ -23,8 +23,10 @@ export class KeyRotationManager {
   private rotationTimers: Map<string, NodeJS.Timeout> = new Map();
   private managedServices: Set<string> = new Set();
   private running = false;
+  private logger: { error: (...args: unknown[]) => void } | null = null;
 
-  constructor(provider: KeyProvider, policy: KeyRotationPolicy) {
+  constructor(provider: KeyProvider, policy: KeyRotationPolicy, logger?: { error: (...args: unknown[]) => void } | null) {
+    this.logger = logger ?? null;
     this.provider = provider;
     this.policy = policy;
     this.applyRetentionPolicy();
@@ -53,7 +55,7 @@ export class KeyRotationManager {
       try {
         await this.rotate(serviceId);
       } catch (err) {
-        console.error(`Key rotation failed for ${serviceId}:`, err);
+        (this.logger ?? console).error(`Key rotation failed for ${serviceId}:`, err);
       }
     }, this.policy.intervalMs);
 
@@ -90,7 +92,7 @@ export class KeyRotationManager {
       try {
         listener(event);
       } catch (err) {
-        console.error('Key rotation listener error:', err);
+        (this.logger ?? console).error('Key rotation listener error:', err);
       }
     }
 
@@ -105,7 +107,7 @@ export class KeyRotationManager {
         const keys = await this.rotate(serviceId);
         results.set(serviceId, keys);
       } catch (err) {
-        console.error(`Failed to rotate keys for ${serviceId}:`, err);
+        (this.logger ?? console).error(`Failed to rotate keys for ${serviceId}:`, err);
       }
     }
 
@@ -138,7 +140,8 @@ export class KeyRotationManager {
 
 export function createKeyRotationManager(
   provider: KeyProvider,
-  policy: Partial<KeyRotationPolicy> = {}
+  policy: Partial<KeyRotationPolicy> = {},
+  logger?: { error: (...args: unknown[]) => void } | null
 ): KeyRotationManager {
   const defaultPolicy: KeyRotationPolicy = {
     intervalMs: 24 * 60 * 60 * 1000,
@@ -147,5 +150,5 @@ export function createKeyRotationManager(
     autoRotate: true,
   };
   
-  return new KeyRotationManager(provider, { ...defaultPolicy, ...policy });
+  return new KeyRotationManager(provider, { ...defaultPolicy, ...policy }, logger);
 }

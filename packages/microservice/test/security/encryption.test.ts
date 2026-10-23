@@ -1,9 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   SUPPORTED_ALGORITHMS,
-  EncryptionAlgorithm,
-  EncryptionResult,
-  DecryptionInput,
   EncryptionService,
   deriveKey,
 } from '../../src/security/encryption.js';
@@ -424,18 +421,14 @@ describe('EncryptionService - Adversarial and Edge Case Tests', () => {
     expect(decrypted).toEqual(largePlaintext);
   });
 
-  it('should accept valid key lengths for aes-256-gcm (16, 24, 32 bytes)', async () => {
-    // Web Crypto accepts 128, 192, 256 bit keys for AES-GCM
+  it('should reject non-256-bit key lengths for aes-256-gcm', async () => {
     const key128 = new Uint8Array(16);
     const key192 = new Uint8Array(24);
     const key256 = new Uint8Array(32);
-    
-    const service128 = await EncryptionService.create('aes-256-gcm', key128);
-    const service192 = await EncryptionService.create('aes-256-gcm', key192);
+
+    await expect(EncryptionService.create('aes-256-gcm', key128)).rejects.toThrow(/256-bit/);
+    await expect(EncryptionService.create('aes-256-gcm', key192)).rejects.toThrow(/256-bit/);
     const service256 = await EncryptionService.create('aes-256-gcm', key256);
-    
-    expect(service128).toBeInstanceOf(EncryptionService);
-    expect(service192).toBeInstanceOf(EncryptionService);
     expect(service256).toBeInstanceOf(EncryptionService);
   });
 
@@ -550,8 +543,7 @@ describe('EncryptionService - Adversarial and Edge Case Tests', () => {
     it('should reject key that is too short for AES-GCM', async () => {
       const shortKey = new Uint8Array(16); // 128-bit, but algorithm says 256-bit
       // Web Crypto may accept this, but we should test behavior
-      const service = await EncryptionService.create('aes-256-gcm', shortKey);
-      expect(service).toBeInstanceOf(EncryptionService);
+      await expect(EncryptionService.create('aes-256-gcm', shortKey)).rejects.toThrow(/256-bit/);
     });
 
     it('should reject key that is too long for AES-GCM', async () => {
@@ -843,5 +835,20 @@ describe('EncryptedEnvelope production', () => {
     await expect(service.decryptEnvelope(encrypted)).rejects.toThrow(
       /Unsupported encrypted envelope version/,
     );
+  });
+
+  it('should reject an envelope whose payload cannot be serialized', async () => {
+    const key = await EncryptionService.generateKey('aes-256-gcm');
+    const service = await EncryptionService.create('aes-256-gcm', key);
+
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const envelope = createMessageEnvelope(
+      'test.event',
+      circular,
+      { serviceId: 'svc-1', instanceId: 'inst-1' }
+    );
+
+    await expect(service.encryptEnvelope(envelope)).rejects.toThrow();
   });
 });

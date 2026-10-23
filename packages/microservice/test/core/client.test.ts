@@ -2,27 +2,31 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { MicroserviceClient, createClient, ClientOptions, RetryPolicy } from '../../src/core/client.js';
 import { Transport, TransportCapabilities, RpcClient, MessagePublisher, MessageSubscriber } from '../../src/core/capabilities.js';
 import { ServiceIdentity } from '../../src/identity/service-identity.js';
-import { AuthorizationPolicy } from '../../src/identity/authorization.js';
+import { AuthorizationPolicy, AllowlistPolicy } from '../../src/identity/authorization.js';
 import { createMicroserviceError } from '../../src/core/errors.js';
+// Fake timers are enabled per test; restore real timers so a failing test
+// cannot leave the remaining tests in fake-timer mode.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function makeServiceIdentity(): ServiceIdentity {
   return {
-    id: '123e4567-e89b-12d3-a456-426614174000',
-    name: 'test-service',
+    serviceId: '123e4567-e89b-12d3-a456-426614174000',
+    serviceName: 'test-service',
     instanceId: '123e4567-e89b-12d3-a456-426614174001',
     credentials: undefined,
     endpoints: [],
     capabilities: [],
     metadata: {},
-  };
+  } as ServiceIdentity;
 }
 
 function makeAuthorizationPolicy(): AuthorizationPolicy {
-  return {
-    type: 'allowlist',
-    entries: [],
-    defaultPolicy: 'deny',
-  };
+  return new AllowlistPolicy(
+    [{ serviceId: '123e4567-e89b-12d3-a456-426614174000', allowedOperations: ['*'] }],
+    'allow'
+  );
 }
 
 function makeClientOptions(overrides: Partial<ClientOptions> = {}): ClientOptions {
@@ -36,6 +40,7 @@ function makeClientOptions(overrides: Partial<ClientOptions> = {}): ClientOption
       maxDelayMs: 5000,
       jitter: true,
       retryableCategories: ['UNAVAILABLE', 'DEADLINE_EXCEEDED'],
+      idempotent: true,
     },
     ...overrides,
   };
@@ -104,6 +109,7 @@ describe('MicroserviceClient construction', () => {
       maxDelayMs: 10000,
       jitter: false,
       retryableCategories: ['UNAVAILABLE'],
+      idempotent: true,
     };
     const client = new MicroserviceClient(makeClientOptions({ retryPolicy }));
     expect((client as any).options.retryPolicy).toEqual(retryPolicy);
@@ -246,7 +252,7 @@ describe('MicroserviceClient stream', () => {
 
   it('should handle stream errors', async () => {
     rpcTransport.stream.mockImplementationOnce(async function* () {
-      throw new Error('Stream failed');
+      yield Promise.reject(new Error('Stream failed'));
     });
     const gen = client.stream('svc', 'create', { data: 'test' });
     await expect(gen.next()).rejects.toThrow('Stream failed');
@@ -447,6 +453,7 @@ describe('RetryPolicy execution', () => {
       maxDelayMs: 5,
       jitter: false,
       retryableCategories: ['UNAVAILABLE', 'DEADLINE_EXCEEDED'],
+      idempotent: true,
     }
   ): MicroserviceClient {
     const client = createClient(makeClientOptions({ retryPolicy }));
@@ -515,6 +522,7 @@ describe('RetryPolicy execution', () => {
       maxDelayMs: 150,
       jitter: false,
       retryableCategories: ['UNAVAILABLE'],
+      idempotent: true,
     });
 
     const pending = client.call('svc', 'method', { x: 1 });
@@ -551,5 +559,274 @@ describe('RetryPolicy execution', () => {
 
     await expect(client.publish('topic', { x: 1 })).rejects.toThrow('down');
     expect(publish).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MicroserviceClient defaultTimeout', () => {
+  let client: MicroserviceClient;
+  let rpcTransport: Transport & RpcClient;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    client = new MicroserviceClient(makeClientOptions({ defaultTimeout: 100 }));
+    rpcTransport = makeRpcTransport('rpc');
+    client.registerTransport(rpcTransport);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('should apply defaultTimeout when the call exceeds it', async () => {
+    rpcTransport.call.mockImplementation(() => new Promise(() => {}));
+
+    const pending = client.call('svc', 'method', { x: 1 });
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).rejects.toMatchObject({
+      code: 'TIMEOUT',
+      category: 'TIMEOUT',
+      retryable: true,
+    });
+    expect(rpcTransport.call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should reject with timeout error when defaultTimeout is set and transport is slow', async () => {
+    rpcTransport.call.mockImplementation(
+      () => new Promise(resolve => setTimeout(resolve, 500))
+    );
+
+    const pending = client.call('svc', 'method', { x: 1 });
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).rejects.toThrow(/timed out after 100ms/);
+  });
+
+  it('should allow per-call timeout to override defaultTimeout', async () => {
+    rpcTransport.call.mockImplementation(() => new Promise(() => {}));
+
+    const pending = client.call('svc', 'method', { x: 1 }, { timeout: 20 });
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(pending).rejects.toMatchObject({ code: 'TIMEOUT' });
+  });
+
+  it('should not time out when the call completes before defaultTimeout', async () => {
+    rpcTransport.call.mockResolvedValueOnce({ success: true });
+
+    const result = await client.call('svc', 'method', { x: 1 });
+    expect(result).toEqual({ success: true });
+    expect(rpcTransport.call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should not apply a timeout when defaultTimeout is undefined and no per-call timeout', async () => {
+    const clientNoTimeout = new MicroserviceClient(
+      makeClientOptions({ defaultTimeout: undefined })
+    );
+    clientNoTimeout.registerTransport(rpcTransport);
+
+    let resolveCall!: (value: unknown) => void;
+    rpcTransport.call.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveCall = resolve;
+        })
+    );
+
+    const pending = clientNoTimeout.call('svc', 'method', { x: 1 });
+    await vi.advanceTimersByTimeAsync(1000);
+    resolveCall({ success: true });
+    await expect(pending).resolves.toEqual({ success: true });
+  });
+
+  it('should combine timeout with retry policy: timeout error is retryable', async () => {
+    const clientWithRetry = new MicroserviceClient(
+      makeClientOptions({
+        defaultTimeout: 50,
+        retryPolicy: {
+          maxRetries: 1,
+          baseDelayMs: 1,
+          maxDelayMs: 10,
+          jitter: false,
+          retryableCategories: ['TIMEOUT'],
+          idempotent: true,
+        },
+      })
+    );
+    clientWithRetry.registerTransport(rpcTransport);
+
+    let resolveCall!: (value: unknown) => void;
+    let callCount = 0;
+    rpcTransport.call.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          callCount++;
+          resolveCall = resolve;
+        })
+    );
+
+    const pending = clientWithRetry.call('svc', 'method', { x: 1 });
+    await vi.advanceTimersByTimeAsync(50);
+    // First attempt times out; retry kicks in after 1ms backoff
+    await vi.advanceTimersByTimeAsync(1);
+    expect(callCount).toBe(2);
+    resolveCall({ success: true });
+    await expect(pending).resolves.toEqual({ success: true });
+  });
+
+  it('should not apply timeout to publish/subscribe (messaging only)', async () => {
+    const msgTransport = makeMessagingTransport('kafka');
+    client.registerTransport(msgTransport);
+    await expect(
+      client.publish('topic', { x: 1 })
+    ).resolves.toBeUndefined();
+    expect(msgTransport.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('should not retry non-idempotent operations even with retryable category', async () => {
+    const call = vi.fn().mockRejectedValue(
+      createMicroserviceError('SERVICE_UNAVAILABLE', 'down', 'UNAVAILABLE', true)
+    );
+    const client = createClient(makeClientOptions({
+      retryPolicy: {
+        maxRetries: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 5,
+        jitter: false,
+        retryableCategories: ['UNAVAILABLE'],
+        idempotent: false,
+      },
+    }));
+    const transport = makeRpcTransport('rpc');
+    (transport as any).call = call;
+    client.registerTransport(transport);
+
+    await expect(client.call('svc', 'method', { x: 1 })).rejects.toThrow('down');
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should not retry errors with retryable:false even if category matches', async () => {
+    const call = vi.fn().mockRejectedValue(
+      createMicroserviceError('SERVICE_UNAVAILABLE', 'down', 'UNAVAILABLE', false)
+    );
+    const client = createClient(makeClientOptions({
+      retryPolicy: {
+        maxRetries: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 5,
+        jitter: false,
+        retryableCategories: ['UNAVAILABLE'],
+        idempotent: true,
+      },
+    }));
+    const transport = makeRpcTransport('rpc');
+    (transport as any).call = call;
+    client.registerTransport(transport);
+
+    await expect(client.call('svc', 'method', { x: 1 })).rejects.toThrow('down');
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should enforce deadline across retry attempts', async () => {
+    vi.useFakeTimers();
+    const call = vi.fn().mockRejectedValue(
+      createMicroserviceError('SERVICE_UNAVAILABLE', 'down', 'UNAVAILABLE', true)
+    );
+    const client = createClient(makeClientOptions({
+      retryPolicy: {
+        maxRetries: 10,
+        baseDelayMs: 100,
+        maxDelayMs: 1000,
+        jitter: false,
+        retryableCategories: ['UNAVAILABLE'],
+        idempotent: true,
+        deadlineMs: 250,
+      },
+    }));
+    const transport = makeRpcTransport('rpc');
+    (transport as any).call = call;
+    client.registerTransport(transport);
+
+    const pending = client.call('svc', 'method', { x: 1 });
+    const assertion = expect(pending).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(300);
+    await assertion;
+    vi.useRealTimers();
+    // Two attempts fit within the 250ms deadline (t=0 and t=100ms)
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('MicroserviceClient outbound authorization', () => {
+  let client: MicroserviceClient;
+  let rpcTransport: Transport & RpcClient;
+
+  const TEST_SERVICE_ID = '123e4567-e89b-12d3-a456-426614174000';
+
+  function makeClientWithPolicy(
+    entries: { serviceId: string; allowedOperations: string[] }[],
+    defaultPolicy: 'allow' | 'deny' = 'deny'
+  ): MicroserviceClient {
+    const options = makeClientOptions();
+    options.authorization = new AllowlistPolicy(entries, defaultPolicy);
+    const c = new MicroserviceClient(options);
+    rpcTransport = makeRpcTransport('rpc');
+    c.registerTransport(rpcTransport);
+    return c;
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('should deny calls when caller is not in allowlist', async () => {
+    client = makeClientWithPolicy([], 'deny');
+    rpcTransport.call.mockResolvedValue({ ok: true });
+
+    await expect(client.call('svc', 'method', { x: 1 })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      category: 'AUTHORIZATION',
+    });
+    expect(rpcTransport.call).not.toHaveBeenCalled();
+  });
+
+  it('should allow calls when caller and operation are permitted', async () => {
+    client = makeClientWithPolicy([
+      { serviceId: TEST_SERVICE_ID, allowedOperations: ['svc.method'] },
+    ], 'deny');
+    rpcTransport.call.mockResolvedValue({ ok: true });
+
+    const result = await client.call('svc', 'method', { x: 1 });
+    expect(result).toEqual({ ok: true });
+    expect(rpcTransport.call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should allow calls when caller uses wildcard operation', async () => {
+    client = makeClientWithPolicy([
+      { serviceId: TEST_SERVICE_ID, allowedOperations: ['*'] },
+    ], 'deny');
+    rpcTransport.call.mockResolvedValue({ ok: true });
+
+    const result = await client.call('svc', 'anything', { x: 1 });
+    expect(result).toEqual({ ok: true });
+    expect(rpcTransport.call).toHaveBeenCalledTimes(1);
+  });
+
+  it('should fail fast when authorization policy evaluation fails', async () => {
+    const failingPolicy: AuthorizationPolicy = {
+      evaluate: async () => {
+        throw new Error('policy boom');
+      },
+    };
+    const options = makeClientOptions();
+    options.authorization = failingPolicy;
+    client = new MicroserviceClient(options);
+    rpcTransport = makeRpcTransport('rpc');
+    client.registerTransport(rpcTransport);
+
+    await expect(client.call('svc', 'method', { x: 1 })).rejects.toThrow('policy boom');
+    expect(rpcTransport.call).not.toHaveBeenCalled();
   });
 });

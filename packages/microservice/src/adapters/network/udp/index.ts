@@ -11,6 +11,8 @@ export interface UdpConfig {
     address: string;
     interface?: string;
   };
+  bindingTimeout?: number;
+  logger?: { error: (...args: unknown[]) => void };
 }
 
 export interface UdpPacket {
@@ -50,11 +52,24 @@ export class UdpTransport extends BaseTransport implements DatagramTransport {
     });
 
     this.socket.on('error', (err: Error) => {
-      console.error('UDP socket error:', err);
+      (this.config.logger ?? console).error('UDP socket error:', err);
     });
 
-    await new Promise<void>((resolve, _reject) => {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => {
+        reject(err);
+      };
+      this.socket!.once('error', onError);
+      const timer = this.config.bindingTimeout
+        ? setTimeout(() => {
+            this.socket?.removeListener('error', onError);
+            reject(new Error(`UDP bind timed out after ${this.config.bindingTimeout}ms`));
+          }, this.config.bindingTimeout)
+        : null;
+      if (timer) timer.unref();
       this.socket!.bind(this.config.port, this.config.host, () => {
+        if (timer) clearTimeout(timer);
+        this.socket!.removeListener('error', onError);
         resolve();
       });
     });

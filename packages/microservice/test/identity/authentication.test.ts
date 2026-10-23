@@ -1,7 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  AuthenticationResult,
-  Authenticator,
   X509Authenticator,
   JwtAuthenticator,
   ApiKeyAuthenticator,
@@ -97,8 +95,9 @@ describe('JwtAuthenticator', () => {
   });
 
   it('should require secret, issuer, and audience in constructor', () => {
-    expect(() => new JwtAuthenticator('', 'issuer', 'audience')).not.toThrow();
-    // Empty secret is allowed at construction but will fail at auth time
+    expect(() => new JwtAuthenticator('', 'issuer', 'audience')).toThrow();
+    expect(() => new JwtAuthenticator('secret', '', 'audience')).toThrow();
+    expect(() => new JwtAuthenticator('secret', 'issuer', '')).toThrow();
   });
 });
 
@@ -258,26 +257,6 @@ describe('createAuthenticator', () => {
     expect(() => createAuthenticator('unknown' as any)).toThrow(
       'Unknown authenticator type: unknown'
     );
-  });
-});
-
-describe('Authenticator interface', () => {
-  it('should define correct structure for AuthenticationResult', () => {
-    const result: AuthenticationResult = {
-      authenticated: true,
-      identity: undefined,
-      error: undefined,
-    };
-    expect(result.authenticated).toBe(true);
-  });
-
-  it('should define correct structure for Authenticator', () => {
-    const authenticator: Authenticator = {
-      authenticate: async () => ({ authenticated: false, error: 'test' }),
-      validateIdentity: async () => false,
-    };
-    expect(typeof authenticator.authenticate).toBe('function');
-    expect(typeof authenticator.validateIdentity).toBe('function');
   });
 });
 

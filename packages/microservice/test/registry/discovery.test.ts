@@ -1,11 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  ServiceDiscovery,
-  DiscoveryOptions,
-  DiscoveryResult,
-  createDiscovery,
-} from '../../src/registry/discovery.js';
-import { ServiceRegistry, ServiceInstance, ServiceQuery, InMemoryRegistryStore, ServiceRegistryImpl } from '../../src/registry/registry.js';
+import { ServiceDiscovery, DiscoveryOptions, createDiscovery } from '../../src/registry/discovery.js';
+import { ServiceRegistry, ServiceInstance, InMemoryRegistryStore, ServiceRegistryImpl } from '../../src/registry/registry.js';
 
 describe('ServiceDiscovery', () => {
   let store: InMemoryRegistryStore;

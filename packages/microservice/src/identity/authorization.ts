@@ -28,15 +28,33 @@ export interface AllowlistEntry {
 export class AllowlistPolicy implements AuthorizationPolicy {
   private allowlist: Map<string, AllowlistEntry> = new Map();
   private defaultPolicy: 'allow' | 'deny' = 'deny';
+  private authenticationEnabled: boolean = true;
 
-  constructor(entries: AllowlistEntry[] = [], defaultPolicy: 'allow' | 'deny' = 'deny') {
+  constructor(entries: AllowlistEntry[] = [], defaultPolicy: 'allow' | 'deny' = 'deny', authenticationEnabled: boolean = true) {
+    this.authenticationEnabled = authenticationEnabled;
     for (const entry of entries) {
+      if (!entry || typeof entry.serviceId !== 'string' || entry.serviceId.trim() === '') {
+        throw new Error('Invalid allowlist entry: serviceId required');
+      }
+      if (!Array.isArray(entry.allowedOperations)) {
+        throw new Error('Invalid allowlist entry: allowedOperations required');
+      }
       this.allowlist.set(entry.serviceId, entry);
     }
     this.defaultPolicy = defaultPolicy;
   }
 
   async evaluate(context: AuthorizationContext): Promise<AuthorizationDecision> {
+    if (!this.authenticationEnabled) {
+      return { allowed: true, reason: 'Authentication disabled' };
+    }
+    if (!context || !context.caller || !context.caller.serviceId) {
+      return { allowed: false, reason: 'Missing caller identity' };
+    }
+    if (typeof context.operation !== 'string' || context.operation.trim() === '') {
+      return { allowed: false, reason: 'Missing operation' };
+    }
+
     const entry = this.allowlist.get(context.caller.serviceId);
     
     if (!entry) {
@@ -53,18 +71,22 @@ export class AllowlistPolicy implements AuthorizationPolicy {
       };
     }
 
-    if (context.targetService && entry.allowedTargets && !entry.allowedTargets.includes(context.targetService)) {
-      return {
-        allowed: false,
-        reason: `Target service ${context.targetService} not allowed for service ${context.caller.serviceId}`,
-      };
+    if (context.targetService !== undefined && context.targetService !== null) {
+      if (Array.isArray(entry.allowedTargets) && !entry.allowedTargets.includes(context.targetService)) {
+        return {
+          allowed: false,
+          reason: `Target service ${context.targetService} not allowed for service ${context.caller.serviceId}`,
+        };
+      }
     }
 
-    if (context.resource && entry.allowedResources && !entry.allowedResources.includes(context.resource)) {
-      return {
-        allowed: false,
-        reason: `Resource ${context.resource} not allowed for service ${context.caller.serviceId}`,
-      };
+    if (context.resource !== undefined && context.resource !== null) {
+      if (Array.isArray(entry.allowedResources) && !entry.allowedResources.includes(context.resource)) {
+        return {
+          allowed: false,
+          reason: `Resource ${context.resource} not allowed for service ${context.caller.serviceId}`,
+        };
+      }
     }
 
     return { allowed: true };
@@ -85,6 +107,7 @@ export class AllowlistPolicy implements AuthorizationPolicy {
 
 export class RbacPolicy implements AuthorizationPolicy {
   private roles: Map<string, Set<string>> = new Map();
+  private authenticationEnabled: boolean = true;
   private permissions: Map<string, Set<string>> = new Map();
   private serviceRoles: Map<string, Set<string>> = new Map();
 
@@ -107,7 +130,14 @@ export class RbacPolicy implements AuthorizationPolicy {
     this.serviceRoles.get(serviceId)?.delete(role);
   }
 
+  setAuthenticationEnabled(enabled: boolean): void {
+    this.authenticationEnabled = enabled;
+  }
+
   async evaluate(context: AuthorizationContext): Promise<AuthorizationDecision> {
+    if (!this.authenticationEnabled) {
+      return { allowed: true, reason: 'Authentication disabled' };
+    }
     const roles = this.serviceRoles.get(context.caller.serviceId);
     if (!roles || roles.size === 0) {
       return { allowed: false, reason: 'No roles assigned to service' };
@@ -155,14 +185,18 @@ export function createAuthorizationPolicy(
     roles?: Record<string, string[]>;
     permissions?: Record<string, string[]>;
     serviceRoles?: Record<string, string[]>;
+    authenticationEnabled?: boolean;
   } = {}
 ): AuthorizationPolicy {
   switch (type) {
     case 'allowlist':
-      return new AllowlistPolicy(options.entries ?? [], options.defaultPolicy ?? 'deny');
+      return new AllowlistPolicy(options.entries ?? [], options.defaultPolicy ?? 'deny', options.authenticationEnabled ?? true);
     
     case 'rbac': {
       const policy = new RbacPolicy();
+      if (options.authenticationEnabled === false) {
+        policy.setAuthenticationEnabled(false);
+      }
       if (options.roles) {
         for (const [role, perms] of Object.entries(options.roles)) {
           policy.addRole(role, perms);
@@ -181,7 +215,7 @@ export function createAuthorizationPolicy(
     case 'composite': {
       const policy = new CompositePolicy();
       if (options.entries) {
-        policy.addPolicy(new AllowlistPolicy(options.entries, options.defaultPolicy ?? 'deny'));
+        policy.addPolicy(new AllowlistPolicy(options.entries, options.defaultPolicy ?? 'deny', options.authenticationEnabled ?? true));
       }
       if (options.roles) {
         const rbac = new RbacPolicy();

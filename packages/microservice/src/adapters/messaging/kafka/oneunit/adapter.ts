@@ -74,6 +74,7 @@ export async function createKafkaAdapter(
   const producer = await client.getProducer(config.producer);
 
   const consumers: Map<string, OneUnitKafkaConsumer> = new Map();
+  let connected = true;
 
   return {
     name: 'kafka',
@@ -99,6 +100,7 @@ export async function createKafkaAdapter(
         }
       }
       consumers.clear();
+      connected = false;
       try {
         await client.disconnect();
       } catch (err) {
@@ -108,9 +110,9 @@ export async function createKafkaAdapter(
 
     async healthCheck() {
       return {
-        status: 'healthy',
+        status: connected ? 'healthy' : 'unhealthy',
         checkedAt: Date.now(),
-        details: { connected: true, driver: 'oneunit' },
+        details: { connected, driver: 'oneunit' },
       };
     },
 
@@ -138,16 +140,38 @@ export async function createKafkaAdapter(
         consumers.delete(topic);
       }
 
+      const maxAttempts = Number((options as Record<string, unknown>)['maxDeliveryAttempts'] ?? ((config.consumer as Record<string, unknown> | undefined)?.['maxDeliveryAttempts']) ?? 3);
+      const deadLetterTopic = (options as Record<string, unknown>)['deadLetterTopic'] ?? ((config.consumer as Record<string, unknown> | undefined)?.['deadLetterTopic']);
+
       const consumer = await client.consume(fullTopic, async (payload: OneUnitKafkaPayload) => {
         try {
           await handler(payload.message.value, toMessageContext(payload));
-
           if (!options.autoAck && payload.ack) {
             await payload.ack();
           }
         } catch (err) {
-          logger?.error?.(`Error processing message from ${fullTopic}`, { error: err });
-          if (!options.autoAck && payload.nak) {
+          logger?.error?.(err instanceof Error ? err : new Error(String(err)), `Error processing message from ${fullTopic}`);
+          if (options.autoAck) return;
+          const payloadRecord = payload as unknown as Record<string, unknown>;
+          const deliveryCount = Number(payloadRecord['deliveryCount'] ?? ((payloadRecord['info'] as { deliveryCount?: unknown } | undefined)?.deliveryCount) ?? 1);
+          if (deliveryCount >= Math.max(1, maxAttempts)) {
+            if (deadLetterTopic) {
+              try {
+                await (producer as { send: (...args: unknown[]) => Promise<void> }).send(deadLetterTopic, JSON.stringify({
+                  topic: fullTopic,
+                  partition: payload.partition,
+                  offset: payload.offset,
+                  error: err instanceof Error ? err.message : String(err),
+                  attempts: deliveryCount,
+                }));
+                if (payload.ack) await payload.ack();
+              } catch (deliveryError) {
+                logger?.error?.(deliveryError instanceof Error ? deliveryError : new Error(String(deliveryError)), `Failed to publish Kafka message to dead-letter topic ${deadLetterTopic}`);
+              }
+            } else if (payload.nak) {
+              await payload.nak();
+            }
+          } else if (payload.nak) {
             await payload.nak();
           }
         }

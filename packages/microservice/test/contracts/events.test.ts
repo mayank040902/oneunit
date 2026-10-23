@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  Event,
-  EventSubscription,
   SystemEvents,
   SystemEventType,
   createEvent,
@@ -50,32 +48,6 @@ describe('Event', () => {
     const event = createEvent('test.event', payload, validSource);
 
     expect(event.payload).toBe(payload);
-  });
-});
-
-describe('EventSubscription', () => {
-  it('should define event subscription with handler', () => {
-    const handler = async (event: Event) => { };
-    const subscription: EventSubscription = {
-      eventType: 'test.event',
-      handler,
-    };
-
-    expect(subscription.eventType).toBe('test.event');
-    expect(subscription.handler).toBe(handler);
-    expect(subscription.filter).toBeUndefined();
-  });
-
-  it('should include optional filter', () => {
-    const handler = async (event: Event) => { };
-    const filter = (event: Event) => event.payload !== undefined;
-    const subscription: EventSubscription = {
-      eventType: 'test.event',
-      handler,
-      filter,
-    };
-
-    expect(subscription.filter).toBe(filter);
   });
 });
 

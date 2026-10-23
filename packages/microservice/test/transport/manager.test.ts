@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { TransportManager, createTransportManager, TransportManagerConfig } from '../../src/transport/manager.js';
+import { TransportManager, createTransportManager } from '../../src/transport/manager.js';
 import { Transport, TransportCapabilities, TransportHealth } from '../../src/core/capabilities.js';
+
+// Fake timers are enabled per test; restore real timers so a failing test
+// cannot leave the remaining tests in fake-timer mode.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function makeCapabilities(overrides: Partial<TransportCapabilities> = {}): TransportCapabilities {
   return {
@@ -150,7 +156,7 @@ describe('TransportManager lifecycle', () => {
     expect(t2.start).toHaveBeenCalled();
   });
 
-  it('should throw if any transport fails to start and leave others started', async () => {
+  it('should throw if any transport fails to start and roll back previously started transports', async () => {
     const t1 = makeTransport({ name: 'tcp', start: vi.fn().mockResolvedValue(undefined) });
     const t2 = makeTransport({
       name: 'udp',
@@ -159,9 +165,10 @@ describe('TransportManager lifecycle', () => {
     manager.register(t1);
     manager.register(t2);
 
-    await expect(manager.startAll()).rejects.toThrow(/Failed to start transports/);
+    await expect(manager.startAll()).rejects.toThrow(/udp start failed/);
     expect(t1.start).toHaveBeenCalled();
     expect(t2.start).toHaveBeenCalled();
+    expect(t1.close).toHaveBeenCalled();
   });
 
   it('should stop all transports', async () => {

@@ -145,6 +145,39 @@ describe('TcpFrameParser', () => {
     expect(result.frames).toEqual([Buffer.alloc(0)]);
   });
 
+  it('accepts a frame whose payload length equals maxFrameSize', () => {
+    const parser = new TcpFrameParser({ maxFrameSize: 1024 });
+    const payload = Buffer.alloc(1024, 0xab);
+
+    const result = parser.feed(makeFrame(payload));
+
+    expect(result.error).toBeNull();
+    expect(result.frames).toHaveLength(1);
+    expect(result.frames[0]).toHaveLength(1024);
+  });
+
+  it('rejects a frame whose payload length exceeds maxFrameSize by one byte', () => {
+    const parser = new TcpFrameParser({ maxFrameSize: 1024 });
+    const oversized = Buffer.alloc(4);
+    oversized.writeUInt32BE(1025, 0);
+
+    const result = parser.feed(oversized);
+
+    expect(result.error).not.toBeNull();
+    expect(result.error!.message).toContain('exceeds maximum');
+  });
+
+  it('rejects a length prefix of 0xffffffff without allocating it', () => {
+    const parser = new TcpFrameParser({ maxFrameSize: 65536 });
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(0xffffffff, 0);
+
+    const result = parser.feed(header);
+
+    expect(result.error).not.toBeNull();
+    expect(result.frames).toHaveLength(0);
+  });
+
   it('reset discards buffered partial data', () => {
     const parser = new TcpFrameParser({ maxFrameSize: 1024 });
     const frame = makeFrame(Buffer.from('hello world'));

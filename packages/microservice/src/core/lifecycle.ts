@@ -28,7 +28,7 @@ export class LifecycleManager extends EventEmitter {
   }
 
   setHooks(hooks: LifecycleHooks): void {
-    this.hooks = hooks;
+    this.hooks = { ...this.hooks, ...hooks };
   }
 
   registerTransport(transport: Transport): void {
@@ -69,15 +69,13 @@ export class LifecycleManager extends EventEmitter {
     this.state = 'starting';
     this.emit('stateChange', this.state);
 
+    const startedTransports: string[] = [];
+
     try {
       if (this.hooks.onStart) {
         await this.hooks.onStart();
       }
 
-      // Startup order is registration order.
-      // Transport dependencies are not a
-      // supported public concept, so no
-      // dependency sorting is performed.
       const transportNames = Array.from(this.transports.keys());
       this.startOrder = transportNames;
 
@@ -85,8 +83,24 @@ export class LifecycleManager extends EventEmitter {
         const transport = this.transports.get(name)!;
         try {
           await transport.start();
+          startedTransports.push(name);
           this.emit('transportStarted', name);
         } catch (err) {
+          // Roll back: close all transports started before this failure
+          for (const rolledBackName of [...startedTransports].reverse()) {
+            const rolledBackTransport = this.transports.get(rolledBackName);
+            if (rolledBackTransport) {
+              try {
+                await rolledBackTransport.close();
+              } catch (rollbackErr) {
+                console.error('Rollback failed for', rolledBackName, rollbackErr);
+              }
+              this.emit('transportStopped', rolledBackName);
+            }
+          }
+
+          this.state = 'failed';
+          this.emit('stateChange', this.state);
           this.emit('transportStartError', name, err);
           throw createMicroserviceError(
             'TRANSPORT_START_FAILED',
@@ -103,6 +117,19 @@ export class LifecycleManager extends EventEmitter {
       this.emit('stateChange', this.state);
       this.emit('started');
     } catch (err) {
+      // Roll back any transports started before the failure
+      for (const rolledBackName of [...startedTransports].reverse()) {
+        const rolledBackTransport = this.transports.get(rolledBackName);
+        if (rolledBackTransport) {
+          try {
+            await rolledBackTransport.close();
+          } catch (rollbackErr) {
+            console.error('Rollback failed for', rolledBackName, rollbackErr);
+          }
+          this.emit('transportStopped', rolledBackName);
+        }
+      }
+
       this.state = 'failed';
       this.emit('stateChange', this.state);
       throw err;
@@ -220,6 +247,7 @@ export class LifecycleManager extends EventEmitter {
       this.emit('healthCheckError', err);
     }
   }, this.healthCheckIntervalMs);
+    if (this.healthCheckInterval) this.healthCheckInterval.unref();
   }
 
   private stopHealthChecks(): void {

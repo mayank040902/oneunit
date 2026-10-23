@@ -1,12 +1,9 @@
 import { TransportHealth } from '../../core/capabilities.js';
 import { BaseTransport } from '../../transport/transport.js';
 import { Logger } from '../../observability/logger.js';
-import { KafkaTransport } from './kafka/adapter.js';
-import { NatsTransport } from './nats/index.js';
-import { RabbitMQTransport } from './rabbitmq/adapter.js';
-import { KafkaAdapterConfig } from './kafka/types.js';
-import { NatsAdapterConfig } from '../../config/schema.js';
-import { RabbitMQAdapterConfig } from './rabbitmq/types.js';
+import type { KafkaAdapterConfig } from './kafka/types.js';
+import type { NatsAdapterConfig } from '../../config/schema.js';
+import type { RabbitMQAdapterConfig } from './rabbitmq/types.js';
 
 export type MessagingProvider = 'kafka' | 'nats' | 'rabbitmq' | string;
 
@@ -35,12 +32,18 @@ export class DefaultMessagingAdapterFactory implements MessagingAdapterFactory {
     const { provider, ...providerConfig } = config;
     
     switch (provider) {
-      case 'kafka':
+      case 'kafka': {
+        const { KafkaTransport } = await import('./kafka/adapter.js');
         return new KafkaTransport(providerConfig as unknown as KafkaAdapterConfig, logger);
-      case 'nats':
+      }
+      case 'nats': {
+        const { NatsTransport } = await import('./nats/index.js');
         return new NatsTransport(providerConfig as unknown as NatsAdapterConfig);
-      case 'rabbitmq':
+      }
+      case 'rabbitmq': {
+        const { RabbitMQTransport } = await import('./rabbitmq/adapter.js');
         return new RabbitMQTransport(providerConfig as unknown as RabbitMQAdapterConfig, logger);
+      }
       default:
         throw new Error(`Unsupported messaging provider: ${provider}`);
     }

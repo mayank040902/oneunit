@@ -1,5 +1,5 @@
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { MicroserviceConfigSchema, MicroserviceConfig, DeepPartial } from './schema.js';
 
 // Objects under these keys hold security-sensitive credential
@@ -81,6 +81,19 @@ export function loadConfig(configPath?: string): MicroserviceConfig {
   return result.data;
 }
 
+function parseEnvJson(value: string, variable: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`Invalid JSON in environment variable ${variable}: value could not be parsed`);
+  }
+}
+
+function parseBooleanEnv(value: string | undefined, defaultValue: boolean = false): boolean {
+  if (value === undefined || value === '') return defaultValue;
+  return ['true', '1', 'yes', 'on'].includes(value.toLowerCase());
+}
+
 export function buildConfigFromEnv(): Record<string, unknown> {
   const env = process.env;
   return {
@@ -88,10 +101,10 @@ export function buildConfigFromEnv(): Record<string, unknown> {
       id: env['SERVICE_ID'] || crypto.randomUUID(),
       name: env['SERVICE_NAME'] || 'microservice-server',
       instanceId: env['SERVICE_INSTANCE_ID'] || crypto.randomUUID(),
-      credentials: env['SERVICE_CREDENTIALS'] ? JSON.parse(env['SERVICE_CREDENTIALS']) : undefined,
-      endpoints: env['SERVICE_ENDPOINTS'] ? JSON.parse(env['SERVICE_ENDPOINTS']) : [],
-      capabilities: env['SERVICE_CAPABILITIES'] ? JSON.parse(env['SERVICE_CAPABILITIES']) : [],
-      metadata: env['SERVICE_METADATA'] ? JSON.parse(env['SERVICE_METADATA']) : {},
+      credentials: env['SERVICE_CREDENTIALS'] ? parseEnvJson(env['SERVICE_CREDENTIALS'], 'SERVICE_CREDENTIALS') : undefined,
+      endpoints: env['SERVICE_ENDPOINTS'] ? parseEnvJson(env['SERVICE_ENDPOINTS'], 'SERVICE_ENDPOINTS') : [],
+      capabilities: env['SERVICE_CAPABILITIES'] ? parseEnvJson(env['SERVICE_CAPABILITIES'], 'SERVICE_CAPABILITIES') : [],
+      metadata: env['SERVICE_METADATA'] ? parseEnvJson(env['SERVICE_METADATA'], 'SERVICE_METADATA') : {},
     },
     security: {
       authenticationEnabled: env['SECURITY_AUTH_ENABLED'] !== 'false',
@@ -139,7 +152,7 @@ export function buildConfigFromEnv(): Record<string, unknown> {
     },
     adapters: {
       kafka: {
-        enabled: env['KAFKA_ENABLED'] === 'true',
+        enabled: parseBooleanEnv(env['KAFKA_ENABLED'], false),
         driver: (env['KAFKA_DRIVER'] as 'oneunit' | 'kafkajs' | 'auto') || 'auto',
         brokers: env['KAFKA_BROKERS'] ? env['KAFKA_BROKERS'].split(',') : ['localhost:9092'],
         clientId: env['KAFKA_CLIENT_ID'] || 'microservice',
@@ -148,29 +161,29 @@ export function buildConfigFromEnv(): Record<string, unknown> {
         },
       },
       nats: {
-        enabled: env['NATS_ENABLED'] === 'true',
+        enabled: parseBooleanEnv(env['NATS_ENABLED'], false),
         servers: env['NATS_SERVERS'] ? env['NATS_SERVERS'].split(',') : ['nats://localhost:4222'],
       },
       tcp: {
-        enabled: env['TCP_ENABLED'] === 'true',
+        enabled: parseBooleanEnv(env['TCP_ENABLED'], false),
         host: env['TCP_HOST'] || '0.0.0.0',
         port: parseInt(env['TCP_PORT'] || '8080', 10),
       },
       udp: {
-        enabled: env['UDP_ENABLED'] === 'true',
+        enabled: parseBooleanEnv(env['UDP_ENABLED'], false),
         host: env['UDP_HOST'] || '0.0.0.0',
         port: parseInt(env['UDP_PORT'] || '8081', 10),
       },
       trpc: {
-        enabled: env['TRPC_ENABLED'] === 'true',
+        enabled: parseBooleanEnv(env['TRPC_ENABLED'], false),
         endpoint: env['TRPC_ENDPOINT'] || 'http://localhost:3000/trpc',
       },
       grpc: {
-        enabled: env['GRPC_ENABLED'] === 'true',
+        enabled: parseBooleanEnv(env['GRPC_ENABLED'], false),
         endpoint: env['GRPC_ENDPOINT'] || 'localhost:50051',
       },
       connect: {
-        enabled: env['CONNECT_ENABLED'] === 'true',
+        enabled: parseBooleanEnv(env['CONNECT_ENABLED'], false),
         endpoint: env['CONNECT_ENDPOINT'] || 'http://localhost:3000',
       },
     },
@@ -180,3 +193,29 @@ export function buildConfigFromEnv(): Record<string, unknown> {
 export function createDefaultConfig(overrides: DeepPartial<MicroserviceConfig> = {}): MicroserviceConfig {
   return mergeConfig(loadConfig(), overrides);
 }
+
+
+export function createConfigFile(
+  configPath: string = 'config.json',
+  overrides: DeepPartial<MicroserviceConfig> = {},
+): string {
+  if (existsSync(configPath)) return configPath;
+
+  const rootKey = process.env['CRYPTO_ROOT_KEY'];
+  if (!rootKey || rootKey.length < 32) {
+    throw new Error(
+      'CRYPTO_ROOT_KEY environment variable is required (>= 32 chars) to create a config file. Set it explicitly before calling createConfigFile().',
+    );
+  }
+
+  const config = createDefaultConfig(overrides);
+  mkdirSync(dirname(resolve(process.cwd(), configPath)), { recursive: true });
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  return configPath;
+}
+
+/**
+ * Alias of {@link createConfigFile} that reads better at call sites where the
+ * intent is "make sure a config file exists" rather than "create one".
+ */
+export const ensureConfigFile = createConfigFile;

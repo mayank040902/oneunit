@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { NatsTransport } from '../../../src/adapters/messaging/nats/index.js';
 import { NatsAdapterConfig } from '../../../src/config/schema.js';
 

@@ -9,6 +9,7 @@ export class TransportManager {
   private config: TransportManagerConfig;
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private metrics: Map<string, TransportMetrics> = new Map();
+  private lifecycleOperation: Promise<void> | null = null;
 
   constructor(config: TransportManagerConfig = {}) {
     this.config = config;
@@ -40,39 +41,77 @@ export class TransportManager {
   }
 
   async startAll(): Promise<void> {
-    const errors: Error[] = [];
-    
-    for (const transport of this.transports.values()) {
-      try {
-        await transport.start();
-      } catch (err) {
-        errors.push(err as Error);
+    if (this.lifecycleOperation) {
+      await this.lifecycleOperation;
+      return;
+    }
+
+    const operation = (async () => {
+      const started: Transport[] = [];
+      const startupErrors: Error[] = [];
+
+      for (const transport of this.transports.values()) {
+        try {
+          await transport.start();
+          started.push(transport);
+        } catch (err) {
+          startupErrors.push(err as Error);
+          const rollbackErrors: Error[] = [];
+          for (let i = started.length - 1; i >= 0; i--) {
+            try {
+              await started[i]!.close();
+            } catch (rollbackErr) {
+              rollbackErrors.push(rollbackErr as Error);
+            }
+          }
+          const original = startupErrors[0]!;
+          const rollback = rollbackErrors.length > 0
+            ? `; rollback failures: ${rollbackErrors.map((e) => e.message).join(', ')}`
+            : '';
+          throw new Error(`${original.message}${rollback}`);
+        }
       }
-    }
 
-    if (errors.length > 0) {
-      throw new Error(`Failed to start transports: ${errors.map(e => e.message).join(', ')}`);
-    }
+      if (this.config.healthCheckIntervalMs) {
+        this.startHealthChecks();
+      }
+    })();
 
-    if (this.config.healthCheckIntervalMs) {
-      this.startHealthChecks();
+    this.lifecycleOperation = operation;
+    try {
+      await operation;
+    } finally {
+      this.lifecycleOperation = null;
     }
   }
 
   async stopAll(): Promise<void> {
-    this.stopHealthChecks();
-    
-    const errors: Error[] = [];
-    for (const transport of this.transports.values()) {
-      try {
-        await transport.close();
-      } catch (err) {
-        errors.push(err as Error);
-      }
+    if (this.lifecycleOperation) {
+      await this.lifecycleOperation.catch(() => undefined);
     }
 
-    if (errors.length > 0) {
-      throw new Error(`Failed to stop transports: ${errors.map(e => e.message).join(', ')}`);
+    const operation = (async () => {
+      this.stopHealthChecks();
+
+      const errors: Error[] = [];
+      for (const transport of this.transports.values()) {
+        try {
+          await transport.close();
+        } catch (err) {
+          errors.push(err as Error);
+        }
+      }
+
+      if (errors.length > 0) {
+        throw new Error(`Failed to stop transports: ${errors.map(e => e.message).join(', ')}`);
+      }
+    })();
+
+    this.lifecycleOperation = operation;
+    try {
+      await operation;
+    } finally {
+      this.lifecycleOperation = null;
     }
   }
 

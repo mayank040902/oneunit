@@ -1,8 +1,10 @@
 import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, StreamTransport, DuplexStream, TransportMetrics } from '@/core/capabilities';
 import { TcpFrameParser } from './frame-parser.js';
+import { Logger, noopLogger } from '@/observability/logger.js';
 import type * as net from 'net';
 import type * as tls from 'tls';
+import { readFileSync } from 'node:fs';
 
 export interface TcpConfig {
   host: string;
@@ -11,9 +13,14 @@ export interface TcpConfig {
   cert?: string;
   key?: string;
   ca?: string;
+  requestCert?: boolean;
+  rejectUnauthorized?: boolean;
   maxFrameSize?: number;
+  maxQueuedFrames?: number;
+  maxQueuedBytes?: number;
   connectionTimeout?: number;
   idleTimeout?: number;
+  logger?: Logger;
 }
 
 export interface TcpConnection extends DuplexStream {
@@ -27,7 +34,6 @@ export interface ParsedRemote {
 }
 
 export function parseRemote(remote: string): ParsedRemote {
-  // Handle bracketed IPv6 literals: [::1]:9000
   if (remote.startsWith('[')) {
     const closeBracket = remote.indexOf(']');
     if (closeBracket === -1) {
@@ -45,7 +51,6 @@ export function parseRemote(remote: string): ParsedRemote {
     return { host, port };
   }
 
-  // For non-bracketed addresses, split on the last colon to support IPv6
   const lastColon = remote.lastIndexOf(':');
   if (lastColon === -1) {
     throw new Error(`Invalid remote address format: ${remote}`);
@@ -60,8 +65,9 @@ export function parseRemote(remote: string): ParsedRemote {
 }
 
 export class TcpTransport extends BaseTransport implements StreamTransport {
-   private config: TcpConfig;
-  private server: net.Server | null = null;
+  private config: TcpConfig;
+  private logger: Logger;
+  private server: net.Server | tls.Server | null = null;
   private connections: Map<string, TcpConnection> = new Map();
   private metrics: TransportMetrics;
 
@@ -78,58 +84,101 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
       },
     });
     this.config = config;
+    this.logger = config.logger ?? noopLogger;
     this.metrics = this.createEmptyMetrics();
   }
 
   async start(): Promise<void> {
+    if (this.isStarted() && this.server) {
+      return;
+    }
+
     const { createServer } = await import('net');
     const { createServer: createTlsServer } = await import('tls');
-    const { readFileSync } = await import('fs');
-
-    const serverOptions: tls.TlsOptions = {};
 
     if (this.config.tls) {
       if (!this.config.cert || !this.config.key) {
         throw new Error('TLS requires cert and key');
       }
-      serverOptions.cert = readFileSync(this.config.cert);
-      serverOptions.key = readFileSync(this.config.key);
+      const serverOptions: tls.TlsOptions = {
+        cert: readFileSync(this.config.cert),
+        key: readFileSync(this.config.key),
+        rejectUnauthorized: this.config.rejectUnauthorized ?? true,
+      };
       if (this.config.ca) {
         serverOptions.ca = readFileSync(this.config.ca);
+        serverOptions.requestCert = this.config.requestCert ?? true;
+        serverOptions.rejectUnauthorized = this.config.rejectUnauthorized ?? true;
+        if (serverOptions.rejectUnauthorized === false) {
+          this.logger.warn('TCP TLS client certificate verification is disabled');
+        }
+      }
+      if (!this.config.ca && this.config.requestCert) {
         serverOptions.requestCert = true;
-        serverOptions.rejectUnauthorized = true;
       }
       this.server = createTlsServer(serverOptions, this.handleConnection.bind(this));
     } else {
       this.server = createServer(this.handleConnection.bind(this));
     }
 
-    this.server!.on('error', (err: Error) => {
+    this.server.on('error', (err: Error) => {
       this.metrics.errors++;
-      console.error('TCP server error:', err);
+      this.logger.error(err, 'TCP server error');
     });
 
     await new Promise<void>((resolve, reject) => {
-      this.server!.listen(this.config.port, this.config.host, (err?: Error) => {
-        if (err) reject(err);
-        else resolve();
+      let settled = false;
+      const onListenError = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
+      this.server!.once('error', onListenError);
+      this.server!.listen(this.config.port, this.config.host, () => {
+        if (settled) return;
+        settled = true;
+        this.server!.removeListener('error', onListenError);
+        resolve();
       });
+      if (this.config.connectionTimeout) {
+        setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            this.server?.removeListener('error', onListenError);
+            try {
+              this.server?.close();
+            } catch { void 0; }
+            reject(new Error(`TCP server startup timed out after ${this.config.connectionTimeout}ms`));
+          }
+        }, this.config.connectionTimeout).unref();
+      }
     });
 
     this.started = true;
   }
 
   async close(): Promise<void> {
-    for (const conn of this.connections.values()) {
-      await conn.close();
+    if (this.closedState) {
+      this.started = false;
+      return;
+    }
+    this.closedState = true;
+
+    for (const [remote, conn] of Array.from(this.connections.entries())) {
+      try {
+        await conn.close();
+      } catch { void 0; }
+      this.connections.delete(remote);
     }
     this.connections.clear();
 
-    if (this.server) {
+    const server = this.server;
+    this.server = null;
+    if (server) {
       await new Promise<void>((resolve) => {
-        this.server!.close((err?: Error) => {
+        server.close((err?: Error) => {
           if (err) {
-            console.error('TCP server close error:', err);
+            this.logger.error(err, 'TCP server close error');
           }
           resolve();
         });
@@ -138,6 +187,12 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
 
     this.started = false;
   }
+
+  get isClosed(): boolean {
+    return this.closedState;
+  }
+
+  private closedState = false;
 
   async healthCheck(): Promise<TransportHealth> {
     return {
@@ -151,7 +206,7 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
   }
 
   async openStream(remote: string): Promise<DuplexStream> {
-    if (!this.started) {
+    if (!this.started || !this.server) {
       throw new Error('TCP transport not started');
     }
     const { connect } = await import('net');
@@ -159,30 +214,70 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
 
     const { host, port } = parseRemote(remote);
 
+    let settled = false;
+    const finishReject = (reject: (reason?: unknown) => void, err: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const finishResolve = (resolve: (value: DuplexStream) => void, value: DuplexStream) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
     const options: net.NetConnectOpts & tls.ConnectionOptions = { host, port };
     if (this.config.tls) {
-      options.cert = this.config.cert;
-      options.key = this.config.key;
-      options.ca = this.config.ca;
+      if (!this.config.cert || !this.config.key) {
+        throw new Error('TLS requires cert and key');
+      }
+      options.cert = readFileSync(this.config.cert);
+      options.key = readFileSync(this.config.key);
+      if (this.config.ca) {
+        options.ca = readFileSync(this.config.ca);
+      }
+      options.rejectUnauthorized = this.config.rejectUnauthorized ?? true;
     }
 
-    return new Promise((resolve, reject) => {
-      const socket: net.Socket = this.config.tls ? tlsConnect(options) : connect(options);
-      
-      socket.on('connect', () => {
+    return new Promise<DuplexStream>((resolve, reject) => {
+      const socket: net.Socket = this.config.tls
+        ? (tlsConnect(options) as net.Socket)
+        : (connect(options) as net.Socket);
+      const cleanupTimer = () => {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+      };
+
+      const onConnect = () => {
+        cleanupTimer();
         socket.setTimeout(0);
         const conn = this.createConnection(socket, remote);
         this.connections.set(remote, conn);
-        resolve(conn);
-      });
-      
-      socket.on('error', reject);
-      
+        finishResolve(resolve, conn);
+      };
+      const onError = (err: Error) => {
+        cleanupTimer();
+        socket.destroy();
+        finishReject(reject, err);
+      };
+      const onClose = () => {
+        cleanupTimer();
+        finishReject(reject, new Error('Connection closed'));
+      };
+
+      socket.on('connect', onConnect);
+      socket.on('error', onError);
+      socket.on('close', onClose);
+
+      let timeoutHandle: NodeJS.Timeout | null = null;
       if (this.config.connectionTimeout) {
-        socket.setTimeout(this.config.connectionTimeout, () => {
+        timeoutHandle = setTimeout(() => {
           socket.destroy();
-          reject(new Error('Connection timeout'));
-        });
+          finishReject(reject, new Error(`TCP connection timed out after ${this.config.connectionTimeout}ms`));
+        }, this.config.connectionTimeout);
+        timeoutHandle.unref();
       }
     });
   }
@@ -197,49 +292,119 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
     const maxFrameSize = this.config.maxFrameSize ?? 16 * 1024 * 1024;
     const idleTimeout = this.config.idleTimeout;
     const parser = new TcpFrameParser({ maxFrameSize });
-    const readQueue: Array<(value: Uint8Array | null) => void> = [];
+    const frameQueue: Uint8Array[] = [];
+    const readers: Array<(value: Uint8Array | null) => void> = [];
+    const maxQueuedFrames = this.config.maxQueuedFrames ?? 128;
+    const maxQueuedBytes = this.config.maxQueuedBytes ?? Math.max(maxFrameSize, 1024 * 1024);
+    const highWaterFrames = Math.max(1, Math.floor(maxQueuedFrames * 0.75));
+    const lowWaterFrames = Math.max(0, Math.floor(maxQueuedFrames * 0.25));
+    const logger = this.logger;
     let closed = false;
+    let cleanupDone = false;
+    let paused = false;
+    let queuedBytes = 0;
+    let idleTimer: NodeJS.Timeout | null = null;
 
-    if (idleTimeout && typeof socket.setTimeout === 'function') {
-      socket.setTimeout(idleTimeout, () => {
-        socket.destroy();
-        this.connections.delete(remote);
-        this.metrics.errors++;
-      });
-    }
+    const removeConnection = () => {
+      this.connections.delete(remote);
+    };
 
-    const drainQueue = (value: Uint8Array | null) => {
-      while (readQueue.length > 0) {
-        const resolve = readQueue.shift()!;
-        resolve(value);
+    const cleanup = () => {
+      if (cleanupDone) return;
+      cleanupDone = true;
+      closed = true;
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
       }
+      socket.removeListener('data', onData);
+      socket.removeListener('close', onClose);
+      socket.removeListener('error', onError);
+      socket.removeListener('timeout', onTimeout);
+      while (readers.length > 0) {
+        const resolveReader = readers.shift()!;
+        resolveReader(null);
+      }
+      frameQueue.length = 0;
+      queuedBytes = 0;
+      removeConnection();
+      try {
+        socket.destroy();
+      } catch { void 0; }
     };
 
     const onData = (chunk: Buffer) => {
-      const result = parser.feed(chunk);
+      if (closed) return;
+      let result: { frames: Uint8Array[]; error: Error | null };
+      try {
+        result = parser.feed(chunk) as { frames: Uint8Array[]; error: Error | null };
+      } catch {
+        cleanup();
+        return;
+      }
       for (const frame of result.frames) {
-        this.metrics.bytesReceived += frame.length + 4;
+        const data = new Uint8Array(frame);
+        if (closed) break;
+        if (
+          (frameQueue.length >= maxQueuedFrames || queuedBytes + data.length > maxQueuedBytes) &&
+          readers.length === 0
+        ) {
+          closed = true;
+          queuedBytes = 0;
+          frameQueue.length = 0;
+          logger.error(new Error('TCP connection backpressure limit reached'), 'TCP connection dropped');
+          this.metrics.errors++;
+          cleanup();
+          return;
+        }
+        this.metrics.bytesReceived += data.length + 4;
         this.metrics.messagesReceived++;
-        if (readQueue.length > 0) {
-          const resolve = readQueue.shift()!;
-          resolve(new Uint8Array(frame));
+        if (readers.length > 0) {
+          const resolveReader = readers.shift()!;
+          resolveReader(data);
+        } else {
+          frameQueue.push(data);
+          queuedBytes += data.length;
         }
       }
       if (result.error) {
         closed = true;
-        drainQueue(null);
-        socket.destroy();
+        this.metrics.errors++;
+        cleanup();
+        return;
+      }
+      if (!closed && frameQueue.length >= highWaterFrames) {
+        try {
+          socket.pause();
+          paused = true;
+        } catch { void 0; }
       }
     };
 
     const onClose = () => {
-      closed = true;
-      drainQueue(null);
+      cleanup();
     };
 
+    const onError = (err: Error) => {
+      this.metrics.errors++;
+      logger.error(err, 'TCP socket error');
+      cleanup();
+    };
+
+    const onTimeout = () => {
+      this.metrics.errors++;
+      logger.warn('TCP idle timeout', { remote });
+      cleanup();
+    };
+
+    if (idleTimeout && typeof socket.setTimeout === 'function') {
+      socket.setTimeout(idleTimeout);
+      socket.on('timeout', onTimeout);
+    }
+
     socket.on('data', onData);
-    socket.once('close', onClose);
-    socket.once('error', onClose);
+    socket.on('close', onClose);
+    socket.on('error', onError);
 
     const conn: TcpConnection = {
       remoteAddress: socket.remoteAddress ?? 'unknown',
@@ -249,31 +414,71 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
         if (closed) {
           throw new Error('Connection is closed');
         }
+        if (data.length > maxFrameSize) {
+          throw new Error(`Frame size ${data.length} exceeds maximum ${maxFrameSize}`);
+        }
         const length = Buffer.alloc(4);
         length.writeUInt32BE(data.length, 0);
-        socket.write(Buffer.concat([length, Buffer.from(data)]));
+        const outgoing = Buffer.concat([length, Buffer.from(data)]);
+
+        const ok = socket.write(outgoing);
         this.metrics.bytesSent += data.length + 4;
         this.metrics.messagesSent++;
+
+        if (ok) {
+          return;
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          const onDrain = () => {
+            cleanupListeners();
+            resolve();
+          };
+          const onFail = (err: Error) => {
+            cleanupListeners();
+            reject(err);
+          };
+          const cleanupListeners = () => {
+            socket.removeListener('drain', onDrain);
+            socket.removeListener('error', onFail);
+            socket.removeListener('close', onFail);
+          };
+          socket.on('drain', onDrain);
+          socket.on('error', onFail);
+          socket.on('close', onFail);
+        });
+
+        if (closed) {
+          throw new Error('Connection is closed');
+        }
       },
 
       read: async () => {
+        if (frameQueue.length > 0) {
+          const value = frameQueue.shift()!;
+          queuedBytes -= value.length;
+          if (paused && frameQueue.length <= lowWaterFrames) {
+            paused = false;
+            try {
+              socket.resume();
+            } catch { void 0; }
+          }
+          return value;
+        }
+        if (closed) {
+          return null;
+        }
         return new Promise<Uint8Array | null>((resolve) => {
-          readQueue.push(resolve);
+          readers.push(resolve);
         });
       },
 
       close: async () => {
-        if (!closed) {
-          closed = true;
-          socket.off('data', onData);
-          socket.off('close', onClose);
-          socket.off('error', onClose);
-          socket.destroy();
-        }
-        this.connections.delete(remote);
+        cleanup();
       },
     };
 
+    socket.once('close', removeConnection);
     return conn;
   }
 

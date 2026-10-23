@@ -2,6 +2,7 @@ import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, RpcClient, RpcServer, RpcMethodHandler } from '@/core/capabilities.js';
 import type { ServiceType } from '@bufbuild/protobuf';
 import type { Transport } from '@connectrpc/connect';
+import { createMicroserviceError, ErrorCodes } from '@/core/errors.js';
 
 export interface ConnectConfig {
   endpoint: string;
@@ -15,7 +16,6 @@ type ConnectServiceClient = Record<string, (input: unknown) => unknown | AsyncIt
 export class ConnectTransport extends BaseTransport implements RpcClient, RpcServer {
   private config: ConnectConfig;
   private client: Record<string, ConnectServiceClient> | null = null;
-  private server: unknown = null;
   private methodHandlers: Map<string, Map<string, RpcMethodHandler>> = new Map();
 
   constructor(config: ConnectConfig) {
@@ -89,6 +89,21 @@ export class ConnectTransport extends BaseTransport implements RpcClient, RpcSer
     }
 
     return methodClient(input) as Promise<TOutput>;
+  }
+
+  async handle(service: string, method: string, input: unknown, context: unknown): Promise<unknown> {
+    const handlers = this.methodHandlers.get(service);
+    const handler = handlers?.get(method);
+    if (!handler) {
+      throw createMicroserviceError(
+        ErrorCodes.NOT_FOUND,
+        `Method ${service}.${method} not found`,
+        'NOT_FOUND',
+        false,
+        { details: { service, method } }
+      );
+    }
+    return handler(input, context as import('@/core/capabilities.js').RpcContext);
   }
 
   async *stream<TInput, TOutput>(service: string, method: string, input: TInput): AsyncIterable<TOutput> {

@@ -3,7 +3,10 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "node",
-    "lib": ["ES2022", "dom"],
+    "lib": [
+      "ES2022",
+      "dom"
+    ],
     "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
@@ -20,14 +23,29 @@
     "noPropertyAccessFromIndexSignature": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@crypto/*": ["src/crypto/*"],
-      "@transport/*": ["src/transport/*"],
-      "@registry/*": ["src/registry/*"],
-      "@config/*": ["src/config/*"],
-      "@adapters/*": ["src/adapters/*"]
+      "@/*": [
+        "src/*"
+      ],
+      "@transport/*": [
+        "src/transport/*"
+      ],
+      "@registry/*": [
+        "src/registry/*"
+      ],
+      "@config/*": [
+        "src/config/*"
+      ],
+      "@adapters/*": [
+        "src/adapters/*"
+      ]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts"
+  ]
 }

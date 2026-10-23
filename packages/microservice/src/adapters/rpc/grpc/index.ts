@@ -1,6 +1,7 @@
 import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, RpcClient, RpcServer, RpcContext, RpcMethodHandler } from '@/core/capabilities';
 import type * as grpc from '@grpc/grpc-js';
+import { createMicroserviceError, ErrorCodes } from '@/core/errors.js';
 
 export interface GrpcConfig {
   endpoint: string;
@@ -8,13 +9,13 @@ export interface GrpcConfig {
   packageName: string;
   credentials?: grpc.ChannelCredentials | null;
   tls?: boolean;
+  logger?: { error: (...args: unknown[]) => void };
 }
 
 export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer {
   private config: GrpcConfig;
   private client: grpc.Client | null = null;
   private server: grpc.Server | null = null;
-  private serviceDefinitions: Map<string, grpc.ServiceDefinition | grpc.ProtobufTypeDefinition> = new Map();
   private methodHandlers: Map<string, Map<string, RpcMethodHandler>> = new Map();
 
   constructor(config: GrpcConfig) {
@@ -81,7 +82,7 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
       await new Promise<void>((resolve) => {
         this.server!.tryShutdown((err?: Error) => {
           if (err) {
-            console.error('gRPC server shutdown error:', err);
+            (this.config.logger ?? console).error('gRPC server shutdown error:', err);
           }
           resolve();
         });
@@ -109,6 +110,21 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
 
   unregisterMethod(service: string, method: string): void {
     this.methodHandlers.get(service)?.delete(method);
+  }
+
+  async handle(service: string, method: string, input: unknown, context: RpcContext): Promise<unknown> {
+    const handlers = this.methodHandlers.get(service);
+    const handler = handlers?.get(method);
+    if (!handler) {
+      throw createMicroserviceError(
+        ErrorCodes.NOT_FOUND,
+        `Method ${service}.${method} not found`,
+        'NOT_FOUND',
+        false,
+        { details: { service, method } }
+      );
+    }
+    return handler(input, context);
   }
 
   private createGrpcHandler(handler: RpcMethodHandler, _serviceName: string, _methodName: string): grpc.UntypedHandleCall {

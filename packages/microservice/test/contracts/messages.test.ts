@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  MessageEnvelope,
-  EncryptedEnvelope,
-  createMessageEnvelope,
-  validateMessageEnvelope,
-} from '../../src/contracts/messages.js';
+import { createMessageEnvelope, validateMessageEnvelope } from '../../src/contracts/messages.js';
 
 describe('MessageEnvelope', () => {
   const validSource = { serviceId: '123e4567-e89b-12d3-a456-426614174000', instanceId: '123e4567-e89b-12d3-a456-426614174001' };
@@ -83,7 +78,7 @@ describe('validateMessageEnvelope', () => {
   });
 
   it('should return false when version is missing', () => {
-    const { version, ...envelope } = validEnvelope;
+    const { version: _version, ...envelope } = validEnvelope;
     expect(validateMessageEnvelope(envelope)).toBe(false);
   });
 
@@ -98,7 +93,7 @@ describe('validateMessageEnvelope', () => {
   });
 
   it('should return false when messageId is missing', () => {
-    const { messageId, ...envelope } = validEnvelope;
+    const { messageId: _messageId, ...envelope } = validEnvelope;
     expect(validateMessageEnvelope(envelope)).toBe(false);
   });
 
@@ -108,7 +103,7 @@ describe('validateMessageEnvelope', () => {
   });
 
   it('should return false when type is missing', () => {
-    const { type, ...envelope } = validEnvelope;
+    const { type: _type, ...envelope } = validEnvelope;
     expect(validateMessageEnvelope(envelope)).toBe(false);
   });
 
@@ -118,7 +113,7 @@ describe('validateMessageEnvelope', () => {
   });
 
   it('should return false when schemaVersion is missing', () => {
-    const { schemaVersion, ...envelope } = validEnvelope;
+    const { schemaVersion: _schemaVersion, ...envelope } = validEnvelope;
     expect(validateMessageEnvelope(envelope)).toBe(false);
   });
 
@@ -128,7 +123,7 @@ describe('validateMessageEnvelope', () => {
   });
 
   it('should return false when source is missing', () => {
-    const { source, ...envelope } = validEnvelope;
+    const { source: _source, ...envelope } = validEnvelope;
     expect(validateMessageEnvelope(envelope)).toBe(false);
   });
 
@@ -158,7 +153,7 @@ describe('validateMessageEnvelope', () => {
   });
 
   it('should return false when timestamp is missing', () => {
-    const { timestamp, ...envelope } = validEnvelope;
+    const { timestamp: _timestamp, ...envelope } = validEnvelope;
     expect(validateMessageEnvelope(envelope)).toBe(false);
   });
 
@@ -168,7 +163,7 @@ describe('validateMessageEnvelope', () => {
   });
 
   it('should return false when payload is missing', () => {
-    const { payload, ...envelope } = validEnvelope;
+    const { payload: _payload, ...envelope } = validEnvelope;
     expect(validateMessageEnvelope(envelope)).toBe(false);
   });
 
@@ -193,40 +188,3 @@ describe('validateMessageEnvelope', () => {
   });
 });
 
-describe('EncryptedEnvelope', () => {
-  it('should define the correct structure', () => {
-    const envelope: EncryptedEnvelope = {
-      version: 1,
-      cipherSuite: 'aes-256-gcm',
-      keyId: 'key-123',
-      nonce: new Uint8Array(12),
-      ciphertext: new Uint8Array(32),
-      tag: new Uint8Array(16),
-      authenticatedMetadata: new Uint8Array(0),
-      signature: new Uint8Array(64),
-    };
-
-    expect(envelope.version).toBe(1);
-    expect(['aes-256-gcm', 'chacha20-poly1305']).toContain(envelope.cipherSuite);
-    expect(envelope.keyId).toBe('key-123');
-    expect(envelope.nonce).toBeInstanceOf(Uint8Array);
-    expect(envelope.ciphertext).toBeInstanceOf(Uint8Array);
-    expect(envelope.tag).toBeInstanceOf(Uint8Array);
-    expect(envelope.authenticatedMetadata).toBeInstanceOf(Uint8Array);
-    expect(envelope.signature).toBeInstanceOf(Uint8Array);
-  });
-
-  it('should allow optional signature', () => {
-    const envelope: EncryptedEnvelope = {
-      version: 1,
-      cipherSuite: 'chacha20-poly1305',
-      keyId: 'key-123',
-      nonce: new Uint8Array(12),
-      ciphertext: new Uint8Array(32),
-      tag: new Uint8Array(16),
-      authenticatedMetadata: new Uint8Array(0),
-    };
-
-    expect(envelope.signature).toBeUndefined();
-  });
-});

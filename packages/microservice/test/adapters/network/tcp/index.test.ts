@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TcpTransport, TcpConfig } from '../../../../src/adapters/network/tcp/index.js';
-import { StreamTransport, DuplexStream } from '../../../../src/core/capabilities.js';
 
 function makeConfig(overrides: Partial<TcpConfig> = {}): TcpConfig {
   return {
@@ -30,20 +29,10 @@ describe('TcpTransport construction', () => {
     expect(transport.isStarted()).toBe(false);
   });
 
-  it('should accept custom maxFrameSize', () => {
-    const transport = new TcpTransport(makeConfig({ maxFrameSize: 65536 }));
-    expect((transport as any).config.maxFrameSize).toBe(65536);
-  });
+  it('should reject the start when TLS is enabled without a certificate and key', async () => {
+    const transport = new TcpTransport(makeConfig({ tls: true, port: 0 }));
 
-  it('should use default maxFrameSize of 16MB when creating connections', () => {
-    const transport = new TcpTransport(makeConfig({ maxFrameSize: undefined }));
-    // maxFrameSize is used internally in createConnection, not stored in config
-    // Verify the default is used by checking the internal constant
-    expect((transport as any).config.maxFrameSize).toBeUndefined();
-  });
-
-  it('should require cert and key when TLS is enabled', () => {
-    expect(() => new TcpTransport(makeConfig({ tls: true }))).not.toThrow();
+    await expect(transport.start()).rejects.toThrow(/TLS requires cert and key/);
   });
 });
 
@@ -156,7 +145,6 @@ describe('TcpTransport openStream', () => {
 
 describe('TcpTransport framing', () => {
   let transport: TcpTransport;
-  let mockSocket: any;
 
   beforeEach(() => {
     transport = new TcpTransport(makeConfig({ maxFrameSize: 1024 }));
@@ -165,24 +153,6 @@ describe('TcpTransport framing', () => {
   afterEach(async () => {
     await transport.close();
     vi.restoreAllMocks();
-  });
-
-  it('should encode frames with 4-byte big-endian length header', () => {
-    const conn = (transport as any).createConnection({
-      write: vi.fn(),
-      on: vi.fn(),
-      once: vi.fn(),
-      destroy: vi.fn(),
-      remoteAddress: '127.0.0.1',
-      remotePort: 1234,
-    }, '127.0.0.1:1234');
-
-    const data = new Uint8Array([1, 2, 3, 4, 5]);
-    const writeSpy = vi.spyOn(conn, 'write').mockImplementation(async () => {});
-
-    // We can't easily test private method, but we can verify the behavior
-    // through the public API or by checking the connection's write method
-    expect(typeof conn.write).toBe('function');
   });
 
   it('should return metrics with initial values', () => {
@@ -194,7 +164,7 @@ describe('TcpTransport framing', () => {
     expect(metrics.errors).toBe(0);
   });
 
-  it('should expose metrics structure', async () => {
+  it('should expose the message counters through the health details', async () => {
     await transport.start();
     const health = await transport.healthCheck();
     expect(health.details).toBeDefined();
@@ -207,55 +177,46 @@ describe('TcpTransport framing', () => {
 });
 
 describe('TcpTransport connection handling', () => {
-  let transport: TcpTransport;
+  let server: TcpTransport;
+  let client: TcpTransport;
 
-  beforeEach(() => {
-    transport = new TcpTransport(makeConfig({ port: 0 }));
+  beforeEach(async () => {
+    server = new TcpTransport(makeConfig({ port: 0 }));
+    client = new TcpTransport(makeConfig({ port: 0 }));
+    await server.start();
+    await client.start();
   });
 
   afterEach(async () => {
-    await transport.close();
+    await client.close();
+    await server.close();
     vi.restoreAllMocks();
   });
 
-  it('should track active connections', async () => {
-    await transport.start();
-    const health = await transport.healthCheck();
-    expect(health.details!.connections).toBe(0);
+  it('should deliver a written frame to the accepting transport', async () => {
+    // The bound port is only observable through the underlying server handle;
+    // every assertion below uses the public transport API.
+    const port = (server as any).server.address().port as number;
+
+    const stream = await client.openStream(`127.0.0.1:${port}`);
+    await stream.write(Buffer.from('HELLO'));
+
+    await vi.waitFor(() => {
+      expect(server.getMetrics().messagesReceived).toBe(1);
+    });
+    expect(server.getMetrics().bytesReceived).toBe(9); // 5 payload bytes + 4 byte header
+    expect(client.getMetrics().messagesSent).toBe(1);
   });
 
-  it('should expose connection management methods', () => {
-    const transport = new TcpTransport(makeConfig());
-    expect(typeof transport.getMetrics).toBe('function');
-    expect(typeof transport.openStream).toBe('function');
-  });
-});
+  it('should count the accepted connection in the health details', async () => {
+    const port = (server as any).server.address().port as number;
 
-describe('TcpTransport getMetrics', () => {
-  let transport: TcpTransport;
+    await client.openStream(`127.0.0.1:${port}`);
 
-  beforeEach(() => {
-    transport = new TcpTransport(makeConfig());
-  });
-
-  afterEach(async () => {
-    await transport.close();
-    vi.restoreAllMocks();
-  });
-
-  it('should return initial metrics', () => {
-    const metrics = transport.getMetrics();
-    expect(metrics.messagesSent).toBe(0);
-    expect(metrics.messagesReceived).toBe(0);
-    expect(metrics.bytesSent).toBe(0);
-    expect(metrics.bytesReceived).toBe(0);
-    expect(metrics.errors).toBe(0);
-  });
-
-  it('should return updated metrics after operations', async () => {
-    await transport.start();
-    const health = await transport.healthCheck();
-    expect(health.details).toBeDefined();
+    await vi.waitFor(async () => {
+      const health = await server.healthCheck();
+      expect(health.details!.connections).toBe(1);
+    });
   });
 });
 

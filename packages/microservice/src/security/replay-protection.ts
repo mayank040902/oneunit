@@ -3,6 +3,7 @@ export interface ReplayProtectionConfig {
   maxEntries: number;
   ttlMs: number;
   futureSkewMs: number;
+  cleanupIntervalMs?: number;
 }
 
 export interface MessageId {
@@ -23,6 +24,7 @@ export class ReplayProtection {
       maxEntries: config.maxEntries ?? 100000,
       ttlMs: config.ttlMs ?? 5 * 60 * 1000,
       futureSkewMs: config.futureSkewMs ?? 10 * 1000, // 10 seconds default future skew tolerance
+      cleanupIntervalMs: config.cleanupIntervalMs,
     };
   }
 
@@ -31,7 +33,7 @@ export class ReplayProtection {
     
     this.cleanupTimer = setInterval(() => {
       this.cleanup();
-    }, this.config.ttlMs);
+    }, this.config.cleanupIntervalMs ?? this.config.ttlMs);
   }
 
   stop(): void {
@@ -42,7 +44,16 @@ export class ReplayProtection {
   }
 
   checkAndStore(messageId: MessageId): { allowed: boolean; reason?: string } {
-    const key = `${messageId.source}:${messageId.id}`;
+    if (!messageId || typeof messageId.id !== 'string') {
+      return { allowed: false, reason: 'Invalid message ID' };
+    }
+    if (typeof messageId.source !== 'string') {
+      return { allowed: false, reason: 'Invalid source' };
+    }
+    if (typeof messageId.timestamp !== 'number' || !Number.isFinite(messageId.timestamp)) {
+      return { allowed: false, reason: 'Invalid timestamp' };
+    }
+    const key = `${messageId.source}\u0000${messageId.id}`;
     const now = Date.now();
 
     // Opportunistic cleanup: reap expired entries so correctness does
@@ -100,7 +111,7 @@ export class ReplayProtection {
   }
 
   isReplay(messageId: MessageId): boolean {
-    const key = `${messageId.source}:${messageId.id}`;
+    const key = `${messageId.source}\u0000${messageId.id}`;
     const stored = this.timestamps.get(key);
     if (stored === undefined) {
       return false;
@@ -113,12 +124,11 @@ export class ReplayProtection {
 
   private lazyCleanup(now: number): void {
     const cutoff = now - this.config.ttlMs;
-    let hadExpired = false;
 
     for (const [key, timestamp] of this.timestamps.entries()) {
       if (timestamp < cutoff) {
-        hadExpired = true;
-        const source = key.split(':', 1)[0];
+        const idx = key.indexOf('\u0000');
+        const source = idx >= 0 ? key.substring(0, idx) : key.split(':', 1)[0];
         if (!source) continue;
         const sourceSet = this.store.get(source);
         if (sourceSet) {
@@ -138,7 +148,8 @@ export class ReplayProtection {
 
     for (const [key, timestamp] of this.timestamps.entries()) {
       if (timestamp < cutoff) {
-        const source = key.split(':', 1)[0];
+        const idx = key.indexOf('\u0000');
+        const source = idx >= 0 ? key.substring(0, idx) : key.split(':', 1)[0];
         if (!source) continue;
         const sourceSet = this.store.get(source);
         if (sourceSet) {

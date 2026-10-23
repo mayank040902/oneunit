@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { resolveRedisDriver } from '../../src/registry/redis/driver-resolver.js';
 import { RedisAdapterConfig } from '../../src/registry/redis/types.js';
 

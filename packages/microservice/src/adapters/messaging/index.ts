@@ -11,4 +11,3 @@ export {
   MessagingProviderRegistry,
   type ProviderConstructor,
 } from './provider-registry.js';
-export * from './rabbitmq/index.js';

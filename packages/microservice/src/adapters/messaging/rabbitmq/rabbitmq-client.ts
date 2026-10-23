@@ -112,9 +112,9 @@ export class RabbitMQClient {
     const onError = (err: Error) => onLost(`connection error: ${err?.message ?? err}`);
 
     this.connection.on('close', onClose);
-    this.connection.on('error', onError);
+    this.connection.on('error', onError as (...args: unknown[]) => void);
     this.channel.on('close', onClose);
-    this.channel.on('error', onError);
+    this.channel.on('error', onError as (...args: unknown[]) => void);
   }
 
   private detachLifecycle(): void {
@@ -267,7 +267,7 @@ export class RabbitMQClient {
 type AmqpConnection = {
   createChannel(): Promise<AmqpChannel>;
   close(): Promise<unknown>;
-  on(event: string, listener: (...args: any[]) => void): unknown;
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
 };
 
 type AmqpChannel = {
@@ -278,7 +278,7 @@ type AmqpChannel = {
   ack(msg: unknown): void;
   nack(msg: unknown, allUpTo?: boolean, requeue?: boolean): void;
   close(): Promise<unknown>;
-  on(event: string, listener: (...args: any[]) => void): unknown;
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
 };
 
 export const createRabbitMQClient = (config: RabbitMQClientConfig): RabbitMQClient => {

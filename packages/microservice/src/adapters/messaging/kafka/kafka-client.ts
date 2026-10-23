@@ -16,12 +16,10 @@ export interface KafkaClientConfig {
 }
 
 let cachedKafkaClient: KafkaClient | null = null;
-let kafkaInitializationError: Error | null = null;
+let kafkaInitializationPromise: Promise<KafkaClient> | null = null;
 
 export function isKafkaAvailable(): boolean {
   try {
-    // Synchronous ESM resolution check. require.resolve is
-    // not part of the ESM module system and is not used here.
     import.meta.resolve('@oneunit/kafka');
     return true;
   } catch {
@@ -33,66 +31,67 @@ export async function createKafkaClient(config: KafkaClientConfig): Promise<Kafk
   if (cachedKafkaClient) {
     return cachedKafkaClient;
   }
-
-  if (kafkaInitializationError) {
-    throw kafkaInitializationError;
+  if (kafkaInitializationPromise) {
+    return kafkaInitializationPromise;
   }
 
   const { config: kafkaConfig, logger } = config;
 
-  try {
-    // Honor the configured driver explicitly: "oneunit" selects
-    // @oneunit/kafka, "kafkajs" selects KafkaJS (whether or not
-    // @oneunit/kafka is installed), "auto" tries @oneunit/kafka
-    // first and falls back to KafkaJS only when the module is
-    // absent. An explicit selection never silently switches
-    // drivers after a selection or connection failure.
-    const resolved = await resolveKafkaDriver(kafkaConfig, logger);
-    const adapter: KafkaDriverAdapter = await resolved.module.createAdapter(
-      kafkaConfig,
-      logger,
-    );
-    await adapter.start();
+  let resolveInitialization!: (value: KafkaClient) => void;
+  let rejectInitialization!: (reason?: unknown) => void;
+  kafkaInitializationPromise = new Promise<KafkaClient>((resolve, reject) => {
+    resolveInitialization = resolve;
+    rejectInitialization = reject;
+  });
 
-    cachedKafkaClient = {
-      async publish(topic: string, message: unknown, options?: { key?: string; headers?: Record<string, string> }) {
-        await adapter.publish(topic, message, options);
-      },
+  (async () => {
+    try {
+      const resolved = await resolveKafkaDriver(kafkaConfig, logger);
+      const adapter: KafkaDriverAdapter = await resolved.module.createAdapter(
+        kafkaConfig,
+        logger,
+      );
+      await adapter.start();
 
-      async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options?: { groupId?: string; autoAck?: boolean }) {
-        await adapter.subscribe(topic, handler, options);
-      },
+      const client: KafkaClient = {
+        async publish(topic: string, message: unknown, options?: { key?: string; headers?: Record<string, string> }) {
+          await adapter.publish(topic, message, options);
+        },
 
-      async unsubscribe(topic: string): Promise<void> {
-        await adapter.unsubscribe(topic);
-      },
+        async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options?: { groupId?: string; autoAck?: boolean }) {
+          await adapter.subscribe(topic, handler, options);
+        },
 
-      async disconnect(): Promise<void> {
-        await adapter.close();
-        cachedKafkaClient = null;
-      },
-    };
+        async unsubscribe(topic: string): Promise<void> {
+          await adapter.unsubscribe(topic);
+        },
 
-    logger?.info('Kafka client initialized', {
-      clientId: kafkaConfig.clientId,
-      driver: resolved.driver,
-    });
-    return cachedKafkaClient;
+        async disconnect(): Promise<void> {
+          await adapter.close();
+          cachedKafkaClient = null;
+        },
+      };
 
-  } catch (err) {
-    // Driver resolution surfaces actionable dependency errors
-    // ("@oneunit/kafka is not installed. Install it or use
-    // driver: \"kafkajs\""); connection failures propagate the
-    // driver's own error. Cache and rethrow without switching
-    // drivers.
-    kafkaInitializationError = err instanceof Error ? err : new Error(String(err));
-    throw kafkaInitializationError;
-  }
+      cachedKafkaClient = client;
+      logger?.info('Kafka client initialized', {
+        clientId: kafkaConfig.clientId,
+        driver: resolved.driver,
+      });
+      resolveInitialization(client);
+    } catch (err) {
+      logger?.error?.(err instanceof Error ? err : new Error(String(err)), 'Kafka initialization failed');
+      rejectInitialization(err);
+    } finally {
+      kafkaInitializationPromise = null;
+    }
+  })();
+
+  return kafkaInitializationPromise;
 }
 
 export function resetKafkaClient(): void {
   cachedKafkaClient = null;
-  kafkaInitializationError = null;
+  kafkaInitializationPromise = null;
 }
 
 export function getCachedKafkaClient(): KafkaClient | null {

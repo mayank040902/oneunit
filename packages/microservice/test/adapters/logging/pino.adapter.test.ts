@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createPinoLogger } from '@/adapters/logging/pino/adapter.js';
-import type { Logger } from '@/observability/logger.js';
+
+;
 
 describe('createPinoLogger', () => {
   afterEach(() => {
@@ -17,7 +18,7 @@ describe('createPinoLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => ({
+        child: vi.fn((_bindings) => ({
           level: 'info' as const,
           trace: vi.fn(),
           debug: vi.fn(),
@@ -70,7 +71,7 @@ describe('createPinoLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => ({
+        child: vi.fn((_bindings) => ({
           level: 'trace' as const,
           trace: vi.fn(),
           debug: vi.fn(),
@@ -103,7 +104,7 @@ describe('createPinoLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => mockPinoLogger),
+        child: vi.fn((_bindings) => mockPinoLogger),
       };
 
       const logger = await createPinoLogger({ logger: mockPinoLogger });
@@ -124,7 +125,7 @@ describe('createPinoLogger', () => {
         warn: vi.fn(),
         error: vi.fn(),
         fatal: vi.fn(),
-        child: vi.fn((bindings) => mockPinoLogger),
+        child: vi.fn((_bindings) => mockPinoLogger),
       };
 
       const logger = await createPinoLogger({ logger: mockPinoLogger });
@@ -203,7 +204,7 @@ describe('createPinoLogger', () => {
 
       const logger = await createPinoLogger({ logger: mockPinoLogger });
       const child1 = logger.child({ a: 1 });
-      const child2 = child1.child({ b: 2 });
+      child1.child({ b: 2 });
 
       expect(mockPinoLogger.child).toHaveBeenCalledTimes(1);
       expect(mockChild1.child).toHaveBeenCalledWith({ b: 2 });

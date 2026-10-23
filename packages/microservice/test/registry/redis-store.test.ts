@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RedisRegistryStore } from '../../src/registry/redis/adapter.js';
 import { RedisAdapterConfig } from '../../src/registry/redis/types.js';
 import { RegistryStore, ServiceInstance, LeaseRenewalResult } from '../../src/registry/registry.js';
