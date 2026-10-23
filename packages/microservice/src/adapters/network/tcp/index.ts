@@ -386,6 +386,10 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
           frameQueue.push(data);
           queuedBytes += data.length;
         }
+        void this.dispatchRawFrame(conn, frame).catch((err: unknown) => {
+          this.metrics.errors++;
+          logger.error(err instanceof Error ? err : new Error(String(err)), 'TCP raw frame dispatch failed');
+        });
       }
       if (result.error) {
         closed = true;
@@ -559,6 +563,93 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
       return run();
     }
     return dispatcher.dispatch(request, run);
+  }
+
+  private async dispatchRawFrame(conn: TcpConnection, frame: Uint8Array | Buffer): Promise<void> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(Buffer.from(frame).toString('utf8'));
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+
+    let request = parsed as Record<string, unknown>;
+    const originalPayload = request['payload'];
+    if (originalPayload && typeof originalPayload === 'object' && !Array.isArray(originalPayload)) {
+      const payload = originalPayload as Record<string, unknown>;
+      if ('service' in payload || 'serviceId' in payload || 'svc' in payload || 'method' in payload || 'methodName' in payload) {
+        request = payload;
+      }
+    }
+
+    const type = request['type'];
+    const isControl = type === 'control' || type === 'ping' || type === 'pong' || type === 'heartbeat' || type === 'hello' ||
+      request['control'] === true || request['ping'] === true;
+    if (isControl) {
+      const id = request['id'] ?? request['requestId'] ?? request['messageId'];
+      if (id !== undefined) {
+        try {
+          await conn.write(Buffer.from(JSON.stringify({ id, ok: true, type: 'pong' })));
+        } catch { void 0; }
+      }
+      return;
+    }
+
+    let service = request['service'] ?? request['serviceId'] ?? request['svc'] ?? request['target'] ?? request['targetService'];
+    let method = request['method'] ?? request['methodName'] ?? request['method_name'] ?? request['op'] ?? request['operation'];
+    if (typeof method === 'string' && method.includes('.') && (typeof service !== 'string' || service === '')) {
+      const parts = method.split('.', 2);
+      service = parts[0];
+      method = parts[1];
+    }
+    if (typeof service !== 'string' || typeof method !== 'string' || !service.trim() || !method.trim()) {
+      return;
+    }
+
+    const inputCandidate = request['input'] ?? request['params'] ?? request['args'] ?? request['data'] ?? request['body'] ?? request['request'] ?? request['value'];
+    const input = (inputCandidate === undefined && !('service' in request) && !('method' in request)) ? request : (inputCandidate === undefined ? undefined : inputCandidate);
+
+    const correlationId = (request['correlationId'] ?? request['correlation_id'] ?? request['correlation']) as string | undefined;
+    const credsFromInput = (input && typeof input === 'object' && !Array.isArray(input))
+      ? ((input as Record<string, unknown>)['credentials'] ?? (input as Record<string, unknown>)['creds'])
+      : undefined;
+    const credentials = request['credentials'] ?? request['creds'] ?? request['credential'] ?? request['auth'] ?? request['authentication'] ?? request['token'] ??
+      credsFromInput ??
+      (request['metadata'] as Record<string, unknown> | undefined)?.['credentials'] ??
+      (request['headers'] as Record<string, unknown> | undefined)?.['credentials'];
+
+    const metadata = new Map<string, unknown>();
+    const rawMetadata = request['metadata'];
+    if (rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)) {
+      for (const [k, v] of Object.entries(rawMetadata)) metadata.set(k, v);
+    }
+    if (credentials !== undefined) metadata.set('credentials', credentials);
+    const rawHeaders = request['headers'];
+    if (rawHeaders && typeof rawHeaders === 'object' && !Array.isArray(rawHeaders)) {
+      for (const [k, v] of Object.entries(rawHeaders)) metadata.set(k, v);
+    }
+    const rpcContext = {
+      serviceId: service,
+      correlationId: (correlationId && typeof correlationId === 'string') ? correlationId : crypto.randomUUID(),
+      headers: (rawHeaders && typeof rawHeaders === 'object' && !Array.isArray(rawHeaders)) ? rawHeaders as Record<string, unknown> : {},
+      metadata,
+    };
+
+    const id = request['id'] ?? request['requestId'] ?? request['messageId'] ?? request['request_id'];
+
+    try {
+      const result = await this.handle(service, method, input, rpcContext as unknown as RpcContext);
+      const __resp = Buffer.from(JSON.stringify({ id, ok: true, result }));
+      try {
+        await conn.write(__resp);
+      } catch { void 0; }
+    } catch (err) {
+      const e = err as { code?: unknown; message?: unknown };
+      try {
+        await conn.write(Buffer.from(JSON.stringify({ id, ok: false, error: { code: e?.code ?? 'INTERNAL', message: e?.message ?? String(err) } })));
+      } catch { void 0; }
+    }
   }
 
   getMetrics(): TransportMetrics {

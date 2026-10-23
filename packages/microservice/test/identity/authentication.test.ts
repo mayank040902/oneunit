@@ -66,7 +66,7 @@ describe('JwtAuthenticator', () => {
   let authenticator: JwtAuthenticator;
 
   beforeEach(() => {
-    authenticator = new JwtAuthenticator('secret', 'issuer', 'audience');
+    authenticator = new JwtAuthenticator('this-is-a-32-byte-minimum-secret!!', 'issuer', 'audience');
   });
 
   it('should reject invalid credential type', async () => {
@@ -96,8 +96,8 @@ describe('JwtAuthenticator', () => {
 
   it('should require secret, issuer, and audience in constructor', () => {
     expect(() => new JwtAuthenticator('', 'issuer', 'audience')).toThrow();
-    expect(() => new JwtAuthenticator('secret', '', 'audience')).toThrow();
-    expect(() => new JwtAuthenticator('secret', 'issuer', '')).toThrow();
+    expect(() => new JwtAuthenticator('this-is-a-32-byte-minimum-secret!!', '', 'audience')).toThrow();
+    expect(() => new JwtAuthenticator('this-is-a-32-byte-minimum-secret!!', 'issuer', '')).toThrow();
   });
 });
 
@@ -229,7 +229,7 @@ describe('createAuthenticator', () => {
 
   it('should create JWT authenticator with required options', () => {
     const authenticator = createAuthenticator('jwt', {
-      secret: 'secret',
+      secret: 'this-is-a-32-byte-minimum-secret!!',
       issuer: 'issuer',
       audience: 'audience',
     });
@@ -376,7 +376,7 @@ describe('JwtAuthenticator - Security and Edge Cases', () => {
   let authenticator: JwtAuthenticator;
 
   beforeEach(() => {
-    authenticator = new JwtAuthenticator('test-secret', 'test-issuer', 'test-audience');
+    authenticator = new JwtAuthenticator('this-is-a-32-byte-minimum-secret!!', 'test-issuer', 'test-audience');
   });
 
   it('should reject token with wrong issuer', async () => {
@@ -386,7 +386,7 @@ describe('JwtAuthenticator - Security and Edge Cases', () => {
       .setIssuer('wrong-issuer')
       .setAudience('test-audience')
       .setExpirationTime('1h')
-      .sign(new TextEncoder().encode('test-secret'));
+      .sign(new TextEncoder().encode('this-is-a-32-byte-minimum-secret!!'));
 
     const credentials: ServiceCredentials = {
       type: 'jwt',
@@ -406,7 +406,7 @@ describe('JwtAuthenticator - Security and Edge Cases', () => {
       .setIssuer('test-issuer')
       .setAudience('wrong-audience')
       .setExpirationTime('1h')
-      .sign(new TextEncoder().encode('test-secret'));
+      .sign(new TextEncoder().encode('this-is-a-32-byte-minimum-secret!!'));
 
     const credentials: ServiceCredentials = {
       type: 'jwt',
@@ -426,7 +426,7 @@ describe('JwtAuthenticator - Security and Edge Cases', () => {
       .setIssuer('test-issuer')
       .setAudience('test-audience')
       .setExpirationTime('-1h') // Expired
-      .sign(new TextEncoder().encode('test-secret'));
+      .sign(new TextEncoder().encode('this-is-a-32-byte-minimum-secret!!'));
 
     const credentials: ServiceCredentials = {
       type: 'jwt',
@@ -446,7 +446,7 @@ describe('JwtAuthenticator - Security and Edge Cases', () => {
       .setIssuer('test-issuer')
       .setAudience('test-audience')
       .setExpirationTime('1h')
-      .sign(new TextEncoder().encode('wrong-secret'));
+      .sign(new TextEncoder().encode('wrong-32-byte-secret-for-testing-only'));
 
     const credentials: ServiceCredentials = {
       type: 'jwt',
@@ -489,8 +489,10 @@ describe('JwtAuthenticator - Security and Edge Cases', () => {
       .setProtectedHeader({ alg: 'HS256' })
       .setIssuer('test-issuer')
       .setAudience('test-audience')
+      .setIssuedAt()
+      .setNotBefore('0s')
       .setExpirationTime('1h')
-      .sign(new TextEncoder().encode('test-secret'));
+      .sign(new TextEncoder().encode('this-is-a-32-byte-minimum-secret!!'));
 
     const identity = {
       serviceId: 'service-1',
@@ -632,7 +634,7 @@ describe('createAuthenticator - Edge Cases', () => {
 
   it('should create JWT authenticator with all required options', () => {
     const authenticator = createAuthenticator('jwt', {
-      secret: 'secret',
+      secret: 'this-is-a-32-byte-minimum-secret!!',
       issuer: 'issuer',
       audience: 'audience',
     });

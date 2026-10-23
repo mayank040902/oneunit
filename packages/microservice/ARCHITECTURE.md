@@ -681,10 +681,11 @@ integration results separately from unit - test results.
 The following limitations are part of the documented implementation and
 should be considered when using the package:
 
-  1.  The shared secured dispatcher is available for supported inbound
-    boundaries when configured. Raw TCP frames and tRPC HTTP procedures that
-    bypass the secured `handle()` boundary may still avoid that enforcement,
-    and alternate paths require their own integration.
+  1.  The shared secured dispatcher is integrated into the TCP raw-frame path,
+    hosted tRPC HTTP procedures, gRPC, Connect, Kafka, NATS, and
+    `MicroserviceServer.handle()`. Control frames and explicitly public
+    operations are the only paths that can skip protected application
+    dispatch.
 2.  Raw X25519 key agreement does not authenticate peers.
 3.  The encrypted envelope's optional signature is not populated, and
     `keyId` is not integrated with key - provider version history.

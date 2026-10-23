@@ -128,69 +128,212 @@ private extractIdentity(cert: X509Certificate): { serviceId: string; serviceName
   }
 }
 
-export class JwtAuthenticator implements Authenticator {
-  private secret: string;
-  private issuer: string;
-  private audience: string;
+export interface JwtVerificationKey {
+  readonly kid?: string;
+  readonly secret: string;
+}
 
-  constructor(secret: string, issuer: string, audience: string) {
-    if (!secret || secret.trim() === '') throw new Error('JWT secret is required');
-    if (!issuer || issuer.trim() === '') throw new Error('JWT issuer is required');
-    if (!audience || audience.trim() === '') throw new Error('JWT audience is required');
-    this.secret = secret;
-    this.issuer = issuer;
-    this.audience = audience;
+export interface JwtAuthenticatorOptions {
+  secret?: string;
+  secrets?: readonly string[];
+  keys?: readonly JwtVerificationKey[];
+  currentKeyId?: string;
+  issuer?: string;
+  audience?: string;
+  maxTokenAge?: string | number;
+  clockTolerance?: string | number;
+}
+
+export class JwtAuthenticator implements Authenticator {
+  private readonly issuer: string;
+  private readonly audience: string;
+  private readonly keys: Array<{ kid: string; secret: string; verifier: Uint8Array }>;
+  private readonly maxTokenAge: string | number;
+  private readonly clockTolerance: string | number;
+
+  constructor(
+    secretOrConfig: string | readonly string[] | readonly JwtVerificationKey[] | JwtAuthenticatorOptions = '',
+    issuer?: string,
+    audience?: string,
+    options?: JwtAuthenticatorOptions
+  ) {
+    let config: JwtAuthenticatorOptions;
+    if (typeof secretOrConfig === 'string' || Array.isArray(secretOrConfig)) {
+      config = {
+        ...(Array.isArray(secretOrConfig)
+          ? { keys: secretOrConfig.map((entry, index) =>
+              typeof entry === 'string'
+                ? { kid: `key-${index}`, secret: entry }
+                : entry
+            ) }
+          : { secret: secretOrConfig }),
+        issuer,
+        audience,
+        ...options,
+      };
+    } else {
+      config = secretOrConfig as JwtAuthenticatorOptions;
+    }
+
+    if (!config.issuer || config.issuer.trim() === '') {
+      throw new Error('JWT issuer is required');
+    }
+    if (!config.audience || config.audience.trim() === '') {
+      throw new Error('JWT audience is required');
+    }
+
+    const normalizedKeys = this.normalizeKeys(config).map((key, index) => ({
+      kid: key.kid && key.kid.trim() !== '' ? key.kid.trim() : `key-${index}`,
+      secret: key.secret,
+    }));
+    if (normalizedKeys.length === 0) {
+      throw new Error('JWT signing secret is required');
+    }
+
+    for (const key of normalizedKeys) {
+      if (typeof key.secret !== 'string' || key.secret.trim() === '') {
+        throw new Error('JWT signing secret is required');
+      }
+      if (Buffer.from(key.secret, 'utf8').length < 32) {
+        throw new Error('JWT signing secret must contain at least 32 bytes of key material');
+      }
+    }
+
+    const uniqueKids = new Set(normalizedKeys.map((key) => key.kid));
+    if (uniqueKids.size !== normalizedKeys.length) {
+      throw new Error('JWT verification key identifiers must be unique');
+    }
+
+    this.issuer = config.issuer.trim();
+    this.audience = config.audience.trim();
+    this.keys = normalizedKeys.map((key) => ({
+      kid: key.kid,
+      secret: key.secret,
+      verifier: new TextEncoder().encode(key.secret),
+    }));
+    this.maxTokenAge = config.maxTokenAge ?? '1h';
+    this.clockTolerance = config.clockTolerance ?? 0;
+  }
+
+  private normalizeKeys(config: JwtAuthenticatorOptions): JwtVerificationKey[] {
+    if (Array.isArray(config.keys) && config.keys.length > 0) {
+      return config.keys as JwtVerificationKey[];
+    }
+    if (Array.isArray(config.secrets) && config.secrets.length > 0) {
+      return config.secrets.map((secret, index) => ({ kid: `key-${index}`, secret }));
+    }
+    if (typeof config.secret === 'string' && config.secret.trim() !== '') {
+      return [{ kid: config.currentKeyId?.trim() || 'default', secret: config.secret }];
+    }
+    return [];
+  }
+
+  private selectKey(kid: string | undefined): { kid: string; verifier: Uint8Array } | undefined {
+    if (this.keys.length === 1 && kid === undefined) {
+      return this.keys[0];
+    }
+    if (kid === undefined) {
+      // Tokens without a kid are accepted only under the primary key.
+      return this.keys[0];
+    }
+    return this.keys.find((key) => key.kid === kid);
   }
 
   async authenticate(credentials: ServiceCredentials): Promise<AuthenticationResult> {
-    if (credentials.type !== 'jwt' || !credentials.jwtSecret) {
+    if (credentials.type !== 'jwt' || typeof credentials.jwtSecret !== 'string' || credentials.jwtSecret.trim() === '') {
       return { authenticated: false, error: 'Invalid credential type for JWT authenticator' };
     }
 
     try {
+      let protectedHeader: { alg?: string; kid?: string };
+      try {
+        const { decodeProtectedHeader } = await import('jose');
+        protectedHeader = decodeProtectedHeader(credentials.jwtSecret);
+      } catch {
+        return { authenticated: false, error: 'Invalid token' };
+      }
+
+      if (protectedHeader.alg !== 'HS256') {
+        return { authenticated: false, error: 'Unsupported signing algorithm' };
+      }
+
+      const key = this.selectKey(protectedHeader.kid);
+      if (!key) {
+        return { authenticated: false, error: 'Invalid token' };
+      }
+
       const { jwtVerify } = await import('jose');
       const { payload } = await jwtVerify(
         credentials.jwtSecret,
-        new TextEncoder().encode(this.secret),
-        { issuer: this.issuer, audience: this.audience }
+        key.verifier,
+        {
+          issuer: this.issuer,
+          audience: this.audience,
+          algorithms: ['HS256'],
+          maxTokenAge: this.maxTokenAge,
+          clockTolerance: this.clockTolerance,
+          requiredClaims: ['exp', 'iat', 'nbf', 'sub'],
+        }
       );
 
-      if (!payload.sub || typeof payload.sub !== 'string' || payload.sub.trim() === '') {
+      if (typeof payload.sub !== 'string' || payload.sub.trim() === '') {
         return { authenticated: false, error: 'Missing or invalid subject claim' };
       }
 
       return {
         authenticated: true,
         identity: {
-          serviceId: payload.sub,
-          serviceName: (payload as Record<string, unknown>)['name'] as string,
-          instanceId: payload.jti as string,
+          serviceId: payload.sub.trim(),
+          serviceName: typeof (payload as Record<string, unknown>)['name'] === 'string'
+            ? (payload as Record<string, unknown>)['name'] as string
+            : payload.sub.trim(),
+          instanceId: typeof payload.jti === 'string' ? payload.jti : crypto.randomUUID(),
           credentials,
           getRegistration: () => { throw new Error('NotSupportedError: getRegistration is not supported by authenticator identity'); },
           sign: async () => { throw new Error('NotSupportedError: signing is not supported by authenticator identity'); },
           verify: async () => { throw new Error('NotSupportedError: verification is not supported by authenticator identity'); },
         },
       };
-    } catch (err) {
-      return { authenticated: false, error: (err as Error).message };
+    } catch (_err) {
+      return { authenticated: false, error: 'Invalid token' };
     }
   }
 
   async validateIdentity(identity: ServiceIdentity): Promise<boolean> {
-    if (identity.credentials.type !== 'jwt' || !identity.credentials.jwtSecret) {
+    if (identity.credentials.type !== 'jwt' || typeof identity.credentials.jwtSecret !== 'string' || identity.credentials.jwtSecret.trim() === '') {
       return false;
     }
 
-    try {
-      const { jwtVerify } = await import('jose');
-      await jwtVerify(
-        identity.credentials.jwtSecret,
-        new TextEncoder().encode(this.secret),
-        { issuer: this.issuer, audience: this.audience }
-      );
-      return true;
-    } catch {
-      return false;
+    const result = await this.authenticate(identity.credentials);
+    return result.authenticated;
+  }
+
+  get verificationKeyIds(): readonly string[] {
+    return this.keys.map((key) => key.kid);
+  }
+
+  addVerificationKey(kid: string, secret: string): void {
+    if (typeof kid !== 'string' || kid.trim() === '') {
+      throw new Error('JWT key identifier is required');
+    }
+    const normalizedKid = kid.trim();
+    if (this.keys.some((key) => key.kid === normalizedKid)) {
+      throw new Error('JWT key identifier already exists');
+    }
+    if (typeof secret !== 'string' || secret.trim() === '' || Buffer.from(secret, 'utf8').length < 32) {
+      throw new Error('JWT signing secret must contain at least 32 bytes of key material');
+    }
+    this.keys.push({ kid: normalizedKid, secret, verifier: new TextEncoder().encode(secret) });
+  }
+
+  removeVerificationKey(kid: string): void {
+    if (this.keys.length <= 1) {
+      throw new Error('At least one JWT verification key must remain');
+    }
+    const normalizedKid = typeof kid === 'string' ? kid.trim() : '';
+    const index = this.keys.findIndex((key) => key.kid === normalizedKid);
+    if (index >= 0) {
+      this.keys.splice(index, 1);
     }
   }
 }

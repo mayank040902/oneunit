@@ -39,6 +39,34 @@ export interface DecryptionInput {
   associatedData?: Uint8Array;
 }
 
+const encryptedEnvelopeSchema = z.strictObject({
+  version: z.literal(1),
+  cipherSuite: z.enum(['aes-256-gcm', 'chacha20-poly1305']),
+  keyId: z.string().min(1),
+  nonce: z.instanceof(Uint8Array),
+  ciphertext: z.instanceof(Uint8Array),
+  tag: z.instanceof(Uint8Array),
+  authenticatedMetadata: z.instanceof(Uint8Array),
+  signature: z.instanceof(Uint8Array).optional(),
+});
+
+const authenticatedMetadataSchema = z.strictObject({
+  version: z.literal(1),
+  messageId: z.string().min(1),
+  type: z.string().min(1),
+  schemaVersion: z.number().int().nonnegative(),
+  source: z.strictObject({
+    serviceId: z.string().min(1),
+    instanceId: z.string().min(1),
+  }),
+  destination: z.strictObject({
+    serviceId: z.string().min(1),
+  }).optional(),
+  timestamp: z.number().finite(),
+  correlationId: z.string().min(1).optional(),
+  traceContext: z.record(z.string()).optional(),
+});
+
 export class EncryptionService {
   private cryptoKey: CryptoKey | null;
   private rawKey: Uint8Array;
@@ -262,14 +290,23 @@ export class EncryptionService {
   // original message envelope. Throws when the tag or
   // the metadata authentication fails.
   async decryptEnvelope<TPayload = unknown>(
-    encrypted: EncryptedEnvelope
+    encrypted: EncryptedEnvelope,
+    payloadSchema: z.ZodType<TPayload> = z.unknown() as z.ZodType<TPayload>
   ): Promise<MessageEnvelope<TPayload>> {
-    if (encrypted.version !== 1) {
-      throw new Error(`Unsupported encrypted envelope version: ${encrypted.version}`);
+    if (!encrypted || typeof encrypted.version !== 'number' || encrypted.version !== 1) {
+      throw new Error(`Unsupported encrypted envelope version: ${encrypted?.version}`);
     }
-    if (encrypted.cipherSuite !== this.algorithmId) {
+
+    const envelopeResult = encryptedEnvelopeSchema.safeParse(encrypted);
+    if (!envelopeResult.success) {
+      throw new Error('Invalid encrypted envelope');
+    }
+    if (envelopeResult.data.version !== 1) {
+      throw new Error('Unsupported encrypted envelope version: 2');
+    }
+    if (envelopeResult.data.cipherSuite !== this.algorithmId) {
       throw new Error(
-        `Cipher suite mismatch: envelope requires ${encrypted.cipherSuite}, service uses ${this.algorithmId}`
+        `Cipher suite mismatch: envelope requires ${envelopeResult.data.cipherSuite}, service uses ${this.algorithmId}`
       );
     }
 
@@ -280,8 +317,26 @@ export class EncryptionService {
       associatedData: encrypted.authenticatedMetadata,
     });
 
-    const metadata = z.any().parse(JSON.parse(new TextDecoder().decode(encrypted.authenticatedMetadata)));
-    const payload = JSON.parse(new TextDecoder().decode(plaintext)) as TPayload;
+    let metadata: z.infer<typeof authenticatedMetadataSchema>;
+    try {
+      metadata = authenticatedMetadataSchema.parse(
+        JSON.parse(new TextDecoder().decode(encrypted.authenticatedMetadata))
+      );
+    } catch {
+      throw new Error('Invalid authenticated envelope metadata');
+    }
+
+    let parsedPayload: unknown;
+    try {
+      parsedPayload = JSON.parse(new TextDecoder().decode(plaintext));
+    } catch {
+      throw new Error('Invalid JSON payload');
+    }
+
+    const payloadResult = payloadSchema.safeParse(parsedPayload);
+    if (!payloadResult.success) {
+      throw new Error('Payload validation failed');
+    }
 
     return {
       version: metadata.version,
@@ -293,7 +348,7 @@ export class EncryptionService {
       timestamp: metadata.timestamp,
       correlationId: metadata.correlationId,
       traceContext: metadata.traceContext,
-      payload,
+      payload: payloadResult.data,
     };
   }
 }

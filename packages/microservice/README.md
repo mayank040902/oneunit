@@ -76,6 +76,7 @@ Provides a consistent application API and shared infrastructure for configuratio
 - **Signing** — Ed25519 and RSA (RSASSA-PKCS1-v1_5, 2048-bit default)
 - **Key Rotation** — per-service interval timers (24 h default), versioned rotation events; `gracePeriodMs`/`maxVersions` are delegated to the key provider via `setRetentionPolicy` (provider-enforced retention); `autoRotate` gates the timer
 - **Replay Protection** — per-source sliding windows, TTL 5 min, future-skew tolerance 10 s, max 100k entries per source (oldest 50% evicted when full)
+- **JWT Authenticator Hardening (PR-009)** — HS256 secrets require at least 32 UTF-8 bytes; only HS256 is accepted; `exp`, `iat`, `nbf`, and non-empty `sub` are enforced with an explicit clock tolerance and default one-hour `maxTokenAge`; multiple verification keys are supported for rotation by `kid`.
 - **API-Key Authenticator Hardening (PR-008)** — `ApiKeyAuthenticator` now stores HMAC-SHA256 verifiers under an instance-held 32-byte secret instead of raw keys, validates empty/malformed keys, compares verifiers with `crypto.timingSafeEqual`, and applies bounded in-process retry lockouts (default 5 failures, 15-second lockout, bounded failure-state map).
 - **Transport Security Dispatch (PR-004)** — supported inbound adapter paths can route through the shared `SecuredDispatcher` (`MicroserviceServer.handle()`, supported adapter `handle()` / consumer callback entry points) for authentication, authorization, audit, tracing, and metrics. Security is explicit: configure dependencies or use an intentionally unprotected path.
 
@@ -476,11 +477,11 @@ pnpm run lint       # eslint src test
 
 ### Raw TCP frames
 
-Raw TCP frames that do not pass through the adapter's secured `handle()` method may bypass the PR-004 security boundary. The secured path covers the supported `TcpTransport.handle()` method-registry boundary; callers must route protected operations through that supported secured entry point if they expect the dispatcher to enforce configured authentication and authorization. Do not assume that all raw TCP traffic is secured.
+Raw TCP frames are parsed by the TCP adapter and dispatched through the shared `SecuredDispatcher` before protected application handlers execute. Framing, lifecycle, backpressure handling, malformed frames, and control-frame handling remain adapter-level concerns, and control frames do not dispatch protected application work.
 
 ### tRPC HTTP procedures
 
-tRPC HTTP procedures that bypass the adapter's secured `handle()` boundary may not receive the PR-004 dispatcher enforcement. The secured entry point is `TrpcTransport.handle()` and its supported adapter wiring. Alternate execution paths, including direct router procedure execution through hosted HTTP, must be routed through the secured boundary or protected separately. Do not assume that every tRPC HTTP procedure is automatically protected by this integration.
+Hosted tRPC HTTP procedures are rebuilt through the adapter's secured dispatch boundary. Every procedure passes authentication and authorization before its resolver runs unless it is explicitly marked as public through supported metadata or a narrowly scoped health-check exemption. Unknown or unclassified procedures fail closed in required-security mode. Batched and nested procedure paths use the same boundary.
 
 ### Additional known limitations
 
