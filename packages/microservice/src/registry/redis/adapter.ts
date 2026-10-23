@@ -47,6 +47,21 @@ export class RedisRegistryStore implements RegistryStore {
     return this.driverAdapter.set(leaseId, instance);
   }
 
+  async setIfAbsent(leaseId: string, instance: ServiceInstance): Promise<boolean> {
+    if (!this.driverAdapter) {
+      throw new Error('Redis store not connected');
+    }
+    if (typeof this.driverAdapter.setIfAbsent === 'function') {
+      return await this.driverAdapter.setIfAbsent(leaseId, instance);
+    }
+    const existing = await this.driverAdapter.get(leaseId);
+    if (existing && existing.leaseExpiresAt > Date.now()) {
+      return false;
+    }
+    await this.driverAdapter.set(leaseId, instance);
+    return true;
+  }
+
   async get(leaseId: string): Promise<ServiceInstance | null> {
     if (!this.driverAdapter) {
       throw new Error('Redis store not connected');

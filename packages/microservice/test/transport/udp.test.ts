@@ -156,3 +156,67 @@ describe('UdpTransport.healthCheck', () => {
     }
   });
 });
+import * as dgram from 'dgram';
+
+describe('UdpTransport security dispatch', () => {
+  it('does not invoke the message handler when authentication is required but credentials are missing', async () => {
+    const handler = vi.fn();
+    const authenticator = { authenticate: vi.fn().mockResolvedValue({ authenticated: false, error: 'missing' }) };
+    const authz = { evaluate: vi.fn().mockResolvedValue({ allowed: true }) };
+    const transport = new (UdpTransport as any)({ host: '127.0.0.1', port: 0 }, { authorization: authz, authenticator });
+    transport.onMessage(handler);
+    await transport.start();
+    const port = (transport as any).socket.address().port;
+
+    const client = dgram.createSocket('udp4');
+    await new Promise<void>((resolve, reject) => {
+      client.send(Buffer.from(JSON.stringify({ value: 1 })), port, '127.0.0.1', (err) => (err ? reject(err) : resolve()));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await transport.close();
+    client.close();
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(authenticator.authenticate).not.toHaveBeenCalled();
+  });
+
+  it('invokes the message handler for a valid authenticated and authorized datagram', async () => {
+    const handler = vi.fn();
+    const creds = { type: 'api-key', apiKey: 'valid', issuedAt: Date.now(), issuer: 'x' };
+    const authenticator = { authenticate: vi.fn().mockResolvedValue({ authenticated: true, identity: { serviceId: 'caller', serviceName: 'caller', instanceId: 'i', credentials: creds, getRegistration: () => ({} as any), sign: async () => new Uint8Array(), verify: async () => true } }) };
+    const authz = { evaluate: vi.fn().mockResolvedValue({ allowed: true }) };
+    const transport = new (UdpTransport as any)({ host: '127.0.0.1', port: 0 }, { authorization: authz, authenticator });
+    transport.onMessage(handler);
+    await transport.start();
+    const port = (transport as any).socket.address().port;
+
+    const client = dgram.createSocket('udp4');
+    await new Promise<void>((resolve, reject) => {
+      client.send(Buffer.from(JSON.stringify({ credentials: creds, value: 1 })), port, '127.0.0.1', (err) => (err ? reject(err) : resolve()));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await transport.close();
+    client.close();
+
+    expect(handler).toHaveBeenCalled();
+    expect(authz.evaluate).toHaveBeenCalled();
+  });
+
+  it('does not invoke the handler in required-security mode without security dependencies', async () => {
+    const handler = vi.fn();
+    const transport = new (UdpTransport as any)({ host: '127.0.0.1', port: 0, securityRequired: true });
+    transport.onMessage(handler);
+    await transport.start();
+    const port = (transport as any).socket.address().port;
+
+    const client = dgram.createSocket('udp4');
+    await new Promise<void>((resolve, reject) => {
+      client.send(Buffer.from(JSON.stringify({ value: 1 })), port, '127.0.0.1', (err) => (err ? reject(err) : resolve()));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await transport.close();
+    client.close();
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+});

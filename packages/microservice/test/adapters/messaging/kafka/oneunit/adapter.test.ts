@@ -3,10 +3,10 @@ import { KafkaAdapterConfig } from '../../../../../src/adapters/messaging/kafka/
 import { KafkaDriverAdapter } from '../../../../../src/adapters/messaging/kafka/types.js';
 
 // Create mock functions
-const mockGetProducer = vi.fn();
 const mockConsume = vi.fn();
 const mockDisconnect = vi.fn();
 const mockCreateKafkaClient = vi.fn();
+const mockSend = vi.fn();
 
 // Mock the module
 vi.mock('@oneunit/kafka', () => ({
@@ -31,22 +31,17 @@ function makeConfig(overrides: Partial<KafkaAdapterConfig> = {}): KafkaAdapterCo
 describe('OneUnit Kafka Driver Adapter', () => {
   let adapter: KafkaDriverAdapter;
   let mockClient: any;
-  let mockProducer: any;
   let mockConsumer: any;
 
   beforeEach(() => {
     vi.clearAllMocks();
-
-    mockProducer = {
-      send: vi.fn().mockResolvedValue(undefined),
-    };
 
     mockConsumer = {
       disconnect: vi.fn().mockResolvedValue(undefined),
     };
 
     mockClient = {
-      getProducer: mockGetProducer.mockResolvedValue(mockProducer),
+      send: mockSend.mockResolvedValue(undefined),
       consume: mockConsume.mockResolvedValue(mockConsumer),
       disconnect: mockDisconnect.mockResolvedValue(undefined),
     };
@@ -80,7 +75,6 @@ describe('OneUnit Kafka Driver Adapter', () => {
       },
       expect.any(Object)
     );
-    expect(mockGetProducer).toHaveBeenCalledWith({});
   });
 
   it('should pass security config to client', async () => {
@@ -110,10 +104,10 @@ describe('OneUnit Kafka Driver Adapter', () => {
     );
   });
 
-  it('should pass producer config to getProducer', async () => {
+  it('should accept producer config without calling getProducer', async () => {
     adapter = await createKafkaAdapter(makeConfig({ producer: { acks: 'all' } }), (await import('@oneunit/kafka')) as any);
 
-    expect(mockGetProducer).toHaveBeenCalledWith({ acks: 'all' });
+    expect(mockCreateKafkaClient).toHaveBeenCalled();
   });
 
   it('should start without additional work (already initialized)', async () => {
@@ -163,7 +157,8 @@ describe('OneUnit Kafka Driver Adapter', () => {
 
     await adapter.publish('test-topic', { key: 'value' }, { key: 'message-key' });
 
-    expect(mockProducer.send).toHaveBeenCalledWith('oneunit.test-topic', { key: 'value' }, {
+    expect(mockSend).toHaveBeenCalledWith('oneunit.test-topic', { key: 'value' }, {
+      producer: {},
       send: {
         key: 'message-key',
         headers: undefined,
@@ -177,7 +172,8 @@ describe('OneUnit Kafka Driver Adapter', () => {
 
     await adapter.publish('test-topic', { key: 'value' }, { headers: { 'correlation-id': '123' } });
 
-    expect(mockProducer.send).toHaveBeenCalledWith('oneunit.test-topic', { key: 'value' }, {
+    expect(mockSend).toHaveBeenCalledWith('oneunit.test-topic', { key: 'value' }, {
+      producer: {},
       send: {
         key: undefined,
         headers: { 'correlation-id': '123' },
@@ -190,7 +186,8 @@ describe('OneUnit Kafka Driver Adapter', () => {
     // OneUnit adapter initializes producer in constructor, no start() needed
     await adapter.publish('test-topic', { key: 'value' });
 
-    expect(mockProducer.send).toHaveBeenCalledWith('oneunit.test-topic', { key: 'value' }, {
+    expect(mockSend).toHaveBeenCalledWith('oneunit.test-topic', { key: 'value' }, {
+      producer: {},
       send: {
         key: undefined,
         headers: undefined,

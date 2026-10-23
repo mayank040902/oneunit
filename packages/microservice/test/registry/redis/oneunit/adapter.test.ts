@@ -302,36 +302,24 @@ describe('OneUnit Redis Driver Adapter', () => {
   it('should update health on the canonical record', async () => {
     store = await createRedisStore(makeConfig(), mockOneUnitModule);
 
-    const instance = makeInstance();
     mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1']]);
-    mockOneUnitRedisClient.multi.mockReturnThis();
-    mockOneUnitRedisClient.get.mockReturnThis();
-    mockOneUnitRedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+    mockOneUnitRedisClient.eval.mockResolvedValueOnce('1');
 
     const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
 
     expect(updated).toBe(true);
-    expect(mockOneUnitRedisClient.set).toHaveBeenCalledWith(
-      'microservice:registry:lease-1',
-      expect.stringContaining('"status":"degraded"'),
-      'EX',
-      expect.any(Number),
-    );
+    expect(mockOneUnitRedisClient.eval).toHaveBeenCalled();
   });
 
   it('should return false when updating health for an unknown instance', async () => {
     store = await createRedisStore(makeConfig(), mockOneUnitModule);
 
-    const instance = makeInstance({ serviceId: 'svc-other' });
     mockOneUnitRedisClient.scan.mockResolvedValueOnce(['0', ['microservice:registry:lease-1']]);
-    mockOneUnitRedisClient.multi.mockReturnThis();
-    mockOneUnitRedisClient.get.mockReturnThis();
-    mockOneUnitRedisClient.exec.mockResolvedValueOnce([[null, JSON.stringify(instance)]]);
+    mockOneUnitRedisClient.eval.mockResolvedValueOnce('0');
 
     const updated = await store.updateInstanceHealth('svc-1', 'inst-1', 'degraded', Date.now());
 
     expect(updated).toBe(false);
-    expect(mockOneUnitRedisClient.set).not.toHaveBeenCalled();
   });
 
   it('should return false when updating health with no keys', async () => {

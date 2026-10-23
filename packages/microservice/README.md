@@ -54,7 +54,7 @@ Provides a consistent application API and shared infrastructure for configuratio
 
 **Network (raw sockets):**
 - **TCP** — length-prefixed framing (4-byte big-endian), frame-size enforcement (16 MiB default) **before** buffer slicing, partial header/payload handling, TLS/mTLS (`ca` enables `requestCert`/`rejectUnauthorized`), `connectionTimeout` (5 s default). **Not implemented:** `idleTimeout` and explicit backpressure/`drain` handling
-- **UDP** — datagram transport, max packet size 65,507 enforced before send, multicast with configurable TTL (default 1) and loopback
+- **UDP** — datagram transport, max packet size 65,507 enforced on datagrams; shared `SecuredDispatcher` integration when configured, with required-security fail-closed behavior. Multicast with configurable TTL (default 1) and loopback
 
 **Messaging:**
 - **Kafka** — dual driver (`oneunit` | `kafkajs` | `auto`), topic prefixing (`{prefix}.{topic}`), SASL/SSL, consumer groups (default `{clientId}-{topic}`). The `@oneunit/kafka` driver supports explicit `ack()`/`nak()` after handler completion; the KafkaJS driver serializes with `JSON.stringify` and relies on KafkaJS-native auto-ack
@@ -341,7 +341,7 @@ See `config.example.json` for a complete example.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical design:
+See [architecture documentation](docs/architecture.md) for the full technical design:
 - Layered architecture and module ownership (§3)
 - Core composition root, lifecycle state machine, capability contracts, error model (§4)
 - Configuration system and loading precedence (§5)

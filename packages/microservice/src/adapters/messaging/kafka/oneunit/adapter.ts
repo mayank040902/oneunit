@@ -5,7 +5,7 @@ import { PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabil
 export interface OneUnitKafkaClientConfig {
   brokers: string[];
   clientId: string;
-  ssl?: boolean;
+  ssl?: boolean | Record<string, unknown>;
   sasl?: { mechanism: string; username: string; password: string };
 }
 
@@ -39,6 +39,7 @@ export interface OneUnitKafkaModule {
 
 export interface OneUnitKafkaClient {
   getProducer(config?: OneUnitKafkaProducerConfig): Promise<OneUnitKafkaProducer>;
+  send(topic: string, messages: unknown, options?: { producer?: unknown; send?: { key?: string; headers?: Record<string, string> } }): Promise<unknown>;
   consume(topic: string, handler: (payload: OneUnitKafkaPayload) => Promise<void>, options?: OneUnitKafkaConsumerConfig): Promise<OneUnitKafkaConsumer>;
   disconnect(): Promise<void>;
 }
@@ -65,13 +66,23 @@ export async function createKafkaAdapter(
   oneUnitKafka: OneUnitKafkaModule,
   logger?: Logger
 ): Promise<KafkaDriverAdapter> {
+  const securityAny = (config.security ?? {}) as {
+    ssl?: boolean | Record<string, unknown>;
+    sasl?: { mechanism: string; username: string; password: string };
+    ca?: string;
+    cert?: string;
+    key?: string;
+    rejectUnauthorized?: boolean;
+  };
   const client = await oneUnitKafka.createKafkaClient({
     brokers: config.brokers,
     clientId: config.clientId,
-    ...(config.security && { ssl: config.security.ssl, sasl: config.security.sasl }),
+    ...(config.security && { ssl: securityAny.ssl, sasl: securityAny.sasl }),
+    ...(securityAny.ca !== undefined && { ca: securityAny.ca }),
+    ...(securityAny.cert !== undefined && { cert: securityAny.cert }),
+    ...(securityAny.key !== undefined && { key: securityAny.key }),
+    ...(securityAny.rejectUnauthorized !== undefined && { rejectUnauthorized: securityAny.rejectUnauthorized }),
   }, { logger });
-
-  const producer = await client.getProducer(config.producer);
 
   const consumers: Map<string, OneUnitKafkaConsumer> = new Map();
   let connected = true;
@@ -118,7 +129,8 @@ export async function createKafkaAdapter(
 
     async publish(topic: string, message: unknown, options: PublishOptions = {}): Promise<void> {
       const fullTopic = `${config.topics.prefix}.${topic}`;
-      await producer.send(fullTopic, message, {
+      await client.send(fullTopic, message, {
+        producer: config.producer,
         send: {
           key: options.key,
           headers: options.headers,
@@ -157,13 +169,13 @@ export async function createKafkaAdapter(
           if (deliveryCount >= Math.max(1, maxAttempts)) {
             if (deadLetterTopic) {
               try {
-                await (producer as { send: (...args: unknown[]) => Promise<void> }).send(deadLetterTopic, JSON.stringify({
+                await client.send(deadLetterTopic as string, JSON.stringify({
                   topic: fullTopic,
                   partition: payload.partition,
                   offset: payload.offset,
                   error: err instanceof Error ? err.message : String(err),
                   attempts: deliveryCount,
-                }));
+                }) as unknown, { send: { headers: undefined } });
                 if (payload.ack) await payload.ack();
               } catch (deliveryError) {
                 logger?.error?.(deliveryError instanceof Error ? deliveryError : new Error(String(deliveryError)), `Failed to publish Kafka message to dead-letter topic ${deadLetterTopic}`);

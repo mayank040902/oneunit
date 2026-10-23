@@ -42,11 +42,23 @@ export interface DecryptionInput {
 const encryptedEnvelopeSchema = z.strictObject({
   version: z.literal(1),
   cipherSuite: z.enum(['aes-256-gcm', 'chacha20-poly1305']),
-  keyId: z.string().min(1),
-  nonce: z.instanceof(Uint8Array),
-  ciphertext: z.instanceof(Uint8Array),
-  tag: z.instanceof(Uint8Array),
-  authenticatedMetadata: z.instanceof(Uint8Array),
+  keyId: z.string().min(1).max(256),
+  nonce: z.instanceof(Uint8Array).refine(
+    (value) => value.length === 12,
+    'nonce must be 12 bytes',
+  ),
+  ciphertext: z.instanceof(Uint8Array).refine(
+    (value) => value.length <= MAX_ENCRYPTION_INPUT_BYTES,
+    'ciphertext exceeds maximum size',
+  ),
+  tag: z.instanceof(Uint8Array).refine(
+    (value) => value.length === 16,
+    'tag must be 16 bytes',
+  ),
+  authenticatedMetadata: z.instanceof(Uint8Array).refine(
+    (value) => value.length <= MAX_AUTHENTICATED_METADATA_BYTES,
+    'authenticated metadata exceeds maximum size',
+  ),
   signature: z.instanceof(Uint8Array).optional(),
 });
 
@@ -67,6 +79,56 @@ const authenticatedMetadataSchema = z.strictObject({
   traceContext: z.record(z.string()).optional(),
 });
 
+export const MAX_ENCRYPTION_INPUT_BYTES = 16 * 1024 * 1024;
+export const MAX_AUTHENTICATED_METADATA_BYTES = 1 * 1024 * 1024;
+
+
+function isUint8Array(value: unknown): value is Uint8Array {
+  return value instanceof Uint8Array;
+}
+
+function isEncryptionAlgorithmId(value: unknown): value is EncryptionAlgorithmId {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, value);
+}
+
+export function buildEnvelopeSignatureData(
+  encrypted: EncryptedEnvelope,
+  signatureAlgorithm: string = 'envelope-signature'
+): Uint8Array {
+  const parts: Uint8Array[] = [];
+  const text = new TextEncoder();
+  const pushText = (value: string) => {
+    const bytes = text.encode(value);
+    const len = new Uint8Array(4);
+    new DataView(len.buffer).setUint32(0, bytes.length, false);
+    parts.push(len, bytes);
+  };
+  const pushBytes = (value: Uint8Array) => {
+    const len = new Uint8Array(4);
+    new DataView(len.buffer).setUint32(0, value.length, false);
+    parts.push(len, value);
+  };
+
+  pushText('oneunit-microservice-envelope-signature-v1');
+  pushText(signatureAlgorithm);
+  pushText(encrypted.cipherSuite);
+  pushText(encrypted.keyId);
+  pushBytes(encrypted.nonce);
+  pushBytes(encrypted.ciphertext);
+  pushBytes(encrypted.tag);
+  pushBytes(encrypted.authenticatedMetadata);
+
+  let total = 0;
+  for (const part of parts) total += part.length;
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+}
+
 export class EncryptionService {
   private cryptoKey: CryptoKey | null;
   private rawKey: Uint8Array;
@@ -84,11 +146,14 @@ export class EncryptionService {
     algorithm: 'aes-256-gcm' | 'chacha20-poly1305',
     keyMaterial: Uint8Array
   ): Promise<EncryptionService> {
-    if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
+    if (!isEncryptionAlgorithmId(algorithm)) {
       throw new Error(`Unsupported algorithm: ${algorithm}`);
     }
-     if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
-      throw new Error(`Unsupported algorithm: ${algorithm}`);
+    if (!isUint8Array(keyMaterial)) {
+      throw new Error('keyMaterial must be a Uint8Array');
+    }
+    if (keyMaterial.length === 0) {
+      throw new Error('keyMaterial must not be empty');
     }
     const algo = SUPPORTED_ALGORITHMS[algorithm];
     if (!algo) {
@@ -123,14 +188,11 @@ export class EncryptionService {
       ['encrypt', 'decrypt']
     );
 
-    return new EncryptionService(cryptoKey, algo, new Uint8Array(keyMaterial), algorithm);
+    return new EncryptionService(cryptoKey, algo, new Uint8Array(0), algorithm);
   }
 
   static async generateKey(algorithm: 'aes-256-gcm' | 'chacha20-poly1305'): Promise<Uint8Array> {
-    if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
-      throw new Error(`Unsupported algorithm: ${algorithm}`);
-    }
-     if (!Object.prototype.hasOwnProperty.call(SUPPORTED_ALGORITHMS, algorithm)) {
+    if (!isEncryptionAlgorithmId(algorithm)) {
       throw new Error(`Unsupported algorithm: ${algorithm}`);
     }
     const algo = SUPPORTED_ALGORITHMS[algorithm];
@@ -156,6 +218,23 @@ export class EncryptionService {
   }
 
   async encrypt(plaintext: Uint8Array, associatedData?: Uint8Array): Promise<EncryptionResult> {
+    if (!isUint8Array(plaintext)) {
+      throw new Error('plaintext must be a Uint8Array');
+    }
+    if (plaintext.length > MAX_ENCRYPTION_INPUT_BYTES) {
+      throw new Error(`plaintext exceeds maximum size of ${MAX_ENCRYPTION_INPUT_BYTES} bytes`);
+    }
+    if (associatedData !== undefined) {
+      if (!isUint8Array(associatedData)) {
+        throw new Error('associatedData must be a Uint8Array');
+      }
+      if (associatedData.length > MAX_AUTHENTICATED_METADATA_BYTES) {
+        throw new Error(
+          `associatedData exceeds maximum size of ${MAX_AUTHENTICATED_METADATA_BYTES} bytes`,
+        );
+      }
+    }
+
     const nonce = crypto.getRandomValues(new Uint8Array(this.algorithm.nonceLength));
 
     if (this.algorithm.name === 'CHACHA20-POLY1305') {
@@ -200,9 +279,37 @@ export class EncryptionService {
   }
 
   async decrypt(input: DecryptionInput): Promise<Uint8Array> {
-    const combined = new Uint8Array(input.ciphertext.length + input.tag.length);
-    combined.set(input.ciphertext, 0);
-    combined.set(input.tag, input.ciphertext.length);
+    if (!input || typeof input !== 'object') {
+      throw new Error('Decryption input must be an object');
+    }
+    if (!isUint8Array(input.ciphertext)) {
+      throw new Error('ciphertext must be a Uint8Array');
+    }
+    if (!isUint8Array(input.nonce)) {
+      throw new Error('nonce must be a Uint8Array');
+    }
+    if (!isUint8Array(input.tag)) {
+      throw new Error('tag must be a Uint8Array');
+    }
+    if (input.nonce.length !== this.algorithm.nonceLength) {
+      throw new Error(`nonce must be ${this.algorithm.nonceLength} bytes`);
+    }
+    if (input.tag.length !== this.algorithm.tagLength) {
+      throw new Error(`tag must be ${this.algorithm.tagLength} bytes`);
+    }
+    if (input.ciphertext.length > MAX_ENCRYPTION_INPUT_BYTES) {
+      throw new Error(`ciphertext exceeds maximum size of ${MAX_ENCRYPTION_INPUT_BYTES} bytes`);
+    }
+    if (input.associatedData !== undefined) {
+      if (!isUint8Array(input.associatedData)) {
+        throw new Error('associatedData must be a Uint8Array');
+      }
+      if (input.associatedData.length > MAX_AUTHENTICATED_METADATA_BYTES) {
+        throw new Error(
+          `associatedData exceeds maximum size of ${MAX_AUTHENTICATED_METADATA_BYTES} bytes`,
+        );
+      }
+    }
 
     if (this.algorithm.name === 'CHACHA20-POLY1305') {
       const decipher = createDecipheriv(
@@ -216,25 +323,40 @@ export class EncryptionService {
         });
       }
       decipher.setAuthTag(Buffer.from(input.tag));
-      const plaintext = Buffer.concat([
-        decipher.update(Buffer.from(input.ciphertext)),
-        decipher.final(),
-      ]);
-      return new Uint8Array(plaintext);
+      try {
+        const plaintext = Buffer.concat([
+          decipher.update(Buffer.from(input.ciphertext)),
+          decipher.final(),
+        ]);
+        return new Uint8Array(plaintext);
+      } catch {
+        throw new Error('Decryption failed');
+      }
     }
 
-    const algorithmParams: AesGcmParams = { name: this.algorithm.name, iv: input.nonce as BufferSource, tagLength: this.algorithm.tagLength * 8 };
+    const combined = new Uint8Array(input.ciphertext.length + input.tag.length);
+    combined.set(input.ciphertext, 0);
+    combined.set(input.tag, input.ciphertext.length);
+
+    const algorithmParams: AesGcmParams = {
+      name: this.algorithm.name,
+      iv: input.nonce as BufferSource,
+      tagLength: this.algorithm.tagLength * 8,
+    };
     if (input.associatedData) {
       algorithmParams.additionalData = input.associatedData as BufferSource;
     }
 
-    const decrypted = await crypto.subtle.decrypt(
-      algorithmParams,
-      this.cryptoKey as CryptoKey,
-      combined as BufferSource
-    );
-
-    return new Uint8Array(decrypted);
+    try {
+      const decrypted = await crypto.subtle.decrypt(
+        algorithmParams,
+        this.cryptoKey as CryptoKey,
+        combined as BufferSource
+      );
+      return new Uint8Array(decrypted);
+    } catch {
+      throw new Error('Decryption failed');
+    }
   }
 
   getAlgorithm(): EncryptionAlgorithm {
@@ -256,7 +378,13 @@ export class EncryptionService {
   // modified without failing authentication.
   async encryptEnvelope<TPayload>(
     envelope: MessageEnvelope<TPayload>,
-    options?: { keyId?: string }
+    options?: {
+      keyId?: string;
+      signer?: unknown;
+      signingService?: unknown;
+      signingKey?: unknown;
+      signatureAlgorithm?: string;
+    }
   ): Promise<EncryptedEnvelope> {
     const payloadBytes = new TextEncoder().encode(JSON.stringify(envelope.payload));
     const authenticatedMetadata = new TextEncoder().encode(
@@ -275,7 +403,7 @@ export class EncryptionService {
 
     const { ciphertext, nonce, tag } = await this.encrypt(payloadBytes, authenticatedMetadata);
 
-    return {
+    const encrypted: EncryptedEnvelope = {
       version: 1,
       cipherSuite: this.algorithmId,
       keyId: options?.keyId ?? 'default',
@@ -284,6 +412,22 @@ export class EncryptionService {
       tag,
       authenticatedMetadata,
     };
+
+    const signerCandidate =
+      (options as { signer?: unknown } | undefined)?.signer ??
+      (options as { signingService?: unknown } | undefined)?.signingService ??
+      (options as { signingKey?: unknown } | undefined)?.signingKey;
+    const signer =
+      signerCandidate && typeof signerCandidate === 'object' && typeof (signerCandidate as { sign?: unknown }).sign === 'function'
+        ? (signerCandidate as { sign: (data: Uint8Array) => Promise<Uint8Array> | Uint8Array })
+        : undefined;
+    if (signer) {
+      const data = buildEnvelopeSignatureData(encrypted, 'envelope-signature');
+      const signature = await signer.sign(data);
+      encrypted.signature = new Uint8Array(signature);
+    }
+
+    return encrypted;
   }
 
   // Verify the authenticated metadata and recover the
@@ -291,36 +435,115 @@ export class EncryptionService {
   // the metadata authentication fails.
   async decryptEnvelope<TPayload = unknown>(
     encrypted: EncryptedEnvelope,
-    payloadSchema: z.ZodType<TPayload> = z.unknown() as z.ZodType<TPayload>
+    payloadSchema?: z.ZodType<TPayload>,
+    options?: {
+      requireSignature?: boolean;
+      signatureRequired?: boolean;
+      signaturePolicy?: 'none' | 'optional' | 'required';
+      verifier?: unknown;
+      signatureVerifier?: unknown;
+      signingService?: unknown;
+      signingKey?: unknown;
+      verificationService?: unknown;
+      verifySignature?: unknown;
+      expectedKeyId?: string;
+      keyId?: string;
+      encryptionKeyId?: string;
+      signatureAlgorithm?: string;
+    }
   ): Promise<MessageEnvelope<TPayload>> {
-    if (!encrypted || typeof encrypted.version !== 'number' || encrypted.version !== 1) {
-      throw new Error(`Unsupported encrypted envelope version: ${encrypted?.version}`);
+    const resolvedPayloadSchema = payloadSchema ?? (z.unknown() as z.ZodType<TPayload>);
+
+    if (!encrypted || typeof encrypted !== 'object') {
+      throw new Error('Invalid encrypted envelope');
+    }
+
+    if (
+      !encrypted ||
+      typeof encrypted !== 'object' ||
+      typeof (encrypted as { version?: unknown }).version !== 'number' ||
+      (encrypted as { version: number }).version !== 1
+    ) {
+      throw new Error(`Unsupported encrypted envelope version: ${(encrypted as { version?: unknown })?.version}`);
     }
 
     const envelopeResult = encryptedEnvelopeSchema.safeParse(encrypted);
     if (!envelopeResult.success) {
       throw new Error('Invalid encrypted envelope');
     }
-    if (envelopeResult.data.version !== 1) {
-      throw new Error('Unsupported encrypted envelope version: 2');
-    }
-    if (envelopeResult.data.cipherSuite !== this.algorithmId) {
+    const data = envelopeResult.data;
+
+    if (data.cipherSuite !== this.algorithmId) {
       throw new Error(
-        `Cipher suite mismatch: envelope requires ${envelopeResult.data.cipherSuite}, service uses ${this.algorithmId}`
+        `Cipher suite mismatch: envelope requires ${data.cipherSuite}, service uses ${this.algorithmId}`
       );
     }
 
-    const plaintext = await this.decrypt({
-      ciphertext: encrypted.ciphertext,
-      nonce: encrypted.nonce,
-      tag: encrypted.tag,
-      associatedData: encrypted.authenticatedMetadata,
-    });
+    const normalizedOptions = options ?? {};
+    const signaturePolicy =
+      normalizedOptions.signaturePolicy ??
+      (normalizedOptions.requireSignature === true || normalizedOptions.signatureRequired === true
+        ? 'required'
+        : (encrypted.signature ? 'optional' : 'none'));
+
+    if (normalizedOptions.expectedKeyId || normalizedOptions.keyId || normalizedOptions.encryptionKeyId) {
+      const expected = normalizedOptions.expectedKeyId ?? normalizedOptions.keyId ?? normalizedOptions.encryptionKeyId;
+      if (expected !== undefined && encrypted.keyId !== expected) {
+        throw new Error('Encryption key identifier mismatch');
+      }
+    }
+
+    const verifierCandidate =
+      normalizedOptions.verifier ??
+      normalizedOptions.signatureVerifier ??
+      normalizedOptions.signingService ??
+      normalizedOptions.signingKey ??
+      normalizedOptions.verificationService ??
+      normalizedOptions.verifySignature;
+    const verifySignature =
+      typeof verifierCandidate === 'function'
+        ? (data: Uint8Array, signature: Uint8Array) => Promise.resolve(verifierCandidate(data, signature))
+        : verifierCandidate &&
+          typeof verifierCandidate === 'object' &&
+          typeof (verifierCandidate as { verify?: unknown }).verify === 'function'
+        ? (data: Uint8Array, signature: Uint8Array) =>
+            Promise.resolve((verifierCandidate as { verify: (data: Uint8Array, signature: Uint8Array) => unknown }).verify(data, signature))
+        : undefined;
+
+    if (encrypted.signature || signaturePolicy !== 'none') {
+      if (!encrypted.signature) {
+        if (signaturePolicy === 'required') {
+          throw new Error('Envelope signature is required');
+        }
+      } else {
+        if (!verifySignature) {
+          throw new Error('Envelope signature verification is unavailable');
+        }
+        const signatureAlgorithm = normalizedOptions.signatureAlgorithm ?? 'envelope-signature';
+        const data = buildEnvelopeSignatureData(encrypted, signatureAlgorithm);
+        const valid = await verifySignature(data, encrypted.signature);
+        if (valid !== true) {
+          throw new Error('Envelope signature verification failed');
+        }
+      }
+    }
+
+    let plaintext: Uint8Array;
+    try {
+      plaintext = await this.decrypt({
+        ciphertext: data.ciphertext,
+        nonce: data.nonce,
+        tag: data.tag,
+        associatedData: data.authenticatedMetadata,
+      });
+    } catch {
+      throw new Error('Decryption failed');
+    }
 
     let metadata: z.infer<typeof authenticatedMetadataSchema>;
     try {
       metadata = authenticatedMetadataSchema.parse(
-        JSON.parse(new TextDecoder().decode(encrypted.authenticatedMetadata))
+        JSON.parse(new TextDecoder().decode(data.authenticatedMetadata))
       );
     } catch {
       throw new Error('Invalid authenticated envelope metadata');
@@ -333,13 +556,13 @@ export class EncryptionService {
       throw new Error('Invalid JSON payload');
     }
 
-    const payloadResult = payloadSchema.safeParse(parsedPayload);
+    const payloadResult = resolvedPayloadSchema.safeParse(parsedPayload);
     if (!payloadResult.success) {
       throw new Error('Payload validation failed');
     }
 
     return {
-      version: metadata.version,
+      version: metadata.version as 1,
       messageId: metadata.messageId,
       type: metadata.type,
       schemaVersion: metadata.schemaVersion,
@@ -348,25 +571,44 @@ export class EncryptionService {
       timestamp: metadata.timestamp,
       correlationId: metadata.correlationId,
       traceContext: metadata.traceContext,
-      payload: payloadResult.data,
+      payload: payloadResult.data as TPayload,
     };
   }
 }
 
+
 export async function deriveKey(
   algorithm: 'aes-256-gcm' | 'chacha20-poly1305',
-  password: string,
+  password: string | Uint8Array,
   salt: Uint8Array,
   iterations = 100000
 ): Promise<Uint8Array> {
+  if (!isEncryptionAlgorithmId(algorithm)) {
+    throw new Error(`Unsupported algorithm: ${algorithm}`);
+  }
   const algo = SUPPORTED_ALGORITHMS[algorithm];
   if (!algo) {
     throw new Error(`Unsupported algorithm: ${algorithm}`);
   }
+  if (!isUint8Array(salt)) {
+    throw new Error('salt must be a Uint8Array');
+  }
+  if (!Number.isInteger(iterations) || iterations < 1) {
+    throw new Error('iterations must be a positive integer');
+  }
+  if (iterations > 10000000) {
+    throw new Error('iterations exceed maximum');
+  }
+  if (typeof password !== 'string' && !isUint8Array(password)) {
+    throw new Error('password must be a string or Uint8Array');
+  }
+
+  const passwordBytes =
+    typeof password === 'string' ? new TextEncoder().encode(password) : password;
 
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
-    new TextEncoder().encode(password),
+    passwordBytes as BufferSource,
     { name: 'PBKDF2' },
     false,
     ['deriveBits']

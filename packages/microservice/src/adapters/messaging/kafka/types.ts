@@ -13,12 +13,16 @@ export interface KafkaAdapterConfig {
   producer?: Record<string, unknown>;
   consumer?: Record<string, unknown>;
   security?: {
-    ssl?: boolean;
+    ssl?: boolean | Record<string, unknown>;
     sasl?: {
       mechanism: string;
       username: string;
       password: string;
     };
+    ca?: string;
+    cert?: string;
+    key?: string;
+    rejectUnauthorized?: boolean;
   };
 }
 

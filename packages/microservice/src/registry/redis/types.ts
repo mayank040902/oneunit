@@ -2,13 +2,34 @@ import { RegistryStore } from '../registry.js';
 
 export type RedisDriver = 'oneunit' | 'ioredis' | 'node-redis' | 'auto';
 
+/**
+ * TLS settings accepted by the supported Redis drivers.
+ *
+ * Only ioredis and node-redis support custom CA/client certificate material.
+ * @oneunit/redis supports only the boolean form in the current driver.
+ */
+export interface RedisTlsConfig {
+  ca?: string | string[] | Buffer | Buffer[];
+  cert?: string | string[] | Buffer | Buffer[];
+  key?: string | Buffer;
+  passphrase?: string;
+  servername?: string;
+  rejectUnauthorized?: boolean;
+  minVersion?: string;
+  maxVersion?: string;
+  ciphers?: string;
+  [key: string]: unknown;
+}
+
+export type RedisTlsOptions = boolean | RedisTlsConfig;
+
 export interface RedisAdapterConfig {
   driver?: RedisDriver;
   host: string;
   port: number;
   password?: string;
   db?: number;
-  tls?: boolean;
+  tls?: RedisTlsOptions;
   keyPrefix?: string;
   sentinels?: Array<{ host: string; port: number }>;
   sentinelName?: string;
@@ -37,4 +58,23 @@ export interface RedisClientLike {
 export interface ResolvedRedisDriver {
   driver: RedisDriver;
   module: RedisDriverModule;
+}
+export function validateRedisTls(tls: RedisTlsOptions | undefined, supportsMaterial: boolean): void {
+  if (tls === undefined || typeof tls === 'boolean') {
+    return;
+  }
+  if (!supportsMaterial) {
+    throw new Error(
+      'Redis TLS certificate configuration is not supported by the selected Redis driver; use ioredis or node-redis',
+    );
+  }
+  if (tls.cert !== undefined && tls.key === undefined) {
+    throw new Error('Redis TLS client certificate requires a private key');
+  }
+  if (tls.key !== undefined && tls.cert === undefined) {
+    throw new Error('Redis TLS private key requires a client certificate');
+  }
+  if (tls.rejectUnauthorized === false) {
+    // Intentionally allowed, but never the default.
+  }
 }

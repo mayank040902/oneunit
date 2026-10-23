@@ -1,6 +1,6 @@
 import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities.js';
-import { connect, NatsConnection, Subscription, JetStreamClient, JetStreamSubscription, headers as createHeaders, MsgHdrs } from 'nats';
+import { connect, NatsConnection, Subscription, JetStreamClient, JetStreamSubscription, headers as createHeaders, MsgHdrs, consumerOpts, createInbox } from 'nats';
 import { Logger, noopLogger } from '@/observability/logger.js';
 import { resolveSecurity, createSecuredDispatcher } from '@/core/secured-dispatcher.js';
 import type { ResolvedSecurity } from '@/core/secured-dispatcher.js';
@@ -197,10 +197,17 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
     
     if (this.js && this.config.jetstream?.enabled) {
       const durableName = options.groupId ?? `${this.config.clientName}-${topic}`;
-      subscription = await this.js.subscribe(subject, {
-        durable: durableName,
-        ackPolicy: options.autoAck ? 'none' : 'explicit',
-      } as Record<string, unknown>);
+      const consumerOptions = consumerOpts();
+      consumerOptions.durable(durableName);
+      if (options.autoAck) {
+        consumerOptions.ackNone();
+      } else {
+        consumerOptions.ackExplicit();
+      }
+      if (this.nc) {
+        consumerOptions.deliverTo(createInbox());
+      }
+      subscription = await this.js.subscribe(subject, consumerOptions);
     } else {
       subscription = this.nc.subscribe(subject);
     }

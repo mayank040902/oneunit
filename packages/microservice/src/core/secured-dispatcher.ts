@@ -351,9 +351,15 @@ export function createSecuredDispatcher(options: SecuredDispatchOptions): Secure
 function unwrapSecuritySource(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Record<string, unknown>;
+  // Only unwrap a nested `options` object when it carries an actual
+  // security-identity signal. Observability fields alone (metrics, audit,
+  // tracer) must not trigger unwrapping, otherwise plain transport objects
+  // that happen to expose a metrics collector are mistaken for a security
+  // configuration source.
   if (candidate['options'] && typeof candidate['options'] === 'object' && (candidate as Record<string, unknown>)['registerTransport'] === undefined && (
     (candidate['options'] as Record<string, unknown>)['service'] || (candidate['options'] as Record<string, unknown>)['authorization'] || (candidate['options'] as Record<string, unknown>)['authenticator'] ||
-    (candidate['options'] as Record<string, unknown>)['authenticationEnabled'] !== undefined || (candidate['options'] as Record<string, unknown>)['audit'] || (candidate['options'] as Record<string, unknown>)['tracer'] || (candidate['options'] as Record<string, unknown>)['metrics']
+    (candidate['options'] as Record<string, unknown>)['authenticationEnabled'] !== undefined || (candidate['options'] as Record<string, unknown>)['securedDispatcher'] || (candidate['options'] as Record<string, unknown>)['dispatcher'] ||
+    (candidate['options'] as Record<string, unknown>)['securityRequired'] === true || (candidate['options'] as Record<string, unknown>)['requireSecurity'] === true
   )) {
     return candidate['options'] as Record<string, unknown>;
   }
@@ -377,10 +383,15 @@ function findSecurityCandidate(...sources: unknown[]): { raw?: Record<string, un
     for (const candidate of candidates) {
       const unwrapped = unwrapSecuritySource(candidate);
       if (!unwrapped) continue;
+      // A source is treated as a security configuration only when it carries
+      // an identity or authorization signal. Observability fields (audit,
+      // tracer, metrics) are valid *additions* but must not, by themselves,
+      // mark an adapter as protected — otherwise every adapter that passes
+      // `this` (which exposes a metrics collector) would fail closed.
       if (
         unwrapped['service'] || unwrapped['authorization'] || unwrapped['authenticator'] ||
-        unwrapped['authenticationEnabled'] !== undefined || unwrapped['audit'] || unwrapped['tracer'] || unwrapped['metrics'] ||
-        unwrapped['securedDispatcher'] || unwrapped['dispatcher'] || unwrapped['securityRequired'] === true || unwrapped['requireSecurity'] === true
+        unwrapped['authenticationEnabled'] !== undefined || unwrapped['securedDispatcher'] || unwrapped['dispatcher'] ||
+        unwrapped['securityRequired'] === true || unwrapped['requireSecurity'] === true
       ) {
         explicit = true;
     return { raw: unwrapped, explicit };

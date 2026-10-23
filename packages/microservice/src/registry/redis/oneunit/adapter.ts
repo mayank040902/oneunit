@@ -1,12 +1,14 @@
 import { RegistryStore, ServiceInstance, ServiceQuery, LeaseRenewalResult } from '../../registry.js';
-import { RedisAdapterConfig, RedisPipeline } from '../types.js';
+import { RedisAdapterConfig, RedisPipeline, validateRedisTls } from '../types.js';
+
+import type { RedisTlsOptions } from '../types.js';
 
 export interface OneUnitRedisClientOptions {
   host: string;
   port: number;
   password?: string;
   db?: number;
-  tls?: boolean;
+  tls?: boolean | RedisTlsOptions;
 }
 
 export interface OneUnitRedisModule {
@@ -17,7 +19,7 @@ export interface OneUnitRedisModule {
 
 export interface OneUnitRedisClient {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string, mode?: string, ttlMs?: number): Promise<void>;
+  set(key: string, value: string, ...args: unknown[]): Promise<unknown>;
   del(key: string): Promise<void>;
   scan(cursor: string, ...args: unknown[]): Promise<[string, string[]]>;
   eval(script: string, numKeys: number, ...args: string[]): Promise<string>;
@@ -68,10 +70,35 @@ redis.call('SET', KEYS[1], cjson.encode(instance), 'EX', tonumber(ARGV[3]))
 return 'renewed'
 `;
 
+
+
+// Atomic health update: status/timestamp are applied server-side so concurrent
+// renewal or health writes cannot overwrite one another with stale values.
+const UPDATE_HEALTH_SCRIPT = `
+local data = redis.call('GET', KEYS[1])
+if not data then
+  return 0
+end
+local instance = cjson.decode(data)
+if instance.serviceId ~= ARGV[1] or instance.instanceId ~= ARGV[2] then
+  return 0
+end
+if tonumber(instance.leaseExpiresAt) < tonumber(ARGV[5]) then
+  return 0
+end
+instance.status = ARGV[3]
+instance.lastHeartbeat = tonumber(ARGV[4])
+local ttl = math.max(math.ceil((tonumber(instance.leaseExpiresAt) - tonumber(ARGV[5])) / 1000), 1)
+redis.call('SET', KEYS[1], cjson.encode(instance), 'EX', ttl)
+return 1
+`;
+
 export async function createRedisStore(
   config: RedisAdapterConfig,
   oneUnitRedis: OneUnitRedisModule
 ): Promise<RegistryStore> {
+  validateRedisTls(config.tls, true);
+
   const createClient = oneUnitRedis.createClient ?? oneUnitRedis.createRedisClient;
   let client: OneUnitRedisClient;
   if (createClient) {
@@ -80,7 +107,7 @@ export async function createRedisStore(
       port: config.port,
       password: config.password,
       db: config.db,
-      tls: config.tls,
+      tls: config.tls === true ? {} : config.tls === false ? undefined : config.tls,
     });
   } else if (oneUnitRedis.RedisClient) {
     client = new oneUnitRedis.RedisClient({
@@ -88,7 +115,7 @@ export async function createRedisStore(
       port: config.port,
       password: config.password,
       db: config.db,
-      tls: config.tls,
+      tls: config.tls === true ? {} : config.tls === false ? undefined : config.tls,
     });
   } else {
     throw new Error(
@@ -109,11 +136,22 @@ export async function createRedisStore(
       await client.set(key, JSON.stringify(instance), 'EX', Math.max(ttl, 1));
     },
 
+    async setIfAbsent(leaseId: string, instance: ServiceInstance): Promise<boolean> {
+      const key = getKey(leaseId);
+      const ttl = Math.ceil((instance.leaseExpiresAt - Date.now()) / 1000);
+      const result = await client.set(key, JSON.stringify(instance), 'NX', 'EX', Math.max(ttl, 1));
+      return result === 'OK' || result === true;
+    },
+
     async get(leaseId: string): Promise<ServiceInstance | null> {
       const key = getKey(leaseId);
       const data = await client.get(key);
       if (!data) return null;
-      return JSON.parse(data);
+      try {
+        return JSON.parse(data) as ServiceInstance;
+      } catch {
+        throw new Error(`Malformed registry record for lease ${leaseId}`);
+      }
     },
 
     async delete(leaseId: string): Promise<void> {
@@ -140,7 +178,12 @@ export async function createRedisStore(
           if (results) {
             for (const result of results) {
               if (result && result[1]) {
-                const instance = JSON.parse(result[1] as string) as ServiceInstance;
+                let instance: ServiceInstance;
+                try {
+                  instance = JSON.parse(result[1] as string) as ServiceInstance;
+                } catch {
+                  continue;
+                }
 
                 if (query.serviceId && instance.serviceId !== query.serviceId) continue;
                 if (query.serviceName && instance.serviceName !== query.serviceName) continue;
@@ -196,30 +239,21 @@ export async function createRedisStore(
       const keys = await collectKeys(client, pattern);
       if (keys.length === 0) return false;
 
-      const pipeline = client.multi();
+      const now = Date.now();
       for (const key of keys) {
-        pipeline.get(key);
-      }
-      const results = await pipeline.exec();
-      if (!results) return false;
-
-      for (let i = 0; i < keys.length; i++) {
-        const key = keys[i];
-        if (key === undefined) continue;
-        const result = results[i];
-        if (!result || !result[1]) continue;
-
-        const instance = JSON.parse(result[1] as string) as ServiceInstance;
-        if (instance.serviceId !== serviceId || instance.instanceId !== instanceId) continue;
-        if (instance.leaseExpiresAt < Date.now()) continue;
-
-        const updated: ServiceInstance = { ...instance, status, lastHeartbeat: timestamp };
-        const remainingTtl = Math.max(
-          Math.ceil((updated.leaseExpiresAt - Date.now()) / 1000),
+        const result = await client.eval(
+          UPDATE_HEALTH_SCRIPT,
           1,
+          key,
+          serviceId,
+          instanceId,
+          status,
+          String(timestamp),
+          String(now),
         );
-        await client.set(key, JSON.stringify(updated), 'EX', remainingTtl);
-        return true;
+        if (String(result) === '1') {
+          return true;
+        }
       }
       return false;
     },

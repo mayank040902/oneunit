@@ -25,6 +25,7 @@ export type LeaseRenewalResult = 'renewed' | 'not-found' | 'expired' | 'conflict
 
 export interface RegistryStore {
   set(leaseId: string, instance: ServiceInstance): Promise<void>;
+  setIfAbsent?(leaseId: string, instance: ServiceInstance): Promise<boolean>;
   get(leaseId: string): Promise<ServiceInstance | null>;
   delete(leaseId: string): Promise<void>;
   query(query: ServiceQuery): Promise<ServiceInstance[]>;
@@ -48,6 +49,15 @@ export class InMemoryRegistryStore implements RegistryStore {
   async set(leaseId: string, instance: ServiceInstance): Promise<void> {
     this.store.set(leaseId, instance);
     this.scheduleExpiry(leaseId, instance.leaseExpiresAt);
+  }
+
+  async setIfAbsent(leaseId: string, instance: ServiceInstance): Promise<boolean> {
+    const current = this.store.get(leaseId);
+    if (current && current.leaseExpiresAt > Date.now()) {
+      return false;
+    }
+    await this.set(leaseId, instance);
+    return true;
   }
 
   async get(leaseId: string): Promise<ServiceInstance | null> {
@@ -178,7 +188,22 @@ export class ServiceRegistryImpl implements ServiceRegistry {
   }
 
   async register(registration: ServiceRegistration): Promise<ServiceLease> {
+    const leaseId = `instance:${registration.serviceId}:${registration.instanceId}`;
+
     const execute = async (): Promise<ServiceLease> => {
+      const now = Date.now();
+
+      const existing = await this.store.get(leaseId);
+      if (existing && existing.leaseExpiresAt > now) {
+        return {
+          leaseId,
+          serviceId: existing.serviceId,
+          instanceId: existing.instanceId,
+          expiresAt: existing.leaseExpiresAt,
+          ttlMs: this.defaultTtlMs,
+        };
+      }
+
       const active = await this.store.query({});
       if (active.length >= this.maxServices) {
         throw new Error(
@@ -186,10 +211,7 @@ export class ServiceRegistryImpl implements ServiceRegistry {
         );
       }
 
-      const leaseId = crypto.randomUUID();
-      const now = Date.now();
       const expiresAt = now + this.defaultTtlMs;
-
       const instance: ServiceInstance = {
         serviceId: registration.serviceId,
         serviceName: registration.serviceName,
@@ -202,7 +224,30 @@ export class ServiceRegistryImpl implements ServiceRegistry {
         metadata: registration.metadata,
       };
 
-      await this.store.set(leaseId, instance);
+      let created = true;
+      if (typeof this.store.setIfAbsent === 'function') {
+        created = await this.store.setIfAbsent(leaseId, instance);
+      } else {
+        const concurrent = await this.store.get(leaseId);
+        if (concurrent && concurrent.leaseExpiresAt > now) {
+          created = false;
+        } else {
+          await this.store.set(leaseId, instance);
+        }
+      }
+
+      if (!created) {
+        const record = await this.store.get(leaseId);
+        if (record) {
+          return {
+            leaseId,
+            serviceId: record.serviceId,
+            instanceId: record.instanceId,
+            expiresAt: record.leaseExpiresAt,
+            ttlMs: this.defaultTtlMs,
+          };
+        }
+      }
 
       return {
         leaseId,

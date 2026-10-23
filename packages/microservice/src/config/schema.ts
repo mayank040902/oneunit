@@ -14,7 +14,20 @@ export const RedisConfigSchema = z.object({
   port: z.number().int().positive().default(6379),
   password: z.string().optional(),
   db: z.number().default(0),
-  tls: z.boolean().default(false),
+  tls: z.union([
+    z.boolean(),
+    z.object({
+      ca: z.union([z.string(), z.array(z.string())]).optional(),
+      cert: z.union([z.string(), z.array(z.string())]).optional(),
+      key: z.string().optional(),
+      passphrase: z.string().optional(),
+      servername: z.string().optional(),
+      rejectUnauthorized: z.boolean().optional(),
+      minVersion: z.string().optional(),
+      maxVersion: z.string().optional(),
+      ciphers: z.string().optional(),
+    }),
+  ]).default(false),
   keyPrefix: z.string().optional(),
   sentinels: z.array(z.object({
     host: z.string(),
@@ -111,12 +124,16 @@ export const KafkaAdapterConfigSchema = z.object({
   producer: z.record(z.unknown()).optional(),
   consumer: z.record(z.unknown()).optional(),
   security: z.object({
-    ssl: z.boolean().default(false),
+    ssl: z.union([z.boolean(), z.record(z.unknown())]).default(false),
     sasl: z.object({
       mechanism: z.string().default('plain'),
       username: z.string(),
       password: z.string(),
     }).optional(),
+    ca: z.string().optional(),
+    cert: z.string().optional(),
+    key: z.string().optional(),
+    rejectUnauthorized: z.boolean().optional(),
   }).optional(),
 });
 
@@ -141,7 +158,20 @@ export const NatsAdapterConfigSchema = z.object({
     nkey: z.string().optional(),
     creds: z.string().optional(),
   }).optional(),
-  tls: z.boolean().default(false),
+  tls: z.union([
+    z.boolean(),
+    z.object({
+      ca: z.union([z.string(), z.array(z.string())]).optional(),
+      cert: z.union([z.string(), z.array(z.string())]).optional(),
+      key: z.string().optional(),
+      passphrase: z.string().optional(),
+      servername: z.string().optional(),
+      rejectUnauthorized: z.boolean().optional(),
+      minVersion: z.string().optional(),
+      maxVersion: z.string().optional(),
+      ciphers: z.string().optional(),
+    }),
+  ]).default(false),
 });
 
 export const TcpAdapterConfigSchema = z.object({

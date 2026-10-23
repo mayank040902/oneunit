@@ -32,14 +32,30 @@ export async function createKafkaAdapter(config: KafkaAdapterConfig, logger?: Lo
   };
 
   if (config.security) {
-    if (config.security.ssl) {
-      kafkaConfig.ssl = true;
+    const securityAny = (config.security ?? {}) as unknown as Record<string, unknown>;
+    const hasMaterial =
+      securityAny['ca'] !== undefined ||
+      securityAny['cert'] !== undefined ||
+      securityAny['key'] !== undefined ||
+      securityAny['rejectUnauthorized'] !== undefined;
+
+    if (typeof securityAny['ssl'] === 'object' && securityAny['ssl'] !== null) {
+      kafkaConfig.ssl = { ...(securityAny['ssl'] as Record<string, unknown>) };
+    } else if (securityAny['ssl'] === true || hasMaterial) {
+      const sslOptions: Record<string, unknown> = {};
+      if (securityAny['ca'] !== undefined) sslOptions['ca'] = securityAny['ca'];
+      if (securityAny['cert'] !== undefined) sslOptions['cert'] = securityAny['cert'];
+      if (securityAny['key'] !== undefined) sslOptions['key'] = securityAny['key'];
+      if (securityAny['rejectUnauthorized'] !== undefined) sslOptions['rejectUnauthorized'] = securityAny['rejectUnauthorized'];
+      if (typeof securityAny['ssl'] === 'object' && securityAny['ssl']) Object.assign(sslOptions, securityAny['ssl'] as Record<string, unknown>);
+      kafkaConfig.ssl = Object.keys(sslOptions).length > 0 ? sslOptions : true;
     }
-    if (config.security.sasl) {
+
+    if (securityAny['sasl']) {
       kafkaConfig.sasl = {
-        mechanism: config.security.sasl.mechanism,
-        username: config.security.sasl.username,
-        password: config.security.sasl.password,
+        mechanism: (securityAny['sasl'] as { mechanism: string }).mechanism,
+        username: (securityAny['sasl'] as { username: string }).username,
+        password: (securityAny['sasl'] as { password: string }).password,
       } as SASLOptions;
     }
   }
