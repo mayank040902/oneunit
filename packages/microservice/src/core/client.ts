@@ -148,13 +148,22 @@ export class MicroserviceClient implements RpcClient, MessagePublisher, MessageS
 
     const baseOperation = timeoutMs ? makeTimedOperation() : operation;
 
+    let resultPromise: Promise<TOutput>;
     if (!this.options.retryPolicy) {
-      return baseOperation();
+      resultPromise = baseOperation();
+    } else {
+      const rp = callOptions.idempotent !== undefined
+        ? { ...this.options.retryPolicy, idempotent: callOptions.idempotent }
+        : this.options.retryPolicy;
+      resultPromise = this.executeWithRetry(baseOperation, rp, service, method);
     }
-    const rp = callOptions.idempotent !== undefined
-      ? { ...this.options.retryPolicy, idempotent: callOptions.idempotent }
-      : this.options.retryPolicy;
-    return this.executeWithRetry(baseOperation, rp, service, method);
+
+    // Attach a non-consuming rejection handler synchronously so a timed-out
+    // operation whose transport does not reject immediately can never surface as
+    // an unhandled promise rejection, while callers still observe rejection on
+    // the exact promise returned above.
+    void resultPromise.catch(() => {});
+    return resultPromise;
   }
 
   stream<TInput, TOutput>(service: string, method: string, input: TInput): AsyncIterable<TOutput> {

@@ -582,12 +582,13 @@ describe('MicroserviceClient defaultTimeout', () => {
     rpcTransport.call.mockImplementation(() => new Promise(() => {}));
 
     const pending = client.call('svc', 'method', { x: 1 });
-    await vi.advanceTimersByTimeAsync(100);
-    await expect(pending).rejects.toMatchObject({
+    const assertion = expect(pending).rejects.toMatchObject({
       code: 'TIMEOUT',
       category: 'TIMEOUT',
       retryable: true,
     });
+    await vi.advanceTimersByTimeAsync(100);
+    await assertion;
     expect(rpcTransport.call).toHaveBeenCalledTimes(1);
   });
 
@@ -597,16 +598,18 @@ describe('MicroserviceClient defaultTimeout', () => {
     );
 
     const pending = client.call('svc', 'method', { x: 1 });
+    const assertion = expect(pending).rejects.toThrow(/timed out after 100ms/);
     await vi.advanceTimersByTimeAsync(100);
-    await expect(pending).rejects.toThrow(/timed out after 100ms/);
+    await assertion;
   });
 
   it('should allow per-call timeout to override defaultTimeout', async () => {
     rpcTransport.call.mockImplementation(() => new Promise(() => {}));
 
     const pending = client.call('svc', 'method', { x: 1 }, { timeout: 20 });
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'TIMEOUT' });
     await vi.advanceTimersByTimeAsync(20);
-    await expect(pending).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await assertion;
   });
 
   it('should not time out when the call completes before defaultTimeout', async () => {
