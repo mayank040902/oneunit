@@ -1,11 +1,17 @@
 import { RegistryStore, ServiceInstance, ServiceQuery, LeaseRenewalResult } from '../../registry.js';
-import { RedisAdapterConfig, RedisPipeline, RedisTlsConfig, validateRedisTls } from '../types.js';
+import { RedisAdapterConfig, RedisPipeline, validateRedisTls } from '../types.js';
 
 export interface NodeRedisClientOptions {
   socket: {
     host: string;
     port: number;
-    tls?: boolean | RedisTlsConfig;
+    tls?: boolean;
+    ca?: string | string[];
+    cert?: string | string[];
+    key?: string;
+    passphrase?: string;
+    servername?: string;
+    rejectUnauthorized?: boolean;
   };
   password?: string;
   database?: number;
@@ -92,11 +98,15 @@ export async function createRedisStore(
 ): Promise<RegistryStore> {
   validateRedisTls(config.tls, true);
 
+  const tlsOptions = config.tls === true ? { tls: true } :
+    config.tls === false || config.tls === undefined ? {} :
+      { tls: true, ...config.tls };
+
   const client = nodeRedisModule.createClient({
     socket: {
       host: config.host,
       port: config.port,
-      tls: config.tls === true ? {} : config.tls === false ? undefined : config.tls,
+      ...tlsOptions,
     },
     password: config.password,
     database: config.db,

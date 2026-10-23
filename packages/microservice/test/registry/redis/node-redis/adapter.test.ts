@@ -342,7 +342,7 @@ describe('Node-Redis Driver Adapter', () => {
     store = await createRedisStore(makeConfig({ tls: {} }), (await import('redis')) as any);
     const redisModule = await import('redis');
     expect(redisModule.createClient).toHaveBeenCalledWith(expect.objectContaining({
-      socket: expect.objectContaining({ tls: {} }),
+      socket: expect.objectContaining({ tls: true }),
     }));
   });
 

@@ -489,31 +489,18 @@ Hosted tRPC HTTP procedures are rebuilt through the adapter's secured dispatch b
 - Tracing and metrics are integrated opportunistically and their implementations remain in-memory utilities where no external backend is configured.
 - Passing security dependencies configures the path; absence of those dependencies means the path is not protected by this dispatcher.
 
+## Production Readiness Conditions
+
+Production deployment is supported only under these conditions:
+
+- Use TLS with certificate verification enabled; never accept plaintext fallback or insecure TLS defaults.
+- Use validated credentials and least-privilege Redis, Kafka, and NATS identities.
+- Provision Kafka topics and NATS streams explicitly before application startup.
+- Use `ioredis` for secured Redis deployments; `node-redis` TLS and client-certificate behavior remains subject to independent verification.
+- Implement application-level idempotency and deduplication for Kafka because delivery is at-least-once.
+- Store, rotate, and monitor all credentials and certificates using external secret management.
+- Do not claim node-redis, full Kafka consumer ACL verification, or sustained load/capacity assurance unless the corresponding evidence has been recorded.
+
 ## License
 
-MIT
-
-## ID generation
-
-The `id()` utility generates compact, URL-safe, unique IDs with zero dependencies.
-
-```ts
-import { id } from '@oneunit/microservice';
-
-id();                                   // "V1StGXR8_Z5jdHi6B-myT"
-id('user_');                            // "user_V1StGXR8_Z5jdHi6B-myT"
-id({ length: 12, alphabet: '0123456789' }); // "482931057482"
-```
-
-Usage examples:
-
-```ts
-// React keys
-const users = data.map((user) => <li key={id('row_')}>{user.name}</li>);
-
-// Database records
-const record = { id: id({ prefix: 'usr_', length: 12, alphabet: '0123456789abcdef' }) };
-
-// Logging correlation IDs
-const correlationId = id('corr-');
-```
+[MIT](LICENSE) © 2026 mayank
