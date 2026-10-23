@@ -76,6 +76,7 @@ Provides a consistent application API and shared infrastructure for configuratio
 - **Signing** — Ed25519 and RSA (RSASSA-PKCS1-v1_5, 2048-bit default)
 - **Key Rotation** — per-service interval timers (24 h default), versioned rotation events; `gracePeriodMs`/`maxVersions` are delegated to the key provider via `setRetentionPolicy` (provider-enforced retention); `autoRotate` gates the timer
 - **Replay Protection** — per-source sliding windows, TTL 5 min, future-skew tolerance 10 s, max 100k entries per source (oldest 50% evicted when full)
+- **API-Key Authenticator Hardening (PR-008)** — `ApiKeyAuthenticator` now stores HMAC-SHA256 verifiers under an instance-held 32-byte secret instead of raw keys, validates empty/malformed keys, compares verifiers with `crypto.timingSafeEqual`, and applies bounded in-process retry lockouts (default 5 failures, 15-second lockout, bounded failure-state map).
 - **Transport Security Dispatch (PR-004)** — supported inbound adapter paths can route through the shared `SecuredDispatcher` (`MicroserviceServer.handle()`, supported adapter `handle()` / consumer callback entry points) for authentication, authorization, audit, tracing, and metrics. Security is explicit: configure dependencies or use an intentionally unprotected path.
 
 ### Transport Security Dispatch
