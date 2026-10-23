@@ -396,8 +396,9 @@ The package provides:
 - `ApiKeyAuthenticator` backed by an in -memory API - key map.
 
   Certificate - chain verification depends on the configured trusted CA
-material.These classes are building blocks: their existence does not
-mean every inbound network adapter automatically calls them.
+material.PR-004 adds optional dispatch integration, but authentication
+still runs only where an authenticator is configured for the supported
+entry point.
 
 ### Authorization policies
 
@@ -411,10 +412,10 @@ The available policies include:
 - `createAuthorizationPolicy()`, which constructs a policy from
 configuration.
 
-The default authorization policy is deny.Applications must still
-connect authentication and authorization to each inbound server boundary
-they expose.Do not assume that a standalone policy object protects an
-adapter automatically.
+The default authorization policy is deny.Supported server boundaries
+can invoke the shared secured dispatcher when security dependencies are
+configured. Do not assume that a standalone policy object automatically
+protects alternate or raw transport paths.
 
 ## 9. Cryptography and security utilities
 
@@ -680,9 +681,10 @@ integration results separately from unit - test results.
 The following limitations are part of the documented implementation and
 should be considered when using the package:
 
-  1.  Authentication and authorization helpers are not automatically
-    enforced by every inbound adapter.Each server boundary needs
-    explicit integration.
+  1.  The shared secured dispatcher is available for supported inbound
+    boundaries when configured. Raw TCP frames and tRPC HTTP procedures that
+    bypass the secured `handle()` boundary may still avoid that enforcement,
+    and alternate paths require their own integration.
 2.  Raw X25519 key agreement does not authenticate peers.
 3.  The encrypted envelope's optional signature is not populated, and
     `keyId` is not integrated with key - provider version history.

@@ -4,3 +4,4 @@ export * from './lifecycle.js';
 export * from './application.js';
 export * from './client.js';
 export * from './server.js';
+export * from './secured-dispatcher.js';

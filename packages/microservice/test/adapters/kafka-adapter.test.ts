@@ -104,7 +104,7 @@ describe('KafkaTransport lifecycle', () => {
     const handler = vi.fn();
     await transport.subscribe('topic', handler, { groupId: 'g1' });
 
-    expect(fakeAdapter.subscribe).toHaveBeenCalledWith('topic', handler, { groupId: 'g1' });
+    expect(fakeAdapter.subscribe).toHaveBeenCalledWith('topic', expect.any(Function), { groupId: 'g1' });
   });
 
   it('should route unsubscribe through the driver adapter', async () => {

@@ -1,23 +1,50 @@
 import { RpcServer, Transport, RpcMethodHandler, RpcContext } from './capabilities.js';
 import { ServiceIdentity } from '../identity/service-identity.js';
+import type { Authenticator } from '../identity/authentication.js';
+import type { Tracer } from '../observability/tracing.js';
+import type { MetricsCollector } from '../observability/metrics.js';
+import type { ServiceCredentials } from '../identity/credentials.js';
 import { AuthorizationPolicy } from '../identity/authorization.js';
-import { createMicroserviceError, ErrorCodes, isMicroserviceError, sanitizeErrorDetails } from './errors.js';
-import { AuditEventTypes, AuditLogger } from '../observability/audit.js';
+import { createMicroserviceError, ErrorCodes } from './errors.js';
+import { AuditLogger } from '../observability/audit.js';
+import { createSecuredDispatcher } from './secured-dispatcher.js';
+import type { SecuredDispatchOptions, SecuredRequestContext } from './secured-dispatcher.js';
 
 export interface ServerOptions {
   service: ServiceIdentity;
   authorization: AuthorizationPolicy;
   authenticationEnabled?: boolean;
   audit?: AuditLogger;
+  authenticator?: Authenticator;
+  tracer?: Tracer;
+  metrics?: MetricsCollector;
 }
 
 export class MicroserviceServer implements RpcServer {
   private transports: Map<string, Transport> = new Map();
   private methods: Map<string, Map<string, RpcMethodHandler>> = new Map();
   private options: ServerOptions;
+  private securedDispatcherInstance: ReturnType<typeof createSecuredDispatcher> | undefined;
 
   constructor(options: ServerOptions) {
     this.options = options;
+  }
+
+  private getSecuredDispatcher() {
+    if (!this.securedDispatcherInstance) {
+      const options: SecuredDispatchOptions = {
+        service: this.options.service,
+        authorization: this.options.authorization,
+        authenticationEnabled: this.options.authenticationEnabled,
+        audit: this.options.audit,
+        authenticator: this.options.authenticator,
+        tracer: this.options.tracer,
+        metrics: this.options.metrics,
+        transport: 'microservice',
+      };
+      this.securedDispatcherInstance = createSecuredDispatcher(options);
+    }
+    return this.securedDispatcherInstance;
   }
 
   registerTransport(transport: Transport): void {
@@ -58,9 +85,15 @@ export class MicroserviceServer implements RpcServer {
   }
 
   async handle(service: string, method: string, input: unknown, context: RpcContext): Promise<unknown> {
-    // Step 1: Method lookup
     const handler = this.getMethodHandler(service, method);
     if (!handler) {
+      const metrics = this.options.metrics;
+      const labels = { service, method };
+      try {
+        metrics?.incrementCounter('rpc.requests.total', { ...labels, outcome: 'not_found' });
+      } catch {
+        // Instrumentation is best-effort.
+      }
       throw createMicroserviceError(
         ErrorCodes.NOT_FOUND,
         `Method ${service}.${method} not found`,
@@ -70,63 +103,29 @@ export class MicroserviceServer implements RpcServer {
       );
     }
 
-    // Step 2: Authorization check (skipped when authentication is disabled)
-    if (this.options.authenticationEnabled !== false) {
-      const decision = await this.options.authorization.evaluate({
-        caller: this.options.service,
-        targetService: service,
-        operation: `${service}.${method}`,
-        resource: method,
-        attributes: {},
-      });
+    const dispatcher = this.getSecuredDispatcher();
+    const request: SecuredRequestContext = {
+      service,
+      method,
+      transport: 'microservice',
+      operation: `${service}.${method}`,
+      targetService: service,
+      credentials: context.metadata.get('credentials') as ServiceCredentials | undefined,
+      metadata: context.metadata,
+      attributes: {},
+      correlationId: context.correlationId,
+    };
 
-      if (!decision.allowed) {
-      // Audit the authorization denial.
-      if (this.options.audit) {
-        try {
-          await this.options.audit.log({
-            eventId: `authz-${Date.now()}`,
-            eventType: AuditEventTypes.AUTHORIZATION_DENIED,
-            timestamp: Date.now(),
-            actor: { serviceId: this.options.service.serviceId, instanceId: this.options.service.instanceId },
-            action: 'call',
-            resource: { type: 'method', id: `${service}.${method}` },
-            outcome: 'failure',
-            details: { service, method, reason: decision.reason },
-            riskLevel: 'high',
-          });
-        } catch {
-          // Audit logging must not block the request path.
-        }
+    return dispatcher.dispatch(request, async () => {
+      if (request.principal && context.metadata) {
+        context.metadata.set('principal', request.principal);
+        context.metadata.set('authenticatedPrincipal', request.principal);
       }
-
-      throw createMicroserviceError(
-        ErrorCodes.FORBIDDEN,
-        decision.reason ?? `Authorization denied for ${service}.${method}`,
-        'AUTHORIZATION',
-        false,
-        { details: { service, method, reason: decision.reason } }
-      );
+      if (request.caller && context.metadata) {
+        context.metadata.set('caller', request.caller);
       }
-    }
-
-    // Step 3: Execute the handler
-    try {
-      return await handler(input, context);
-    } catch (err) {
-      if (isMicroserviceError(err)) {
-        throw err;
-      }
-      throw createMicroserviceError(
-        ErrorCodes.INTERNAL,
-        err instanceof Error ? err.message : String(err),
-        'INTERNAL',
-        false,
-        {
-          details: { service, method, originalError: sanitizeErrorDetails(err) },
-        },
-      );
-    }
+      return handler(input, context);
+    });
   }
 }
 

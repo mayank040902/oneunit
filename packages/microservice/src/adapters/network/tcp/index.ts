@@ -2,6 +2,12 @@ import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, StreamTransport, DuplexStream, TransportMetrics } from '@/core/capabilities';
 import { TcpFrameParser } from './frame-parser.js';
 import { Logger, noopLogger } from '@/observability/logger.js';
+import { resolveSecurity, createSecuredDispatcher } from '@/core/secured-dispatcher.js';
+import type { ResolvedSecurity } from '@/core/secured-dispatcher.js';
+import type { SecuredRequestContext } from '@/core/secured-dispatcher.js';
+import type { RpcContext, RpcMethodHandler } from '@/core/capabilities.js';
+import { createMicroserviceError, ErrorCodes } from '@/core/errors.js';
+import type { ServiceCredentials } from '@/identity/credentials.js';
 import type * as net from 'net';
 import type * as tls from 'tls';
 import { readFileSync } from 'node:fs';
@@ -67,11 +73,24 @@ export function parseRemote(remote: string): ParsedRemote {
 export class TcpTransport extends BaseTransport implements StreamTransport {
   private config: TcpConfig;
   private logger: Logger;
+  private securityInput: unknown;
   private server: net.Server | tls.Server | null = null;
+  private methodHandlers: Map<string, Map<string, RpcMethodHandler>> = new Map();
+  private securedDispatcherInstance: ReturnType<typeof createSecuredDispatcher> | null = null;
+
+  private getSecuredDispatcher() {
+    if (this.securedDispatcherInstance) return this.securedDispatcherInstance;
+    const resolved = resolveSecurity(this.config, this.securityInput, this) as ResolvedSecurity;
+    if (!resolved.protected) return null;
+    const dispatcher = resolved.dispatcher ?? (resolved.options ? createSecuredDispatcher(resolved.options) : null);
+    this.securedDispatcherInstance = dispatcher;
+    return dispatcher;
+  }
+
   private connections: Map<string, TcpConnection> = new Map();
   private metrics: TransportMetrics;
 
-  constructor(config: TcpConfig) {
+  constructor(config: TcpConfig, security?: unknown) {
     super({
       name: 'tcp',
       capabilities: {
@@ -84,6 +103,7 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
       },
     });
     this.config = config;
+    this.securityInput = security;
     this.logger = config.logger ?? noopLogger;
     this.metrics = this.createEmptyMetrics();
   }
@@ -480,6 +500,65 @@ export class TcpTransport extends BaseTransport implements StreamTransport {
 
     socket.once('close', removeConnection);
     return conn;
+  }
+
+  registerMethod(service: string, method: string, handler: RpcMethodHandler): void {
+    if (!this.methodHandlers.has(service)) {
+      this.methodHandlers.set(service, new Map());
+    }
+    this.methodHandlers.get(service)!.set(method, handler);
+  }
+
+  unregisterMethod(service: string, method: string): void {
+    this.methodHandlers.get(service)?.delete(method);
+  }
+
+  async handle(service: string, method: string, input: unknown, context: unknown): Promise<unknown> {
+    const handlers = this.methodHandlers.get(service);
+    const handler = handlers?.get(method);
+    if (!handler) {
+      throw createMicroserviceError(
+        ErrorCodes.NOT_FOUND,
+        `Method ${service}.${method} not found`,
+        'NOT_FOUND',
+        false,
+        { details: { service, method } }
+      );
+    }
+    const rpcContext = (context as RpcContext) ?? {
+      serviceId: service,
+      correlationId: crypto.randomUUID(),
+      headers: {},
+      metadata: new Map(),
+    };
+    const dispatcher = this.getSecuredDispatcher();
+    const metadata = rpcContext.metadata instanceof Map ? rpcContext.metadata : new Map(Object.entries(rpcContext.metadata ?? {}));
+    rpcContext.metadata = metadata;
+    const request: SecuredRequestContext = {
+      service,
+      method,
+      transport: 'tcp',
+      operation: `${service}.${method}`,
+      targetService: service,
+      credentials: metadata.get('credentials') as ServiceCredentials | undefined,
+      metadata,
+      attributes: {},
+      correlationId: rpcContext.correlationId,
+    };
+    const run = () => {
+      if (request.principal && metadata) {
+        metadata.set('principal', request.principal);
+        metadata.set('authenticatedPrincipal', request.principal);
+      }
+      if (request.caller && metadata) {
+        metadata.set('caller', request.caller);
+      }
+      return handler(input, rpcContext);
+    };
+    if (!dispatcher) {
+      return run();
+    }
+    return dispatcher.dispatch(request, run);
   }
 
   getMetrics(): TransportMetrics {

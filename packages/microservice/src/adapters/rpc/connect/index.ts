@@ -3,6 +3,10 @@ import { TransportHealth, RpcClient, RpcServer, RpcMethodHandler } from '@/core/
 import type { ServiceType } from '@bufbuild/protobuf';
 import type { Transport } from '@connectrpc/connect';
 import { createMicroserviceError, ErrorCodes } from '@/core/errors.js';
+import { resolveSecurity, createSecuredDispatcher } from '@/core/secured-dispatcher.js';
+import type { ResolvedSecurity } from '@/core/secured-dispatcher.js';
+import type { SecuredRequestContext } from '@/core/secured-dispatcher.js';
+import type { ServiceCredentials } from '@/identity/credentials.js';
 
 export interface ConnectConfig {
   endpoint: string;
@@ -15,10 +19,21 @@ type ConnectServiceClient = Record<string, (input: unknown) => unknown | AsyncIt
 
 export class ConnectTransport extends BaseTransport implements RpcClient, RpcServer {
   private config: ConnectConfig;
+  private securityInput: unknown;
   private client: Record<string, ConnectServiceClient> | null = null;
   private methodHandlers: Map<string, Map<string, RpcMethodHandler>> = new Map();
+  private securedDispatcherInstance: ReturnType<typeof createSecuredDispatcher> | null = null;
 
-  constructor(config: ConnectConfig) {
+  private getSecuredDispatcher() {
+    if (this.securedDispatcherInstance) return this.securedDispatcherInstance;
+    const resolved = resolveSecurity(this.config, this.securityInput, this) as ResolvedSecurity;
+    if (!resolved.protected) return null;
+    const dispatcher = resolved.dispatcher ?? (resolved.options ? createSecuredDispatcher(resolved.options) : null);
+    this.securedDispatcherInstance = dispatcher;
+    return dispatcher;
+  }
+
+  constructor(config: ConnectConfig, security?: unknown) {
     super({
       name: 'connect',
       capabilities: {
@@ -31,6 +46,7 @@ export class ConnectTransport extends BaseTransport implements RpcClient, RpcSer
       },
     });
     this.config = config;
+    this.securityInput = security;
   }
 
   async start(): Promise<void> {
@@ -103,7 +119,35 @@ export class ConnectTransport extends BaseTransport implements RpcClient, RpcSer
         { details: { service, method } }
       );
     }
-    return handler(input, context as import('@/core/capabilities.js').RpcContext);
+    const rpcContext = context as import('@/core/capabilities.js').RpcContext;
+    const dispatcher = this.getSecuredDispatcher();
+    const metadata = rpcContext.metadata instanceof Map ? rpcContext.metadata : new Map(Object.entries(rpcContext.metadata ?? {}));
+    rpcContext.metadata = metadata;
+    const request: SecuredRequestContext = {
+      service,
+      method,
+      transport: 'connect',
+      operation: `${service}.${method}`,
+      targetService: service,
+      credentials: metadata.get('credentials') as ServiceCredentials | undefined,
+      metadata,
+      attributes: {},
+      correlationId: rpcContext.correlationId,
+    };
+    const run = () => {
+      if (request.principal && metadata) {
+        metadata.set('principal', request.principal);
+        metadata.set('authenticatedPrincipal', request.principal);
+      }
+      if (request.caller && metadata) {
+        metadata.set('caller', request.caller);
+      }
+      return handler(input, rpcContext);
+    };
+    if (!dispatcher) {
+      return run();
+    }
+    return dispatcher.dispatch(request, run);
   }
 
   async *stream<TInput, TOutput>(service: string, method: string, input: TInput): AsyncIterable<TOutput> {

@@ -2,6 +2,10 @@ import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, MessagePublisher, MessageSubscriber, PublishOptions, SubscribeOptions, MessageContext } from '@/core/capabilities.js';
 import { connect, NatsConnection, Subscription, JetStreamClient, JetStreamSubscription, headers as createHeaders, MsgHdrs } from 'nats';
 import { Logger, noopLogger } from '@/observability/logger.js';
+import { resolveSecurity, createSecuredDispatcher } from '@/core/secured-dispatcher.js';
+import type { ResolvedSecurity } from '@/core/secured-dispatcher.js';
+import type { SecuredRequestContext } from '@/core/secured-dispatcher.js';
+import type { ServiceCredentials } from '@/identity/credentials.js';
 import { NatsAdapterConfig } from '@/config/schema.js';
 
 interface JetStreamMessage {
@@ -32,14 +36,34 @@ function recordToHeaders(headers?: Record<string, string>): MsgHdrs | undefined 
 
 export class NatsTransport extends BaseTransport implements MessagePublisher, MessageSubscriber {
   private config: NatsAdapterConfig;
+  private securityInput: unknown;
   private nc: NatsConnection | null = null;
+  private securedDispatcherInstance: ReturnType<typeof createSecuredDispatcher> | null = null;
+
+  private getSecuredDispatcher() {
+    if (this.securedDispatcherInstance) return this.securedDispatcherInstance;
+    const resolved = resolveSecurity(this.config, this.securityInput, this) as ResolvedSecurity;
+    if (!resolved.protected) return null;
+    const dispatcher = resolved.dispatcher ?? (resolved.options ? createSecuredDispatcher(resolved.options) : null);
+    this.securedDispatcherInstance = dispatcher;
+    return dispatcher;
+  }
+
+  private parseCredentials(value: unknown): ServiceCredentials | undefined {
+    if (!value) return undefined;
+    if (typeof value === 'object') return value as ServiceCredentials;
+    if (typeof value === 'string') {
+      try { return JSON.parse(value) as ServiceCredentials; } catch { return undefined; }
+    }
+    return undefined;
+  }
   private js: JetStreamClient | null = null;
   private logger: Logger;
   private subscriptions: Map<string, Subscription | JetStreamSubscription> = new Map();
   private processingActive: Set<string> = new Set();
   private closed = false;
 
-  constructor(config: NatsAdapterConfig, logger?: Logger) {
+  constructor(config: NatsAdapterConfig, logger?: Logger | unknown, security?: unknown) {
     super({
       name: 'nats',
       capabilities: {
@@ -52,7 +76,17 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
       },
     });
     this.config = config;
-    this.logger = (config as { logger?: Logger }).logger ?? logger ?? noopLogger;
+    const loggerIsLogger = !!(logger && typeof (logger as Record<string, unknown>)['info'] === 'function');
+    if (loggerIsLogger) {
+      this.logger = (config as { logger?: Logger }).logger ?? (logger as Logger) ?? noopLogger;
+      this.securityInput = security;
+    } else {
+      this.logger = (config as { logger?: Logger }).logger ?? noopLogger;
+      this.securityInput = security !== undefined ? security : logger;
+      if (security && typeof (security as Record<string, unknown>)['info'] === 'function') {
+        this.logger = security as Logger;
+      }
+    }
   }
 
   async start(): Promise<void> {
@@ -121,6 +155,42 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
   async subscribe(topic: string, handler: (message: unknown, context: MessageContext) => Promise<void>, options: SubscribeOptions = {}): Promise<void> {
     if (!this.nc) throw new Error('NATS not connected');
 
+    const wrappedHandler = async (message: unknown, context: MessageContext) => {
+      const dispatcher = this.getSecuredDispatcher();
+      const metadata = new Map<string, unknown>();
+      if (context?.headers) {
+        for (const [key, value] of Object.entries(context.headers)) {
+          metadata.set(key, value);
+        }
+      }
+      const credentials = this.parseCredentials(context?.headers?.['credentials'] ?? (context?.headers as Record<string, unknown> | undefined)?.['Credentials']);
+      const request: SecuredRequestContext = {
+        service: 'nats',
+        method: topic,
+        transport: 'nats',
+        operation: `nats.${topic}`,
+        targetService: topic,
+        credentials,
+        metadata,
+        attributes: { topic },
+        correlationId: context?.correlationId,
+      };
+      const run = async () => {
+        if (request.principal && metadata) {
+          metadata.set('principal', request.principal);
+          metadata.set('authenticatedPrincipal', request.principal);
+        }
+        if (request.caller && metadata) {
+          metadata.set('caller', request.caller);
+        }
+        await handler(message, context);
+      };
+      if (!dispatcher) {
+        return run();
+      }
+      await dispatcher.dispatch(request, run);
+    };
+
     const subject = `${this.config.subjects.prefix}.${topic}`;
     
     let subscription: Subscription | JetStreamSubscription;
@@ -151,10 +221,10 @@ export class NatsTransport extends BaseTransport implements MessagePublisher, Me
           try {
             const data = JSON.parse(new TextDecoder().decode(msg.data));
             const msgHeaders = msg.headers ? headersToRecord(msg.headers) : undefined;
-            await handler(data, {
+            await wrappedHandler(data, {
               topic: msg.subject,
               headers: msgHeaders,
-            });
+            } as MessageContext);
 
             if (this.config.jetstream?.enabled && !options.autoAck) {
               const jsMsg = msg as JetStreamMessage;

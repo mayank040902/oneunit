@@ -76,6 +76,26 @@ Provides a consistent application API and shared infrastructure for configuratio
 - **Signing** — Ed25519 and RSA (RSASSA-PKCS1-v1_5, 2048-bit default)
 - **Key Rotation** — per-service interval timers (24 h default), versioned rotation events; `gracePeriodMs`/`maxVersions` are delegated to the key provider via `setRetentionPolicy` (provider-enforced retention); `autoRotate` gates the timer
 - **Replay Protection** — per-source sliding windows, TTL 5 min, future-skew tolerance 10 s, max 100k entries per source (oldest 50% evicted when full)
+- **Transport Security Dispatch (PR-004)** — supported inbound adapter paths can route through the shared `SecuredDispatcher` (`MicroserviceServer.handle()`, supported adapter `handle()` / consumer callback entry points) for authentication, authorization, audit, tracing, and metrics. Security is explicit: configure dependencies or use an intentionally unprotected path.
+
+### Transport Security Dispatch
+
+The shared `SecuredDispatcher` centralizes the transport-neutral security pipeline:
+
+1. A supported inbound adapter entry point receives a request or message.
+2. When security is configured, the adapter invokes `SecuredDispatcher.dispatch(...)`.
+3. Authentication validates credentials when an authenticator is configured or required.
+4. Authorization evaluates the authenticated principal against the configured policy.
+5. The protected handler executes only after the configured security checks succeed.
+6. Rejections follow the transport's normal error, failure, acknowledgement, retry, or delivery behavior.
+
+`SecuredDispatcher` accepts a normalized request context (`service`, `method`, `transport`, optional credentials, metadata, attributes, correlation id, and principal) and a handler callback. `MicroserviceServer.handle()` uses the same pipeline. Audit, tracing, and metrics are invoked opportunistically: instrumentation or audit failures do not turn a denial into an allow.
+
+Authentication and authorization are not enabled automatically merely because the dispatcher integration exists. A path is secured only when the required dependencies are configured for that entry point. When security is not explicitly requested, legacy unprotected behavior remains available.
+
+Security configuration can be supplied through adapter constructor security arguments and recognized security fields such as `security`, `server`, `serverOptions`, `securityOptions`, `dispatcher`, or `securedDispatcher`. Adapter constructors support an optional second security argument; `KafkaTransport` and `NatsTransport` also support the final security argument after their logger argument. Recognized fields include `service`, `authorization`, `authenticator`, `authenticationEnabled`, `audit`, `tracer`, and `metrics`.
+
+`authenticationEnabled` is passed through to `AllowlistPolicy`, `RbacPolicy`, and related policies where supported. Missing authorization when it is required fails closed. Audit, tracer, and metric failures alone do not remove required authorization. If no authenticator is configured, authentication is skipped for that configured path while authorization may still run. `MicroserviceServer` remains deny-by-default at the policy level where configured.
 
 ### Observability
 - **Logger Contract** — `Logger` interface with 6 levels, context-first/message-first overloads, `error(err, message)`, `child(bindings)`; `FrameworkLogger` (framework-owned structured JSON logger writing to stdout/stderr with level gating and secret redaction), `NoopLogger`
@@ -169,6 +189,7 @@ Configuration merging uses `mergeConfig`: plain objects are deep-merged field by
 | `MicroserviceError`, `MicroserviceErrorImpl`, `ErrorCategory`, `ErrorCodes`, `createMicroserviceError()`, `mapNativeError()`, `isMicroserviceError()`, `isRetryableError()` | Common error model |
 | `MessageEnvelope`, `EncryptedEnvelope`, `createMessageEnvelope()`, `Event`, `SystemEvents`, `ProcedureContract`, `ContractVersion` | Messaging/contract types |
 | `MicroserviceClient` (retry policy on `call`), `createClient()`, `MicroserviceServer`, `createServer()` | RPC client/server composition helpers |
+| `SecuredDispatcher`, `createSecuredDispatcher()`, `resolveSecurity()` | Transport-neutral security dispatcher and configuration resolution |
 | `BaseTransport`, `TransportManager`, `createTransportManager()` | Transport layer |
 | `TcpTransport`, `UdpTransport`, `TrpcTransport`, `GrpcTransport`, `ConnectTransport` + `createXTransport()` factories | Protocol adapters (main entry) |
 | `InMemoryMetricsCollector`, `createMetricsCollector()`, `Tracer`, `NoopTracer`, `InMemoryTracer`, `createTracer()`, `extractTraceContext()`, `injectTraceContext()`, `AuditLogger`, `InMemoryAuditLogger`, `createAuditLogger()` | Observability |
@@ -449,6 +470,22 @@ pnpm run lint       # eslint src test
 - **Adapter tests**: Kafka (transport + both driver adapters against fakes), NATS, TCP framing, tRPC/gRPC/Connect, logging adapters, Redis driver adapters
 - **Packaging tests** (`test/packaging.test.ts`): ESM entry loads, export surface, `npm pack` artifact contains only `dist/` (no `src/`, no source maps), optional peers classified correctly
 - **Not executed (external infrastructure required)**: real Kafka broker, NATS server, Redis server, RPC interop
+
+## Known Security Limitations
+
+### Raw TCP frames
+
+Raw TCP frames that do not pass through the adapter's secured `handle()` method may bypass the PR-004 security boundary. The secured path covers the supported `TcpTransport.handle()` method-registry boundary; callers must route protected operations through that supported secured entry point if they expect the dispatcher to enforce configured authentication and authorization. Do not assume that all raw TCP traffic is secured.
+
+### tRPC HTTP procedures
+
+tRPC HTTP procedures that bypass the adapter's secured `handle()` boundary may not receive the PR-004 dispatcher enforcement. The secured entry point is `TrpcTransport.handle()` and its supported adapter wiring. Alternate execution paths, including direct router procedure execution through hosted HTTP, must be routed through the secured boundary or protected separately. Do not assume that every tRPC HTTP procedure is automatically protected by this integration.
+
+### Additional known limitations
+
+- Connect RPC remains client-side in this package; it hosts no inbound server beyond the supported adapter boundary.
+- Tracing and metrics are integrated opportunistically and their implementations remain in-memory utilities where no external backend is configured.
+- Passing security dependencies configures the path; absence of those dependencies means the path is not protected by this dispatcher.
 
 ## License
 

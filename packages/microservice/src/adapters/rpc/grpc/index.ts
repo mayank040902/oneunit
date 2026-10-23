@@ -2,6 +2,10 @@ import { BaseTransport } from '@/transport/transport';
 import { TransportHealth, RpcClient, RpcServer, RpcContext, RpcMethodHandler } from '@/core/capabilities';
 import type * as grpc from '@grpc/grpc-js';
 import { createMicroserviceError, ErrorCodes } from '@/core/errors.js';
+import { resolveSecurity, createSecuredDispatcher } from '@/core/secured-dispatcher.js';
+import type { ResolvedSecurity } from '@/core/secured-dispatcher.js';
+import type { SecuredRequestContext } from '@/core/secured-dispatcher.js';
+import type { ServiceCredentials } from '@/identity/credentials.js';
 
 export interface GrpcConfig {
   endpoint: string;
@@ -14,11 +18,13 @@ export interface GrpcConfig {
 
 export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer {
   private config: GrpcConfig;
+  private securityInput: unknown;
   private client: grpc.Client | null = null;
   private server: grpc.Server | null = null;
   private methodHandlers: Map<string, Map<string, RpcMethodHandler>> = new Map();
+  private securedDispatcherInstance: ReturnType<typeof createSecuredDispatcher> | null = null;
 
-  constructor(config: GrpcConfig) {
+  constructor(config: GrpcConfig, security?: unknown) {
     super({
       name: 'grpc',
       capabilities: {
@@ -31,6 +37,16 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
       },
     });
     this.config = config;
+    this.securityInput = security;
+  }
+
+  private getSecuredDispatcher() {
+    if (this.securedDispatcherInstance) return this.securedDispatcherInstance;
+    const resolved = resolveSecurity(this.config, this.securityInput, this) as ResolvedSecurity;
+    if (!resolved.protected) return null;
+    const dispatcher = resolved.dispatcher ?? (resolved.options ? createSecuredDispatcher(resolved.options) : null);
+    this.securedDispatcherInstance = dispatcher;
+    return dispatcher;
   }
 
   async start(): Promise<void> {
@@ -124,20 +140,91 @@ export class GrpcTransport extends BaseTransport implements RpcClient, RpcServer
         { details: { service, method } }
       );
     }
-    return handler(input, context);
+    const dispatcher = this.getSecuredDispatcher();
+    const metadata = context.metadata instanceof Map ? context.metadata : new Map(Object.entries(context.metadata ?? {}));
+    context.metadata = metadata;
+    const request: SecuredRequestContext = {
+      service,
+      method,
+      transport: 'grpc',
+      operation: `${service}.${method}`,
+      targetService: service,
+      credentials: metadata.get('credentials') as ServiceCredentials | undefined,
+      metadata,
+      attributes: {},
+      correlationId: context.correlationId,
+    };
+    const run = () => {
+      if (request.principal && metadata) {
+        metadata.set('principal', request.principal);
+        metadata.set('authenticatedPrincipal', request.principal);
+      }
+      if (request.caller && metadata) {
+        metadata.set('caller', request.caller);
+      }
+      return handler(input, context);
+    };
+    if (!dispatcher) {
+      return run();
+    }
+    return dispatcher.dispatch(request, run);
   }
 
-  private createGrpcHandler(handler: RpcMethodHandler, _serviceName: string, _methodName: string): grpc.UntypedHandleCall {
+  private createGrpcHandler(handler: RpcMethodHandler, serviceName: string, methodName: string): grpc.UntypedHandleCall {
     return async (call: grpc.ServerUnaryCall<unknown, unknown>, callback: grpc.sendUnaryData<unknown>) => {
       try {
+        const metadataMap = new Map<string, unknown>();
+        const rawMetadata = call?.metadata as { getMap?: () => Record<string, unknown>; get?: (key: string) => unknown } | undefined;
+        if (rawMetadata && typeof rawMetadata.getMap === 'function') {
+          const mapped = rawMetadata.getMap();
+          for (const [key, value] of Object.entries(mapped ?? {})) {
+            metadataMap.set(key, value);
+          }
+        } else if (rawMetadata instanceof Map) {
+          for (const [key, value] of rawMetadata) {
+            metadataMap.set(String(key), value);
+          }
+        } else if (rawMetadata && typeof rawMetadata.get === 'function') {
+          for (const key of ['credentials', 'correlation-id', 'authorization', 'traceparent']) {
+            const value = rawMetadata.get(key);
+            const resolved = Array.isArray(value) ? value[0] : value;
+            if (resolved !== undefined) metadataMap.set(key, resolved);
+          }
+        }
+
         const context: RpcContext = {
-          serviceId: _serviceName,
-          correlationId: (call.metadata.get('correlation-id')?.[0] as string | undefined) || crypto.randomUUID(),
+          serviceId: serviceName,
+          correlationId: (metadataMap.get('correlation-id') as string | undefined) || crypto.randomUUID(),
           headers: {},
-          metadata: new Map(),
+          metadata: metadataMap,
         };
 
-        const result = await handler(call.request, context);
+        const dispatcher = this.getSecuredDispatcher();
+        const credentials = metadataMap.get('credentials') as ServiceCredentials | undefined;
+        const request: SecuredRequestContext = {
+          service: serviceName,
+          method: methodName,
+          transport: 'grpc',
+          operation: `${serviceName}.${methodName}`,
+          targetService: serviceName,
+          credentials,
+          metadata: metadataMap,
+          attributes: {},
+          correlationId: context.correlationId,
+        };
+
+        const run = async () => {
+          if (request.principal && metadataMap) {
+            metadataMap.set('principal', request.principal);
+            metadataMap.set('authenticatedPrincipal', request.principal);
+          }
+          if (request.caller && metadataMap) {
+            metadataMap.set('caller', request.caller);
+          }
+          return handler(call.request, context);
+        };
+
+        const result = dispatcher ? await dispatcher.dispatch(request, run) : await run();
         callback(null, result);
       } catch (err) {
         callback(err as grpc.ServiceError, null);

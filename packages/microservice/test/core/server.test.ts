@@ -310,3 +310,64 @@ describe('MicroserviceServer edge cases', () => {
     expect(server.getMethodHandler('svc1', 'method')).not.toBe(handler2);
   });
 });
+describe('MicroserviceServer handle security integration', () => {
+  it('executes the handler only after authentication and authorization succeed', async () => {
+    const handler = vi.fn().mockResolvedValue('ok');
+    const server = createServer(makeServerOptions({
+      authorization: { evaluate: vi.fn().mockResolvedValue({ allowed: true }) } as any,
+      authenticator: { authenticate: vi.fn().mockResolvedValue({ authenticated: true }) } as any,
+    }));
+    server.registerMethod('svc', 'method', handler);
+
+    const context = {
+      serviceId: 'remote',
+      correlationId: 'corr',
+      headers: {},
+      metadata: new Map([['credentials', { type: 'api-key', apiKey: 'valid' }]]),
+    };
+
+    await expect(server.handle('svc', 'method', { x: 1 }, context as any)).resolves.toBe('ok');
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects requests with invalid credentials before handler execution', async () => {
+    const handler = vi.fn().mockResolvedValue('ok');
+    const server = createServer(makeServerOptions({
+      authorization: { evaluate: vi.fn().mockResolvedValue({ allowed: true }) } as any,
+      authenticator: { authenticate: vi.fn().mockResolvedValue({ authenticated: false, error: 'Invalid API key' }) } as any,
+    }));
+    server.registerMethod('svc', 'method', handler);
+
+    const context = {
+      serviceId: 'remote',
+      correlationId: 'corr',
+      headers: {},
+      metadata: new Map([['credentials', { type: 'api-key', apiKey: 'invalid' }]]),
+    };
+
+    await expect(server.handle('svc', 'method', { x: 1 }, context as any)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('rejects unauthorized requests before handler execution', async () => {
+    const handler = vi.fn().mockResolvedValue('ok');
+    const server = createServer(makeServerOptions({
+      authorization: { evaluate: vi.fn().mockResolvedValue({ allowed: false, reason: 'denied' }) } as any,
+    }));
+    server.registerMethod('svc', 'method', handler);
+
+    const context = {
+      serviceId: 'remote',
+      correlationId: 'corr',
+      headers: {},
+      metadata: new Map(),
+    };
+
+    await expect(server.handle('svc', 'method', { x: 1 }, context as any)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
