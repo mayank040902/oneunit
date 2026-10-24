@@ -8,7 +8,7 @@ export {
   OAuthError,
   ProviderError,
   ValidationError,
-} from "./errors.js";
+} from "./errors/index.js";
 
 export {
   encode,
@@ -16,26 +16,26 @@ export {
   decodeUnsafe,
   encodeAccessToken,
   encodeRefreshToken,
-} from "./jwt.js";
+} from "./crypto/index.js";
 
 export {
   RBAC,
   createRBAC,
   defineRoles,
   matchPermission,
-} from "./rbac.js";
+} from "./rbac/index.js";
 
 export {
   hashPassword,
   verifyPassword,
   needsRehash,
-} from "./password.js";
+} from "./crypto/index.js";
 
 export {
   OAuth,
   createOAuth,
   createMemoryStateStore,
-} from "./oauth.js";
+} from "./oauth/index.js";
 
 export {
   createProvider,
@@ -57,14 +57,15 @@ export {
   slack,
   spotify,
   tiktok,
-} from "./providers.js";
+} from "./oauth/providers/index.js";
 
 export {
   Auth,
   auth,
   createAuth,
   createMemoryRefreshStore,
-} from "./auth.js";
+  createMemorySessionStore,
+} from "./core/index.js";
 
 export {
   expressAdapter,
@@ -73,7 +74,7 @@ export {
   uwsAdapter,
   snapshotUwsRequest,
   createAdapters,
-} from "./adapters.js";
+} from "./adapters/index.js";
 
 export {
   parseExpiresIn,
@@ -121,4 +122,4 @@ export type {
   FastifyLike,
   FastifyRequestLike,
   FastifyReplyLike,
-} from "./types.js";
+} from "./types/index.js";

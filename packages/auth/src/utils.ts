@@ -1,5 +1,5 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
-import { ValidationError } from "./errors.js";
+import { ValidationError } from "./errors/index.js";
 
 const UNIT_SECONDS = Object.freeze({
   s: 1,

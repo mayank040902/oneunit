@@ -306,7 +306,7 @@ describe("adapters", () => {
     const handler = decorated.authenticate as (o?: unknown) => (req: unknown, reply: unknown) => Promise<void>;
     const request: Record<string, unknown> = { headers: {} };
     const sent: unknown[] = [];
-    const reply = { code: (s: number) => ({ send: (b: unknown) => { sent.push(b); return b; } }) };
+    const reply = { code: (_s: number) => ({ send: (b: unknown) => { sent.push(b); return b; } }) };
 
     await handler()(request, reply);
 
@@ -324,7 +324,7 @@ describe("adapters", () => {
     const handler = decorated.authenticate as (o?: unknown) => (req: unknown, reply: unknown) => Promise<void>;
     const request: Record<string, unknown> = { headers: {} };
     const sent: unknown[] = [];
-    const reply = { code: (s: number) => ({ send: (b: unknown) => { sent.push(b); return b; } }) };
+    const reply = { code: (_s: number) => ({ send: (b: unknown) => { sent.push(b); return b; } }) };
 
     await handler()(request, reply);
 
@@ -646,14 +646,15 @@ describe("defaultRole scope", () => {
     assert.equal(rbac.can({}, "public.read"), true);
   });
 
-  it("assigns defaultRole to a null subject", () => {
-    assert.equal(rbac.can(null, "public.read"), true);
-    assert.equal(rbac.can(undefined, "public.read"), true);
+  it("does not assign defaultRole to a null subject", () => {
+    assert.equal(rbac.can(null, "public.read"), false);
+    assert.equal(rbac.can(undefined, "public.read"), false);
   });
 
   it("means defaultRole must stay unprivileged", () => {
     const danger = createRBAC({ defaultRole: "admin", roles: { admin: { permissions: ["*"] } } });
-    assert.equal(danger.can(null, "anything"), true, "why defaultRole must not be privileged");
+    assert.equal(danger.can(null, "anything"), false);
+    assert.equal(danger.can({}, "anything"), true);
   });
 });
 

@@ -76,7 +76,7 @@ pnpm --filter @oneunit/auth test
 
 **Security behavior needs a test that fails without the fix.** The behaviors
 enumerated as invariants in
-[ARCHITECTURE.md](./ARCHITECTURE.md#security-invariants) are each backed by a
+[ARCHITECTURE.md](./docs/ARCHITECTURE.md#security-invariants) are each backed by a
 case in `test/security.test.ts`; if you touch one of them, extend that list and
 add the test. A PR that hardens something and does not add a regression test will
 be asked for one, because the next refactor will otherwise quietly undo it.
@@ -93,7 +93,7 @@ first:
 - **`defaultRole` grants anonymous callers.** `rbac.can(null, "x.write")`
   returns `true` when a `defaultRole` is configured. That is intentional: a
   default role is a grant to a subject with no subject. See
-  [ARCHITECTURE.md](./ARCHITECTURE.md#defaultrole-applies-to-a-null-subject-too).
+  [ARCHITECTURE.md](./docs/ARCHITECTURE.md#defaultrole-applies-to-a-null-subject-too).
 - **A refresh token cannot be revoked by `logout()` after its access token was
   issued.** Access tokens are stateless assertions. `revokeAllSessions()` with a
   `sessionStore` is the way to invalidate them early.

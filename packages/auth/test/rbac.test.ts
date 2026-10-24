@@ -64,7 +64,8 @@ describe("rbac", () => {
       roles: { guest: { permissions: ["public.read"] } },
     });
     assert.equal(rbac.can({}, "public.read"), true);
-    assert.equal(rbac.can(null, "public.read"), true);
+    assert.equal(rbac.can(null, "public.read"), false);
+    assert.equal(rbac.can(undefined, "public.read"), false);
   });
 
   it("rejects empty role names", () => {

@@ -12,7 +12,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./package.json": "./package.json"
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js",
+      "default": "./dist/*.js"
+    }
   },
   "files": [
     "dist",
@@ -20,8 +24,8 @@
     "examples",
     "LICENSE",
     "README.md",
-    "ARCHITECTURE.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "docs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -31,10 +35,10 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm run build && npm test",
     "pack:check": "npm pack --dry-run",
-    "example": "npm run build && tsx examples/",
-    "example:standalone": "npm run build && tsx examples/standalone.ts",
-    "example:oauth": "npm run build && tsx examples/oauth-social.ts",
-    "example:sessions": "npm run build && tsx examples/sessions.ts"
+    "example": "npm run build && tsx examples/basic.ts",
+    "lint": "pnpm exec eslint src test",
+    "verify:google:id-token": "npm run build && tsx scripts/verify-google-id-token.ts",
+    "observe:google:jwks": "node scripts/watch-google-jwks.mjs"
   },
   "keywords": [
     "auth",

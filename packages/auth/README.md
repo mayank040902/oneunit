@@ -16,7 +16,7 @@ Monorepo: https://github.com/mayank040902/framework
 
 Requires Node.js 20+. Single runtime dependency: `jsonwebtoken`.
 
-Docs: [README](./README.md) · [ARCHITECTURE](./ARCHITECTURE.md) · [CHANGELOG](./CHANGELOG.md) · [Security](../../docs/security.md)
+Docs: [README](./README.md) · [ARCHITECTURE](./docs/ARCHITECTURE.md) · [FEATURES](./docs/features.md) · [CHANGELOG](./CHANGELOG.md) · [Security](../../docs/security.md)
 
 Upgrading from 1.x? See the [2.0.0 migration notes](./CHANGELOG.md#migration).
 
@@ -187,7 +187,7 @@ With a user store, `auth.register()` and `auth.loginWithPassword()` hash and ver
 Cost parameters travel inside the hash so they can be raised later, and they are
 range-checked before any work happens — a hash carrying hostile parameters
 returns `false` rather than being computed. See
-[ARCHITECTURE.md](./ARCHITECTURE.md#stored-parameters-are-treated-as-hostile-input)
+[ARCHITECTURE.md](./docs/ARCHITECTURE.md#stored-parameters-are-treated-as-hostile-input)
 for the bounds and why they are needed.
 
 ```js
@@ -462,20 +462,24 @@ that was already issued — that token stays valid until it expires, and its
 retroactive either.
 
 To invalidate a session immediately, everywhere, configure a `sessionStore`.
-Tokens then carry a session version that is checked on every `verify()` and
-`refresh()`:
+Tokens then carry a session version and (for session stores that can answer the
+check) a session id that is checked on every `verify()` and `refresh()`:
 
 ```js
 const auth = createAuth({
   secret,
-  sessionStore: {
-    getVersion: (userId) => db.getVersion(userId) ?? 0,
-    bumpVersion: (userId) => db.incrementVersion(userId),
-  },
+  sessionStore: createMemorySessionStore(), // or your shared store
 });
 
 await auth.revokeAllSessions(userId); // every device, access and refresh
+await auth.revokeSession(sessionId);  // one session only
 ```
+
+`revokeAllSessions()` bumps the user-wide version. `revokeSession()` marks the
+session id carried in the token (`sid`) as revoked without touching other
+sessions for the same user. Stateless JWT verification remains unchanged: when
+no `sessionStore` is configured, no per-verification store read happens and
+`revokeAllSessions()` returns `false` instead of claiming success.
 
 This costs one store read per verification, which is why it is opt-in. Without
 a `sessionStore`, `revokeAllSessions()` returns `false` rather than appearing
@@ -489,6 +493,7 @@ accept the window instead.
 | `getVersion(userId)` | yes | Current version for a user; `undefined` counts as `0` |
 | `bumpVersion(userId)` | for `revokeAllSessions` | Invalidate every session for a user |
 | `revokeSession(jti)` | for `revokeSession` | Invalidate one session by its jti |
+| `isSessionRevoked(jti)` | recommended | Answer whether a session id has been revoked |
 
 ### Access token claims
 
@@ -509,9 +514,9 @@ await auth.register({ email, password }, { roles: ["member"] });
 ### Reserved claims
 
 `sub`, `userId`, `roles`, `permissions`, `typ`, `iss`, `aud`, `exp`, `iat`,
-`nbf`, and `jti` are derived from the authenticated user and RBAC, and cannot be
-replaced by a claim extractor or by `additionalClaims`. Doing so throws rather
-than silently minting a token for someone else:
+`nbf`, `jti`, and `sv` are derived from the authenticated user and RBAC, and
+cannot be replaced by a claim extractor or by `additionalClaims`. Doing so
+throws rather than silently minting a token for someone else:
 
 ```js
 auth.registerExtractor("sub", fn);                            // throws
@@ -651,35 +656,25 @@ Every named export from `@oneunit/auth`:
 
 ### Types
 
-`AuthErrorOptions`, `JwtSignOptions`, `JwtVerifyOptions`, `JwtPayload`, `Secret`, `RoleDefinition`, `RBACOptions`, `AuthSubject`, `PasswordOptions`, `OAuthProfile`, `OAuthTokens`, `OAuthProviderConfig`, `OAuthProvider`, `ProviderDefinition`, `StateStore`, `OAuthOptions`, `OAuthAuthorizeOptions`, `UserRecord`, `UserStore`, `RefreshRecord`, `RefreshStore`, `LoginOptions`, `LoginResult`, `AuthOptions`, `RequestLike`, `ExtractTokenOptions`, `UwsHttpResponse`, `UwsHttpRequest`, `UwsRequestSnapshot`, `UwsHandler`, `ExpressRequestLike`, `ExpressResponseLike`, `ExpressNext`, `KoaContextLike`, `FastifyLike`, `FastifyRequestLike`, `FastifyReplyLike`.
+`AuthErrorOptions`, `JwtSignOptions`, `JwtVerifyOptions`, `JwtPayload`, `Secret`, `RoleDefinition`, `RBACOptions`, `AuthSubject`, `PasswordOptions`, `OAuthProfile`, `OAuthTokens`, `OAuthProviderConfig`, `OAuthProvider`, `ProviderDefinition`, `StateStore`, `OAuthOptions`, `OAuthAuthorizeOptions`, `UserRecord`, `UserStore`, `RefreshRecord`, `RefreshStore`, `LoginOptions`, `LoginResult`, `SessionStore`, `AuthOptions`, `AuthHookName`, `AuthHookHandler`, `RequestLike`, `ExtractTokenOptions`, `UwsHttpResponse`, `UwsHttpRequest`, `UwsRequestSnapshot`, `UwsHandler`, `ExpressRequestLike`, `ExpressResponseLike`, `ExpressNext`, `KoaContextLike`, `FastifyLike`, `FastifyRequestLike`, `FastifyReplyLike`.
 
 ## Examples
 
 | File | Shows |
 | :--- | :--- |
-| `examples/standalone.ts` | Login, rotation, replay rejection, wildcards, TTL validation |
-| `examples/sessions.ts` | Session revocation, what `logout()` cannot reach, hashing bounds, reserved claims |
-| `examples/express.ts` | Middleware, `optional` auth, refresh and logout routes, session revocation, OAuth |
-| `examples/fastify.ts` | Plugin registration, plugin-level `optional`, preHandlers |
-| `examples/uwebsockets.ts` | Abort-safe handlers, request snapshots, provider lookup, opt-in query tokens |
-| `examples/oauth-social.ts` | Provider config, PKCE, state handling, Apple `id_token` verification |
+| `examples/basic.ts` | Login, verification, RBAC, password hashing, refresh rotation and replay rejection |
 
-They import from `@oneunit/auth`, so they run against a real install:
+Run it:
 
 ```bash
-npm run example:standalone
-npm run example:oauth
+npm run example
 ```
 
 From an installed copy:
 
 ```bash
-npx tsx node_modules/@oneunit/auth/examples/standalone.ts
+npx tsx node_modules/@oneunit/auth/examples/basic.ts
 ```
-
-The OAuth example needs `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; it exits
-with a note otherwise, because provider config is validated at `authorize()`
-time rather than at `createAuth()` time.
 
 ## Scripts
 
@@ -697,3 +692,48 @@ public API and the shipped examples against it.
 ## License
 
 MIT. Copyright (c) 2026 mayank.
+
+## Integration and release verification
+
+Deterministic tests run with `npm test`, `npm run lint`, `npm run typecheck`,
+and `npm run build`.
+
+Service-dependent tests:
+
+- Redis: set `REDIS_URL` (default `redis://localhost:6379`).
+- PostgreSQL: set `DATABASE_URL` (default `postgres://user@localhost/mydb?host=/run/postgresql`).
+- Real Redis/SQL suites require `REQUIRES_SERVICES=1` in CI to fail instead of
+  skipping when services are absent.
+
+Opt-in live OIDC tests require all of the following:
+
+- `OIDC_LIVE=1`
+- `OIDC_ISSUER` (for example `https://appleid.apple.com`)
+- `OIDC_CLIENT_ID`
+- `OIDC_ID_TOKEN` (dedicated test-tenant token only)
+
+Never use production credentials or run live provider rotation tests against a
+provider you do not control. Live signing-key rotation is not claimed as verified
+unless an actual provider rotates keys during the run.
+
+Consumer package verification:
+
+```sh
+npm run build
+npm pack --pack-destination /tmp/scratchpad
+cd /tmp/scratchpad/consumer-smoke
+npm install /tmp/scratchpad/oneunit-auth-*.tgz
+node smoke.mjs
+```
+
+Google OIDC live verification:
+
+```sh
+npm run verify:google:id-token
+npm run observe:google:jwks
+```
+
+`verify:google:id-token` performs the full authenticated Google callback flow and
+validates the resulting ID token with `@oneunit/auth`. `observe:google:jwks`
+monitors Google's published JWKS and persists timestamped evidence under
+`artifacts/google-jwks` (ignored by Git). See `docs/google-oidc-live-testing.md`.

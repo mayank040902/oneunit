@@ -5,6 +5,7 @@ import * as api from "../src/index.js";
 describe("public api", () => {
   it("exports core constructors and factories", () => {
     assert.equal(typeof api.createAuth, "function");
+    assert.equal(typeof api.createMemorySessionStore, "function");
     assert.equal(typeof api.Auth, "function");
     assert.equal(typeof api.createRBAC, "function");
     assert.equal(typeof api.createOAuth, "function");
