@@ -156,12 +156,10 @@ These are evaluated against a subject you construct in code. A `permissions`
 array on a stored user record is not copied into access tokens — see
 [Access token claims](#access-token-claims).
 
-> **`defaultRole` is assigned to subjects without roles.** A subject with no
-> `roles`/`role` field — such as `{}` — receives `defaultRole`, but `null`,
-> `undefined`, and `""` are denied outright and never receive it, so
-> `can(null, "post.write")` is `false` even if `defaultRole` carries that
-> permission. Keep `defaultRole` unprivileged, and check for a subject before
-> asking:
+> **`defaultRole` is a grant to anonymous callers.** A subject with no roles —
+> including `null` and `undefined` — is assigned `defaultRole`, so
+> `can(null, "post.write")` is `true` if `defaultRole` carries that permission.
+> Keep `defaultRole` unprivileged, and check for a subject before asking:
 >
 > ```js
 > if (ctx.state.user && auth.can(ctx.state.user, "post.write")) { ... }
@@ -538,7 +536,7 @@ await auth.register({ email, password }, { roles: ["member"] });
 ### Reserved claims
 
 `sub`, `userId`, `roles`, `permissions`, `typ`, `iss`, `aud`, `exp`, `iat`,
-`nbf`, `jti`, `sv`, and `sid` are derived from the authenticated user and RBAC, and
+`nbf`, `jti`, and `sv` are derived from the authenticated user and RBAC, and
 cannot be replaced by a claim extractor or by `additionalClaims`. Doing so
 throws rather than silently minting a token for someone else:
 
@@ -601,7 +599,7 @@ Every named export from `@oneunit/auth`:
 | :--- | :--- | :--- |
 | `createAuth` | function | Create an `Auth` instance with JWT, RBAC, OAuth, and password support |
 | `Auth` | class | The auth instance class |
-| `auth` | class | Alias for `Auth` |
+| `auth` | function | Alias for `createAuth` |
 
 ### JWT
 
@@ -663,8 +661,6 @@ Every named export from `@oneunit/auth`:
 | Export | Kind | Description |
 | :--- | :--- | :--- |
 | `createMemoryRefreshStore` | function | In-memory refresh token store (dev/test) |
-| `createMemorySessionStore` | function | In-memory session/revocation store (dev/test) |
-| `createMemoryStateStore` | function | In-memory OAuth state store (dev/test) |
 
 ### Utilities
 
@@ -717,49 +713,4 @@ public API and the shipped examples against it.
 
 ## License
 
-MIT. Copyright (c) 2026 mayank.
-
-## Integration and release verification
-
-Deterministic tests run with `npm test`, `npm run lint`, `npm run typecheck`,
-and `npm run build`.
-
-Service-dependent tests:
-
-- Redis: set `REDIS_URL` (default `redis://localhost:6379`).
-- PostgreSQL: set `DATABASE_URL` (default `postgres://user@localhost/mydb?host=/run/postgresql`).
-- Real Redis/SQL suites require `REQUIRES_SERVICES=1` in CI to fail instead of
-  skipping when services are absent.
-
-Opt-in live OIDC tests require all of the following:
-
-- `OIDC_LIVE=1`
-- `OIDC_ISSUER` (for example `https://appleid.apple.com`)
-- `OIDC_CLIENT_ID`
-- `OIDC_ID_TOKEN` (dedicated test-tenant token only)
-
-Never use production credentials or run live provider rotation tests against a
-provider you do not control. Live signing-key rotation is not claimed as verified
-unless an actual provider rotates keys during the run.
-
-Consumer package verification:
-
-```sh
-npm run build
-npm pack --pack-destination /tmp/scratchpad
-cd /tmp/scratchpad/consumer-smoke
-npm install /tmp/scratchpad/oneunit-auth-*.tgz
-node smoke.mjs
-```
-
-Google OIDC live verification:
-
-```sh
-npm run verify:google:id-token
-npm run observe:google:jwks
-```
-
-`verify:google:id-token` performs the full authenticated Google callback flow and
-validates the resulting ID token with `@oneunit/auth`. `observe:google:jwks`
-monitors Google's published JWKS and persists timestamped evidence under
-`artifacts/google-jwks` (ignored by Git). See the script sources under `scripts/`.
+[MIT]. Copyright (c) 2026 mayank.
