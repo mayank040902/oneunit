@@ -21,33 +21,112 @@ type CommandError = Error & {
   command?: { name?: unknown; args?: unknown } | null;
 };
 
+
+function redactSensitiveString(value: unknown): unknown {
+  if (typeof value === "string") {
+    let safe = value;
+    safe = safe.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s/@]+:[^\s/@]+@/gi, "$1://***@");
+    safe = safe.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer ***");
+    return safe;
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactSensitiveString);
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      out[key] = redactSensitiveString((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
 export function redactError(error: unknown): unknown {
   if (!(error instanceof Error)) {
-    return error;
+    const redacted = redactSensitiveString(error);
+    return redacted;
   }
 
   const command = (error as CommandError).command;
+  const secretCommand = isSecretCommand(command);
 
-  if (
+  let commandSafe: CommandError["command"] | undefined;
+  if (typeof command === "object" && command !== null) {
+    if (secretCommand) {
+      commandSafe = { ...command, args: "[redacted]" };
+    } else if (command.args !== undefined) {
+      commandSafe = { ...command, args: redactSensitiveString(command.args) };
+    } else {
+      commandSafe = { ...command };
+    }
+  }
+
+  const sanitisedMessage = redactSensitiveString(error.message);
+  const messageChanged = sanitisedMessage !== error.message;
+
+  const cause = (error as Error & { cause?: unknown }).cause;
+  const redactedCause = cause === undefined ? undefined : redactError(cause);
+  const causeChanged = cause !== undefined && redactedCause !== cause;
+
+  // Extra enumerable properties, redacted where possible.
+  const extraKeys = Object.keys(error).filter(
+    (key) =>
+      key !== "name" &&
+      key !== "message" &&
+      key !== "stack" &&
+      key !== "command" &&
+      key !== "cause",
+  );
+  let extraChanged = false;
+  const extras: Record<string, unknown> = {};
+  for (const key of extraKeys) {
+    const originalValue = (error as unknown as Record<string, unknown>)[key];
+    const redactedValue = redactSensitiveString(originalValue);
+    extras[key] = redactedValue;
+    if (!shallowEqual(originalValue, redactedValue)) {
+      extraChanged = true;
+    }
+  }
+
+  const commandChanged = !shallowEqual(command, commandSafe);
+
+  // Nothing sensitive was found: keep the original object so callers (and
+  // tests) can rely on identity for a clean error.
+  if (!secretCommand && !messageChanged && !causeChanged && !commandChanged && !extraChanged) {
+    return error;
+  }
+
+  const safe = new Error(sanitisedMessage as string) as CommandError;
+  safe.name = error.name;
+  safe.stack = error.stack;
+  if (commandSafe) {
+    safe.command = commandSafe;
+  }
+  if (cause !== undefined) {
+    (safe as Error & { cause?: unknown }).cause = redactedCause;
+  }
+  for (const key of extraKeys) {
+    (safe as unknown as Record<string, unknown>)[key] = extras[key];
+  }
+
+  return safe;
+}
+
+function isSecretCommand(command: { name?: unknown; args?: unknown } | null | undefined): boolean {
+  return (
     typeof command === "object" &&
     command !== null &&
     SECRET_COMMANDS.has(String(command.name).toLowerCase())
-  ) {
-    // Copy rather than mutate: ioredis may still be using this error, and the
-    // caller has no reason to lose the original for their own handling.
-    //
-    // `message` is deliberately kept. Redis error text is what tells an
-    // operator *why* authentication failed, and it never echoes the password
-    // back. Only the attached command's args carry it.
-    const safe = new Error(error.message) as CommandError;
-    safe.name = error.name;
-    safe.stack = error.stack;
-    safe.command = { ...command, args: "[redacted]" };
+  );
+}
 
-    return safe;
+function shallowEqual(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return a === b;
   }
-
-  return error;
 }
 
 /**
@@ -64,6 +143,84 @@ export function redactError(error: unknown): unknown {
  * still recognise a client the other already wired.
  */
 const WIRED = Symbol.for("oneunit.redis.eventsAttached");
+
+
+
+export interface ErrorClassification {
+  kind: "auth" | "connection" | "timeout" | "command" | "unknown";
+  retryable: boolean;
+  code?: string;
+}
+
+export function classifyError(error: unknown): ErrorClassification {
+  const redacted = redactError(error);
+  const message = redacted instanceof Error ? redacted.message : String(redacted);
+  const original = error instanceof Error ? error : undefined;
+  const code = (original as { code?: unknown })?.code ? String((original as { code?: unknown }).code) : undefined;
+
+  if (code === "ECONNREFUSED" || /WRONGPASS|NOAUTH/i.test(message)) {
+    return { kind: "auth", retryable: false, code: code ?? "AUTH" };
+  }
+
+  if (
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket disconnected/i.test(message)
+  ) {
+    return {
+      kind: "connection",
+      retryable: code !== "ECONNREFUSED",
+      code,
+    };
+  }
+
+  if (code === "ETIMEDOUT" || /timed? out/i.test(message)) {
+    return { kind: "timeout", retryable: true, code };
+  }
+
+  if (/READONLY|WRONGTYPE|ERR /i.test(message)) {
+    return { kind: "command", retryable: false, code };
+  }
+
+  return { kind: "unknown", retryable: false, code };
+}
+
+export function isRetryable(error: unknown): boolean {
+  return classifyError(error).retryable;
+}
+
+export interface ErrorHandlingOptions {
+  enabled?: boolean;
+  logger?: Logger;
+  onError?: (error: unknown, classification: ErrorClassification) => void;
+}
+
+export function attachErrorHandling(
+  client: RedisClient,
+  options: ErrorHandlingOptions = {},
+): void {
+  if (!options.enabled) {
+    return;
+  }
+
+  const logger = normalizeLogger(options.logger);
+
+  client.on("error", (err: Error) => {
+    const classified = classifyError(err);
+    const redacted = redactError(err);
+
+    if (options.onError) {
+      options.onError(redacted, classified);
+      return;
+    }
+
+    logger?.debug?.("redis error classified", {
+      kind: classified.kind,
+      retryable: classified.retryable,
+      err: redacted,
+    });
+  });
+}
 
 export function attachEvents(client: RedisClient, loggerInput?: Logger): void {
   if ((client as unknown as Record<symbol, boolean>)[WIRED]) {

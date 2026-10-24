@@ -14,6 +14,9 @@ export interface QueueEventsConfig {
   logger?: Logger;
   prefix?: string;
   connection?: QueueEventsOptions["connection"];
+  logJobData?: boolean;
+  logPayloads?: boolean;
+  payloadRedactor?: (value: unknown) => unknown;
 }
 
 /**
@@ -131,14 +134,22 @@ export function attachQueueEvents(config: QueueEventsConfig): QueueEvents {
       args: { jobId: string; failedReason: string; prev?: string },
       _id: string,
     ) => {
-      logger?.error(`Job ${args.jobId} failed`, args.failedReason);
+      logger?.error(`Job ${args.jobId} failed`, { failedReason: redactError(args.failedReason) });
     },
   );
+
+  const logJobData =
+    config.logJobData === true || config.logPayloads === true;
 
   queueEvents.on(
     "progress",
     (args: { jobId: string; data: unknown }, _id: string) => {
-      logger?.info(`Job ${args.jobId} progress`, args.data);
+      if (logJobData) {
+        const redactor = config.payloadRedactor ?? ((value: unknown) => redactError(value));
+        logger?.info(`Job ${args.jobId} progress`, redactor(args.data));
+      } else {
+        logger?.info(`Job ${args.jobId} progress`);
+      }
     },
   );
 

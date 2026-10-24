@@ -27,7 +27,17 @@
       "import": "./dist/pipeline/index.js",
       "default": "./dist/pipeline/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./features": {
+      "types": "./dist/features/index.d.ts",
+      "import": "./dist/features/index.js",
+      "default": "./dist/features/index.js"
+    },
+    "./auth": {
+      "types": "./dist/features/index.d.ts",
+      "import": "./dist/features/index.js",
+      "default": "./dist/features/index.js"
+    }
   },
   "files": [
     "dist",
@@ -98,5 +108,13 @@
     "eslint": "^9.22.0",
     "tsx": "^4.20.5",
     "typescript": "^5.8.2"
+  },
+  "peerDependencies": {
+    "@oneunit/auth": ">=2.0.2"
+  },
+  "peerDependenciesMeta": {
+    "@oneunit/auth": {
+      "optional": true
+    }
   }
 }

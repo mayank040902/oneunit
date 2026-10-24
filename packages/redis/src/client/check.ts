@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { type Redis as RedisClient } from "ioredis";
+import { redactError } from "./events.js";
 
 export interface HealthResult {
   status: "up" | "down";
@@ -61,7 +62,10 @@ export async function health(
         value: elapsed(),
         unit: "ms",
       },
-      error: error instanceof Error ? error.message : String(error),
+      error:
+        redactError(error) instanceof Error
+          ? (redactError(error) as Error).message
+          : String(redactError(error)),
     };
   } finally {
     clearTimeout(timer);

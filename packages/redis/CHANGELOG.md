@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Optional core helper primitives under `@oneunit/redis/features`: `buildKey`,
+  `serialize`, `deserialize`, `jitterTtl`, `setIfAbsent`, `compareAndSwap`,
+  `detectCapabilities`, and `createClusterClient`.
+- Optional opt-in error-handling profile through `createClient`'s
+  `errorHandling` option, plus `classifyError`, `isRetryable`, `attachErrorHandling`,
+  `retryOperation`, and `retryOperationWithResult`. Redaction remains mandatory.
+- `createScheduledSessionRevocation` for delayed session revocation built on
+  BullMQ delayed jobs.
+- README documentation for optional feature helpers.
+
+
 - `runPipeline(client, steps, options?)` batches many commands into a single
   round trip. A failed command does not fail a pipeline — ioredis resolves
   `EXEC` and reports the failure per command — so reading only the values from

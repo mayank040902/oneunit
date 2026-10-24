@@ -470,11 +470,12 @@ test("the published tarball contains no test or source credentials", () => {
   }
 
   // npm wraps the metadata under the package name.
-  const parsed = JSON.parse(result.stdout) as Record<
-    string,
-    { files: { path: string }[] }
-  >;
-  const tarball = parsed["@oneunit/redis"];
+  const parsed = JSON.parse(result.stdout) as
+    | { [key: string]: { files: { path: string }[] } }
+    | Array<{ name?: string; files: { path: string }[] }>;
+  const tarball = Array.isArray(parsed)
+    ? parsed[0]
+    : parsed["@oneunit/redis"];
   assert.ok(tarball, "npm pack produced no metadata");
 
   const paths = tarball.files.map((file) => file.path);

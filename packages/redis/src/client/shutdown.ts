@@ -31,18 +31,44 @@ const isClosed = (client: RedisClient): boolean =>
  */
 const FORCED = new WeakSet<object>();
 
+export interface ShutdownOptions {
+  timeout?: number;
+  logger?: Logger;
+}
+
 export async function shutdown(
   client: RedisClient | null | undefined,
+  loggerOrOptions?: Logger | ShutdownOptions | null,
   loggerInput?: Logger,
 ): Promise<void> {
   if (!client) {
     return;
   }
 
+  const options =
+    loggerOrOptions && typeof loggerOrOptions === "object" && isLoggerLike(loggerOrOptions)
+      ? ({} as ShutdownOptions)
+      : (loggerOrOptions as ShutdownOptions | undefined);
+
+  // Support shutdown(client, logger), shutdown(client, { timeout, logger }),
+  // and shutdown(client, { timeout }, logger).
+  const loggerCandidate =
+    loggerOrOptions && typeof loggerOrOptions === "object" && isLoggerLike(loggerOrOptions)
+      ? (loggerOrOptions as Logger)
+      : options?.logger ?? loggerInput;
+
+  const requestedTimeout = options?.timeout;
+  const timeout =
+    typeof requestedTimeout === "number" &&
+    Number.isFinite(requestedTimeout) &&
+    requestedTimeout > 0
+      ? requestedTimeout
+      : DEFAULT_TIMEOUT_MS;
+
   // Completing the logger here matters more than anywhere else: shutdown runs
   // during teardown, so `logger?.info is not a function` would replace a clean
   // disconnect with a rejection on the way out.
-  const logger = normalizeLogger(loggerInput);
+  const logger = normalizeLogger(loggerCandidate);
 
   // Once ioredis reaches "end" the connection is gone for good and QUIT
   // rejects with "Connection is closed.". Shutdown is registered on both
@@ -54,7 +80,7 @@ export async function shutdown(
 
   let timer: NodeJS.Timeout | undefined;
   const expiry = new Promise<"timeout">((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), DEFAULT_TIMEOUT_MS);
+    timer = setTimeout(() => resolve("timeout"), timeout);
   });
 
   try {
@@ -68,7 +94,7 @@ export async function shutdown(
       // directly so the retry loop stops and the process can exit; the
       // caller asked to disconnect, and we are, one way or another.
       logger?.warn(
-        `Redis did not acknowledge QUIT within ${DEFAULT_TIMEOUT_MS}ms, forcing the connection closed`,
+        `Redis did not acknowledge QUIT within ${timeout}ms, forcing the connection closed`,
       );
       client.disconnect();
       FORCED.add(client);
@@ -94,4 +120,14 @@ export async function shutdown(
   } finally {
     clearTimeout(timer);
   }
+}
+
+
+function isLoggerLike(value: unknown): value is Logger {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (typeof (value as Record<string, unknown>).error === "function" ||
+      typeof (value as Record<string, unknown>).info === "function")
+  );
 }

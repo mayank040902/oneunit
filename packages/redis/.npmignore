@@ -1,7 +1,5 @@
-src
-test
-coverage
+node_modules/
+*.tgz
 *.tsbuildinfo
-tsconfig.json
-package-lock.json
-node_modules
+.DS_Store
+.env*

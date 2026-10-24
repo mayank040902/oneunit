@@ -72,7 +72,7 @@ Production-ready Redis client wrapper and BullMQ job queue integration for Node.
 - **Safe Pipeline Batching** — `runPipeline` sends many commands in one round trip and reports per-command failures explicitly, because a failed command inside a raw `client.pipeline()` resolves the batch and is otherwise invisible. Each step must queue exactly one command, enforced at runtime; errors are redacted and the batch is bounded by a timeout.
 - **Prefix Inheritance** — `attachQueueEvents` automatically inherits the queue's custom prefix, preventing lost event subscriptions.
 - **Universal Logger Adapter** — Duck-typed logger support for Console, Pino, Winston, etc. Automatically normalizes missing log levels and inverts argument ordering for Pino (`(bindings, message)` vs `(message, extra)`).
-- **Subpath Exports** — Modular imports via `@oneunit/redis`, `@oneunit/redis/client`, `@oneunit/redis/queue`, and `@oneunit/redis/pipeline`.
+- **Subpath Exports** — Modular imports via `@oneunit/redis`, `@oneunit/redis/client`, `@oneunit/redis/queue`, `@oneunit/redis/pipeline`, and `@oneunit/redis/features`.
 - **Strict TypeScript Types** — Fully typed ESM package targeting Node.js 20+ with re-exported BullMQ and ioredis types.
 
 ---
@@ -713,6 +713,28 @@ npm run example:pipeline      # Batch many commands into one round trip with run
 
 ---
 
+## Auth Storage Adapter
+
+This package also exports optional Redis-backed stores for `@oneunit/auth`:
+
+```ts
+import Redis from "ioredis";
+import { createAuth } from "@oneunit/auth";
+import { createRedisStores } from "@oneunit/redis/features";
+
+const redis = new Redis(process.env.REDIS_URL);
+const stores = createRedisStores(redis);
+
+const auth = createAuth({
+  secret: process.env.AUTH_SECRET!,
+  refreshStore: stores.refreshStore,
+  sessionStore: stores.sessionStore,
+  // oauth: { stateStore: stores.stateStore }
+});
+```
+
+The auth subpath is opt-in and requires `@oneunit/auth` as a peer dependency. The core package remains Redis-free.
+
 ## Development & Verification
 
 ```bash
@@ -747,6 +769,71 @@ Two things about `npm test` that are easy to trip over:
   [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ---
+
+## Optional feature helpers (`@oneunit/redis/features`)
+
+The feature subtree ships dependency-free helpers and opt-in profiles on top of the base Redis/BullMQ wrappers. It is exposed via `@oneunit/redis/features` and does not change the default safe behavior of the base client.
+
+### Session scheduling
+
+```typescript
+import { createClient, createRedisSessionStore, createScheduledSessionRevocation } from "@oneunit/redis/features";
+
+const redis = createClient({ url: process.env.REDIS_URL });
+const sessionStore = createRedisSessionStore(redis, { keyPrefix: "app:" });
+const scheduler = createScheduledSessionRevocation({
+  connection: redis,
+  sessionStore,
+  queueName: "session-revocation",
+});
+
+await scheduler.schedule("session-id", Date.now() + 60_000);
+```
+
+### Error-handling profile
+
+```typescript
+import { createClient, classifyError, isRetryable } from "@oneunit/redis";
+
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  errorHandling: {
+    enabled: true,
+    onError(error, classification) {
+      console.log(classification.kind, classification.retryable, error);
+    },
+  },
+});
+
+console.log(classifyError(new Error("ECONNRESET")), isRetryable(new Error("ECONNRESET")));
+```
+
+### Retry, CAS, TTL, keys, serialization, capabilities
+
+```typescript
+import {
+  buildKey,
+  serialize,
+  deserialize,
+  jitterTtl,
+  setIfAbsent,
+  compareAndSwap,
+  detectCapabilities,
+  retryOperation,
+} from "@oneunit/redis/features";
+
+const key = buildKey("user", 42, "session");
+const raw = serialize({ id: 1 });
+const value = deserialize(raw);
+const ttl = jitterTtl(300, 0.1);
+
+await setIfAbsent(redisLikeClient, "idempotency-key", "created", { ttlSeconds: 60 });
+await compareAndSwap(redisLikeClient, "counter", "0", "1");
+const capabilities = await detectCapabilities(redisLikeClient);
+const result = await retryOperation(async () => "ok", { attempts: 3, baseDelayMs: 25, jitter: false });
+```
+
+Optional helpers remain thin wrappers. They do not add a cache, repository, lock, rate limiter, or framework runtime. All redacted error behavior stays mandatory even when an advanced profile is enabled.
 
 ## Architecture & Contributing
 
