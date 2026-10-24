@@ -1,0 +1,7 @@
+node_modules/
+*.tgz
+*.tsbuildinfo
+.DS_Store
+.env*
+.scripts*
+.test/*

@@ -156,10 +156,12 @@ These are evaluated against a subject you construct in code. A `permissions`
 array on a stored user record is not copied into access tokens — see
 [Access token claims](#access-token-claims).
 
-> **`defaultRole` is a grant to anonymous callers.** A subject with no roles —
-> including `null` and `undefined` — is assigned `defaultRole`, so
-> `can(null, "post.write")` is `true` if `defaultRole` carries that permission.
-> Keep `defaultRole` unprivileged, and check for a subject before asking:
+> **`defaultRole` is assigned to subjects without roles.** A subject with no
+> `roles`/`role` field — such as `{}` — receives `defaultRole`, but `null`,
+> `undefined`, and `""` are denied outright and never receive it, so
+> `can(null, "post.write")` is `false` even if `defaultRole` carries that
+> permission. Keep `defaultRole` unprivileged, and check for a subject before
+> asking:
 >
 > ```js
 > if (ctx.state.user && auth.can(ctx.state.user, "post.write")) { ... }
@@ -495,6 +497,28 @@ accept the window instead.
 | `revokeSession(jti)` | for `revokeSession` | Invalidate one session by its jti |
 | `isSessionRevoked(jti)` | recommended | Answer whether a session id has been revoked |
 
+### Optional Redis adapter
+
+When you need shared state across application instances, install the optional
+adapter and use its Redis-backed stores:
+
+```js
+import Redis from "ioredis";
+import { createRedisStores } from "@oneunit/redis/auth";
+
+const redis = new Redis(process.env.REDIS_URL);
+const stores = createRedisStores(redis);
+
+const auth = createAuth({
+  secret,
+  refreshStore: stores.refreshStore,
+  sessionStore: stores.sessionStore,
+});
+```
+
+In-memory stores remain process-local and are not suitable for shared
+production deployments.
+
 ### Access token claims
 
 Permissions in an access token are derived from RBAC roles. A `permissions`
@@ -514,7 +538,7 @@ await auth.register({ email, password }, { roles: ["member"] });
 ### Reserved claims
 
 `sub`, `userId`, `roles`, `permissions`, `typ`, `iss`, `aud`, `exp`, `iat`,
-`nbf`, `jti`, and `sv` are derived from the authenticated user and RBAC, and
+`nbf`, `jti`, `sv`, and `sid` are derived from the authenticated user and RBAC, and
 cannot be replaced by a claim extractor or by `additionalClaims`. Doing so
 throws rather than silently minting a token for someone else:
 
@@ -577,7 +601,7 @@ Every named export from `@oneunit/auth`:
 | :--- | :--- | :--- |
 | `createAuth` | function | Create an `Auth` instance with JWT, RBAC, OAuth, and password support |
 | `Auth` | class | The auth instance class |
-| `auth` | function | Alias for `createAuth` |
+| `auth` | class | Alias for `Auth` |
 
 ### JWT
 
@@ -639,6 +663,8 @@ Every named export from `@oneunit/auth`:
 | Export | Kind | Description |
 | :--- | :--- | :--- |
 | `createMemoryRefreshStore` | function | In-memory refresh token store (dev/test) |
+| `createMemorySessionStore` | function | In-memory session/revocation store (dev/test) |
+| `createMemoryStateStore` | function | In-memory OAuth state store (dev/test) |
 
 ### Utilities
 
@@ -736,4 +762,4 @@ npm run observe:google:jwks
 `verify:google:id-token` performs the full authenticated Google callback flow and
 validates the resulting ID token with `@oneunit/auth`. `observe:google:jwks`
 monitors Google's published JWKS and persists timestamped evidence under
-`artifacts/google-jwks` (ignored by Git). See `docs/google-oidc-live-testing.md`.
+`artifacts/google-jwks` (ignored by Git). See the script sources under `scripts/`.

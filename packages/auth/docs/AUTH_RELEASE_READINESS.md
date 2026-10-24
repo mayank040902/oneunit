@@ -4,12 +4,12 @@
 
 Overall status: **READY WITH LIMITATIONS**.
 
-Deterministic regression suite passes: 234/234 tests. Lint, TypeScript typecheck, production build, packed-tarball consumer smoke and strict TypeScript compilation, and dependency audit (`0 vulnerabilities`) pass. Google discovery and JWKS retrieval pass against Google's real endpoints. Live Google ID-token validation now passed with `scripts/verify-google-id-token.ts` and a real Google-issued ID token.
+Deterministic regression suite passes: 243/243 tests. Lint, TypeScript typecheck, production build, packed-tarball consumer smoke and strict TypeScript compilation, and dependency audit (`0 vulnerabilities`) pass. Google discovery and JWKS retrieval pass against Google's real endpoints. Live Google ID-token validation now passed with `scripts/verify-google-id-token.ts` and a real Google-issued ID token.
 
 ## Baseline versus final
 
 - Deterministic tests before: 208 passing.
-- Deterministic tests after: 234 passing.
+- Deterministic tests after: 243 passing.
 - Lint: PASS.
 - Typecheck: PASS.
 - Build: PASS.
@@ -30,7 +30,6 @@ Deterministic regression suite passes: 234/234 tests. Lint, TypeScript typecheck
 - `consumer/*` and `scripts/verify-consumer.sh`: Automated packed-tarball consumer verification.
 - `scripts/verify-google-id-token.ts`: Opt-in interactive Google OIDC verification.
 - `scripts/watch-google-jwks.mjs`: Opt-in Google signing-key rotation observer and local JWKS snapshots.
-- `docs/google-oidc-live-testing.md`: Google Cloud setup and command instructions.
 - `.github/workflows/auth.yml`: Service-integration and opt-in live OIDC tiers.
 - `AUTH_RELEASE_READINESS.md`: Evidence report.
 
@@ -64,7 +63,7 @@ Deterministic regression suite passes: 234/234 tests. Lint, TypeScript typecheck
 | Live Google discovery and JWKS access | PASS | `npm run verify:google:id-token` printed Google authorization URL and completed callback/token exchange; 200 response |
 | Live Google ID-token validation | PASS | Real Google ID token validated; subject `101299963513251952819`, email verified |
 | Live Google signing-key rotation | NOT OBSERVED | Google has two current RSA JWKS keys (`943a...`, `f10f...`); no key-set changes observed during a 60-second observer run; deterministic rotation tests passed |
-| Regression suite | PASS 234/234 (0 fail, 0 skip) | `npm test` |
+| Regression suite | PASS 243/243 (0 fail, 0 skip) | `npm test` |
 | Lint | PASS | `npm run lint` |
 | Typecheck | PASS | `npm run typecheck` |
 | Build | PASS | `npm run build` |
@@ -167,6 +166,11 @@ Commands executed:
   key in the observation window.
 - Status: `NOT OBSERVED`. Deterministic rotation tests passed.
 - Tests/commands: `npm run observe:google:jwks`, `npm run verify:google:id-token`.
+
+## Redis adapter availability
+
+- Redis-backed `RefreshStore`, `SessionStore`, and `StateStore` implementations are tested against real Redis.
+- The core `@oneunit/auth` package remains free of Redis runtime dependencies.
 
 ## Final release recommendation
 

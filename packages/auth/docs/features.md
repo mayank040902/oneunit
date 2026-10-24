@@ -16,6 +16,12 @@ them.
 - Side-effect-free import, with explicit construction through `createAuth`, `createRBAC`,
   `createOAuth`, and `createProvider`.
 
+## Optional Redis storage adapter
+
+`@oneunit/redis/auth` provides Redis-backed `RefreshStore`, `SessionStore`,
+and `StateStore` implementations without adding Redis dependencies to the core
+package. Store contracts remain implemented through dependency injection.
+
 ## Authentication core (`createAuth`)
 
 `createAuth(options)` builds a single `Auth` facade. Security-sensitive values are
@@ -56,7 +62,7 @@ Safety properties:
 - Missing secrets and invalid configuration fail early.
 - Refresh tokens carry `jti` and cannot be used as access tokens.
 - Claim extractors cannot introduce reserved claims (`sub`, `userId`, `roles`,
-  `permissions`, `typ`, `iss`, `aud`, `exp`, `iat`, `nbf`, `jti`, `sv`).
+  `permissions`, `typ`, `iss`, `aud`, `exp`, `iat`, `nbf`, `jti`, `sv`, `sid`).
 - Additional claims cannot override reserved claims.
 
 ## RBAC
@@ -80,7 +86,8 @@ Safety properties:
 
 Roles are application-defined. The package ships no hard-coded product roles.
 An unprivileged `defaultRole` is deliberately allowed and is assigned to
-subjects without roles, including `null` and `undefined`.
+subjects without `roles`/`role` fields (such as `{}`), but never to `null`,
+`undefined`, or `""`.
 
 ## Passwords
 
@@ -250,7 +257,7 @@ Exported helpers:
 - `randomState`: random string for OAuth state.
 - `extractBearerToken`: extracts a bearer token from a request structure.
 - `pkceVerifier` and `pkceChallenge`.
-- `createMemoryRefreshStore`, `createMemoryStateStore`.
+- `createMemoryRefreshStore`, `createMemorySessionStore`, `createMemoryStateStore`.
 
 ## Errors
 

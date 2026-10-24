@@ -100,6 +100,7 @@ export type {
   OAuthProvider,
   ProviderDefinition,
   StateStore,
+  SessionStore,
   OAuthOptions,
   OAuthAuthorizeOptions,
   UserRecord,

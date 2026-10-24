@@ -43,6 +43,7 @@ src/
   rbac/index.ts
   stores/memory/index.ts
   stores/memory/refresh-store.ts
+  stores/memory/session-store.ts
   stores/memory/state-store.ts
   types/index.ts
   utils.ts
@@ -261,13 +262,13 @@ export { createAuth } from "./core/auth.js";
 export { createRBAC, RBAC } from "./rbac/index.js";
 export { hashPassword, verifyPassword, needsRehash } from "./crypto/password.js";
 
-// Optional feature entry points
-export * from "./oauth/index.js";
-export * from "./adapters/express/index.js";
-// … etc.
+// Optional feature entry points, grouped in src/index.ts
+export { OAuth, createOAuth, createMemoryStateStore } from "./oauth/index.js";
+export { expressAdapter, fastifyAdapter, koaAdapter, uwsAdapter, snapshotUwsRequest, createAdapters } from "./adapters/index.js";
+export { createMemoryRefreshStore, createMemorySessionStore } from "./core/index.js";
 ```
 
-Use `package.json` `exports` to prevent accidental imports of private files. Published JS, declarations, and export paths must agree. Compatibility files (`roles.ts`, `token.ts`) are marked deprecated, tested, and retained for a documented period only.
+Use `package.json` `exports` for public entry points. The package also exposes a generic `./*` mapping to built files, so documented entry points (especially `index.ts`) remain the supported public surface. Compatibility shims are documented and tested before removal.
 
 ## 11. Configuration design
 
