@@ -306,6 +306,89 @@ try {
 }
 ```
 
+#### At-Least-Once Job Processing (`jobAtLeastOnce`)
+
+`createClient` can optionally initialize an at-least-once job processing feature built on BullMQ. When enabled, the returned client exposes a `jobAtLeastOnce` property with a simplified API for enqueueing jobs and creating workers.
+
+```typescript
+interface JobAtLeastOnceOptions {
+  enabled?: boolean; // Default: false
+  queueName?: string; // Default: "application-jobs"
+  prefix?: string; // Default: "queue"
+  concurrency?: number; // Default: 5
+  attempts?: number; // Default: 3
+  backoff?: { type: "fixed" | "exponential"; delay: number }; // Default: exponential, 1000ms
+  removeOnComplete?: number | boolean; // Default: 100
+  removeOnFail?: number | boolean; // Default: 1000
+  ownsConnection?: boolean; // Default: false
+  logger?: Logger;
+}
+
+interface JobAtLeastOnce {
+  readonly enabled: boolean;
+  readonly queueName: string;
+  add<TData>(name: string, data: TData, options?: JobsOptions): Promise<Job<TData>>;
+  createWorker<TData, TResult>(processor: Processor<TData, TResult>, options?: { concurrency?: number }): Worker<TData, TResult>;
+  getCounts(): Promise<Record<string, number>>;
+  close(): Promise<void>;
+  status(): { enabled: boolean; queueName: string; isClosed: boolean };
+}
+```
+
+**Usage:**
+
+```typescript
+import { createClient, shutdown } from "@oneunit/redis";
+
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  jobAtLeastOnce: {
+    enabled: true,
+    queueName: "application-jobs",
+    concurrency: 10,
+    attempts: 5,
+    backoff: { type: "exponential", delay: 2000 },
+  },
+});
+
+// Create a worker to process jobs
+const worker = redis.jobAtLeastOnce.createWorker(async (job) => {
+  console.log(`Processing ${job.name}`, job.data);
+  await doWork(job.data);
+  return { success: true };
+});
+
+// Enqueue jobs
+await redis.jobAtLeastOnce.add("send-email", { to: "user@example.com", subject: "Hello" });
+await redis.jobAtLeastOnce.add("generate-report", { reportId: "monthly-2026" });
+
+// Graceful shutdown
+await redis.jobAtLeastOnce.close();
+await shutdown(redis);
+```
+
+**Key behaviors:**
+
+- **At-least-once semantics** — Jobs are retried up to `attempts` times with the configured backoff. A job may execute more than once if the handler succeeds but completion persistence fails. Handlers should be idempotent or use application-level deduplication.
+- **Stalled job recovery** — BullMQ's built-in stalled job detection automatically recovers jobs from workers that crash or lose connectivity.
+- **Disabled by default** — When `enabled: false` (or omitted), `jobAtLeastOnce` is a no-op implementation that throws on API calls without allocating any queues, workers, or background resources.
+- **Shared connection** — Uses the same Redis client as the rest of the application. The feature does not own the connection by default; set `ownsConnection: true` if the feature should close the client on shutdown.
+- **QueueEvents included** — A managed `QueueEvents` listener is created automatically for lifecycle logging (completed, failed, progress, error with credential redaction).
+
+**Configuration options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Enable the feature. When `false`, API calls throw and no resources are allocated. |
+| `queueName` | `"application-jobs"` | BullMQ queue name. |
+| `prefix` | `"queue"` | BullMQ key prefix. Must match across queue, worker, and events. |
+| `concurrency` | `5` | Worker concurrency (jobs processed in parallel). |
+| `attempts` | `3` | Maximum job attempts including the first try. |
+| `backoff` | `{ type: "exponential", delay: 1000 }` | Retry backoff strategy. |
+| `removeOnComplete` | `100` | Number of completed jobs to retain in Redis. |
+| `removeOnFail` | `1000` | Number of failed jobs to retain in Redis. |
+| `ownsConnection` | `false` | If `true`, `close()` will `quit()` the Redis client. |
+
 ---
 
 ### Queue API (`@oneunit/redis/queue` or `@oneunit/redis`)
@@ -435,6 +518,68 @@ import { createClient } from "@oneunit/redis";
 const logger = pino();
 const client = createClient({}, logger); // Pino format handled automatically
 ```
+
+### Job Processing (`@oneunit/redis`)
+
+Optional at-least-once job processing reuses BullMQ and remains inactive unless explicitly
+enabled.
+
+```typescript
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  jobAtLeastOnce: {
+    enabled: true,
+    queueName: "application-jobs",
+    concurrency: 10,
+    attempts: 5,
+    backoff: { type: "exponential", delay: 1000 },
+  },
+});
+
+await redis.jobAtLeastOnce.add("send-email", { userId: "user-123" });
+
+const worker = redis.jobAtLeastOnce.createWorker(async (job) => {
+  // Handler must be idempotent: at-least-once delivery may repeat work.
+  return "processed";
+});
+
+await redis.jobAtLeastOnce.close();
+```
+
+Disabling it creates no queue, worker, timer, or background processing resources.
+
+### Resilient Client (`@oneunit/redis`)
+
+Configure resilience once at startup; application code uses ordinary Redis commands. When the
+client or factory is configured with `resilience`, `fallback`, or `recovery` options,
+`createClient` returns a resilient client automatically. `createResilientRedis` is also available
+for wrapping an existing client.
+
+```typescript
+const redis = createClient({
+  url: process.env.REDIS_URL,
+  resilience: {
+    fallback: { enabled: true, strategy: "memory" },
+    recovery: { enabled: true },
+  },
+});
+
+await redis.set("user:123", value);
+const value = await redis.get("user:123");
+await redis.shutdown(); // does not close caller-owned clients created separately
+```
+
+Limits and overflow behavior:
+
+- `maxBufferSize` / `maxPayloadBytes`: maximum estimated bytes retained by fallback state and journal
+- `maxPendingOperations` / `maxOperations`: maximum queued operations
+- `maxPendingAge`: maximum age of an unrecovered operation, in milliseconds
+- `onLimitExceeded`: only `"reject"` is supported; unsupported policies fail explicitly
+
+When a limit is reached, new fallback writes are rejected, previously accepted operations remain
+recoverable, and capacity becomes available again after recovery. During an outage the local store holds
+only data needed for supported commands, and sensitive values that the application writes to Redis may
+therefore exist in process memory. Treat the host and process accordingly.
 
 ### Pipeline API (`@oneunit/redis/pipeline` or `@oneunit/redis`)
 
@@ -693,12 +838,7 @@ The [`examples/`](./examples) directory contains working, standalone scripts dem
 To run them, ensure a Redis instance is listening on `localhost:6379` (or specify `REDIS_URL`):
 
 ```bash
-npm run example:standalone    # Health check, SET/GET, atomic INCRBY, TTL
-npm run example:cache         # Read-through cache with TTL and SCAN-based invalidation
-npm run example:session       # Session lifecycle: create, update, sliding TTL, delete
-npm run example:pubsub        # Publish/subscribe across distinct client connections
-npm run example:queue-worker  # BullMQ producer, worker retries, backoff, and event logging
-npm run example:pipeline      # Batch many commands into one round trip with runPipeline
+npm run example:efficient     # End-to-end: cache, pipeline, queue, worker, at-least-once jobs
 ```
 
 ---

@@ -608,6 +608,30 @@ The architecture is ready when **all** of the following are true:
 
 ---
 
+## 20.5 Resilience engine (optional)
+
+The resilience engine is an optional, process-local layer. It must remain an optional feature,
+not a mandatory dependency, and must preserve thin integration principles.
+
+- Configuration lives in `createClient({ resilience, fallback, recovery, ... })` or `createResilientRedis(client, config)`.
+- Healthy commands execute directly against ioredis.
+- Outage detection uses connection events and connection-failure command errors; ordinary Redis command errors do not activate fallback.
+- Eligible degraded reads use the process-local store (`HIT`, `MISS`, or `UNKNOWN`), and eligible writes are journaled with bounded limits.
+- Reconnection automatically runs a single shared recovery loop; manual recovery is diagnostic.
+- Pending operation age and storage limits are enforced; overflow is rejected rather than silently discarding queued work.
+- Shutdown clears pending/local state, waits for active recovery, and preserves caller ownership unless configured otherwise.
+- No cross-instance coordination or crash durability is claimed.
+
+## 20.7 Job processing (optional)
+
+Optional at-least-once processing is implemented through BullMQ rather than a separate custom queue engine.
+
+- Disabled by default and inactive when disabled.
+- Enabled feature creates a BullMQ queue; workers are created explicitly by the caller.
+- Retries, backoff, stalled-job handling, persistence, and completion semantics remain BullMQ's.
+- At-least-once semantics are documented, including possible duplicate handler execution.
+- Shutdown closes owned worker, event, and queue resources in order.
+
 ## Final recommendation
 
 Keep `@oneunit/redis` a **thin integration package**.

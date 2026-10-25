@@ -3,3 +3,8 @@ export * from "./queue/index.js";
 export * from "./logger.js";
 export * from "./pipeline/index.js";
 export * from "./features/index.js";
+export * from "./resilience/index.js";
+export * from "./resilient-redis.js";
+export * from "./jobs/at-least-once.js";
+export * from "./coordination/index.js";
+export * from "./cache/index.js";

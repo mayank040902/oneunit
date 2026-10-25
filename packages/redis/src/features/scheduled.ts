@@ -111,6 +111,9 @@ export function createScheduledSessionRevocation(
       if (worker) {
         await worker.close(true).catch(() => undefined);
       }
+      if (queue) {
+        await queue.close().catch(() => undefined);
+      }
     },
   };
 }

@@ -33,10 +33,25 @@
       "import": "./dist/features/index.js",
       "default": "./dist/features/index.js"
     },
+    "./resilience": {
+      "types": "./dist/resilience/index.d.ts",
+      "import": "./dist/resilience/index.js",
+      "default": "./dist/resilience/index.js"
+    },
     "./auth": {
       "types": "./dist/features/index.d.ts",
       "import": "./dist/features/index.js",
       "default": "./dist/features/index.js"
+    },
+    "./coordination": {
+      "types": "./dist/coordination/index.d.ts",
+      "import": "./dist/coordination/index.js",
+      "default": "./dist/coordination/index.js"
+    },
+    "./cache": {
+      "types": "./dist/cache/index.d.ts",
+      "import": "./dist/cache/index.js",
+      "default": "./dist/cache/index.js"
     }
   },
   "files": [
@@ -47,26 +62,24 @@
     "README.md",
     "ARCHITECTURE.md",
     "CONTRIBUTING.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "TRADE-OFFS.md",
+    "docs/resilience/README.md"
   ],
   "scripts": {
     "clean": "node -e \"const fs=require('node:fs');for(const p of ['dist','tsconfig.tsbuildinfo'])fs.rmSync(p,{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",
     "dev": "tsc -w -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/*.test.ts",
-    "test:watch": "tsx --test --watch test/*.test.ts",
+    "test": "vitest run --exclude \"test/examples/**\"",
+    "test:examples": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint src test",
-    "example:standalone": "npm run build && node examples/standalone.js",
-    "example:cache": "npm run build && node examples/cache.js",
-    "example:session": "npm run build && node examples/session.js",
-    "example:pipeline": "npm run build && node examples/pipeline.js",
-    "example:pubsub": "npm run build && node examples/pubsub.js",
-    "example:queue-worker": "npm run build && node examples/queue-worker.js",
     "prepack": "npm run build",
     "prepublishOnly": "npm run build && npm test",
     "pack:check": "npm pack --dry-run",
-    "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run pack:check"
+    "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run test:examples && npm run pack:check",
+    "example:efficient": "npm run build && node examples/efficient.js"
   },
   "keywords": [
     "redis",
@@ -107,7 +120,8 @@
     "@types/node": "^22.13.10",
     "eslint": "^9.22.0",
     "tsx": "^4.20.5",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "vitest": "^3.2.7"
   },
   "peerDependencies": {
     "@oneunit/auth": ">=2.0.2"

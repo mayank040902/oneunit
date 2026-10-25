@@ -14,7 +14,7 @@ Package version covered: `1.0.0` (`src/` as published). Raw Redis commands remai
 |---|---|---|
 | Connection management — connect, reconnect, disconnect, lifecycle hooks | ✅ | `createClient`, `attachEvents` (`connect`, `ready`, `reconnecting`, `error`, `close`), `shutdown` |
 | Client adapters — ioredis adapter | ✅ | Native `ioredis` client is constructed and returned |
-| Client adapters — optional alternative client adapters | ⚠️ | ioredis plus optional `createClusterClient` |
+| Client adapters — optional alternative client adapters | ❌ | None beyond ioredis |
 | Connection profile — standalone | ✅ | `createClient` returns the standalone `Redis` client |
 | Connection profile — Sentinel | ✅ | `createSentinelClient` plus pass-through options |
 | Connection profile — Cluster | ✅ | Optional `createClusterClient` |
@@ -22,7 +22,7 @@ Package version covered: `1.0.0` (`src/` as published). Raw Redis commands remai
 | Key builder — consistent keys, validation, hash-tag support | ✅ | Optional `buildKey` |
 | Serialization — JSON, strings, typed codecs, versioning | ✅ | Optional `serialize` / `deserialize` |
 | TTL management — default TTLs, expiration, TTL jitter | ✅ | Raw commands plus optional `jitterTtl` |
-| Atomic operations — transactions | ⚠️ | Raw `MULTI`/`EXEC`/`WATCH` on the client only |
+| Atomic operations — transactions | ✅ | `runTransaction` wrapper with labelled steps, timeout, and typed results (raw `MULTI`/`EXEC`/`WATCH` also available) |
 | Atomic operations — conditional writes | ✅ | Optional `setIfAbsent` / `compareAndSwap` |
 | Pipelines — batch commands, reduced round trips | ✅ | `runPipeline`, `pipelineValues`, labeled results, timeout, redaction |
 | Error handling — typed errors | ✅ | Typed pipeline/timeout/step errors plus optional `classifyError`, `isRetryable`, `attachErrorHandling` |
@@ -32,6 +32,27 @@ Package version covered: `1.0.0` (`src/` as published). Raw Redis commands remai
 | Graceful shutdown — stop workers, close subscriptions, release connections | ✅ | `shutdown()`, queue/worker close guidance |
 | Configuration validation — URLs, credentials, TLS, timeouts | ✅ | URL, `keyPrefix`, concurrency, TTL, and store validation |
 | Capability detection — supported commands and Redis features | ✅ | Optional `detectCapabilities` |
+| Resilience engine — transparent resilient client | ✅ | `createResilientRedis` and `createClient({ resilience, fallback, recovery })`, with auto-detect, degraded routing, automatic recovery |
+| Job processing — optional at-least-once BullMQ integration | ✅ | `jobAtLeastOnce`, BullMQ queue/worker wrappers, retries, backoff, graceful shutdown |
+
+| Resilience engine — in-memory buffering during Redis outages | ✅ | `createResilienceEngine`, bounded operation store, TTL-preserving recovery, lifecycle events, bounded pending age |
+| Resilience engine — operation fallback policy | ✅ | Eligible commands buffered, non-idempotent/unsafe commands rejected |
+| Resilience engine — bounded memory | ✅ | Max operation count, max payload bytes, max per-operation size, overflow policy |
+| Resilience engine — TTL preservation | ✅ | Absolute deadlines preserved across outage, remaining TTL applied on recovery |
+| Resilience engine — single-worker recovery | ✅ | One recovery coordinator per process, per-key ordering, bounded retries |
+| Resilience engine — ambiguous outcome handling | ✅ | Non-idempotent commands report AMBIGUOUS rather than blindly replaying |
+| Resilience engine — degraded-mode local reads | ✅ | Eligible reads served from local state (HIT/MISS/UNKNOWN) during outage |
+| Resilience engine — degraded-mode local writes | ✅ | Eligible mutations applied locally and journaled for reconciliation |
+| Resilience engine — local tombstones | ✅ | Deletions recorded as tombstones, preventing stale reads |
+| Resilience engine — local TTL preservation | ✅ | Original TTL deadlines preserved, remaining TTL served on read |
+| Resilience engine — bounded local store | ✅ | Max entries, max payload bytes, max entry size, overflow policy |
+| Resilience engine — read-your-writes | ✅ | Same-process local reads observe prior local mutations |
+| Resilience engine — conflict detection | ✅ | Recovery detects keys modified by other writers; configurable policy (overwrite/reject/abort) |
+| Resilience engine — ambiguous outcomes | ✅ | Connection failures after possible execution report AMBIGUOUS; no blind replay of non-idempotent commands |
+| Resilience engine — shutdown reporting | ✅ | Shutdown reports discarded pending operations and local entries |
+| Resilience engine — multi-instance | ❌ | Process-local only; no cross-instance shared state during outage |
+| Resilience engine — crash durability | ❌ | In-memory state lost on process crash; no durable persistence |
+| Resilience engine — local state cleared on shutdown | ✅ | `shutdown()` clears local store and stops connection |
 
 ## 2. Caching infrastructure
 
@@ -39,23 +60,23 @@ No dedicated cache module. Examples show manual cache-aside/TTL patterns on the 
 
 | Feature | Status |
 |---|---|
-| Cache-aside | ❌ |
-| Read-through | ❌ |
-| Write-through | ❌ |
-| Write-behind | ❌ |
-| Cache invalidation | ❌ |
-| Tag-based invalidation | ❌ |
-| Namespace invalidation | ❌ |
-| Negative caching | ❌ |
-| Cache stampede protection | ❌ |
-| Request coalescing | ❌ |
-| Stale-while-revalidate | ❌ |
-| TTL jitter | ❌ |
-| Cache warming | ❌ |
-| Local L1 cache | ❌ |
-| Cache metrics | ❌ |
-| Cache size policies | ❌ |
-| Recommended public API (`get`, `set`, `getOrLoad`, `remember`, `invalidate`, `invalidateTag`, `wrap`, `warm`) | ❌ |
+| Cache-aside | ✅ | Optional `createRedisCache` |
+| Read-through | ✅ | `getOrLoad` / `remember` |
+| Write-through | ✅ | Explicit `writeThrough(key, writer)` helper, `writeThrough` option on `set` |
+| Write-behind | ✅ | `writeBehind` option with async flush, `flushWriteBehind()`, `writeBehindStats()` |
+| Cache invalidation | ✅ | `invalidate` |
+| Tag-based invalidation | ✅ | `invalidateTag` |
+| Namespace invalidation | ⚠️ | Prefix-scoped keys, no global registry |
+| Negative caching | ✅ | `negativeTtlSeconds` option caches null results |
+| Cache stampede protection | ✅ | In-process coalescing |
+| Request coalescing | ✅ | In-process `getOrLoad` |
+| Stale-while-revalidate | ✅ | `staleWhileRevalidate` option serves stale while revalidating |
+| TTL jitter | ✅ | `jitter` option applies `jitterTtl` to stored TTLs |
+| Cache warming | ✅ | `warm(key, loader)` prepopulates without returning |
+| Local L1 cache | ✅ | `localL1` option with `enabled`, `ttlSeconds`, `populateOnMiss`, size policies |
+| Cache metrics | ✅ | `metrics()` returns hits, misses, hit rate, L1 stats, write-behind stats |
+| Cache size policies | ✅ | `sizePolicy` with `maxEntries`, `maxMemoryBytes`, `evictionPolicy` (LRU/LFU/FIFO/random) |
+| Recommended public API (`get`, `set`, `getOrLoad`, `remember`, `invalidate`, `invalidateTag`, `wrap`, `warm`, `writeThrough`, `flushWriteBehind`, `writeBehindStats`, `l1Stats`, `clearL1`, `evictL1`, `shutdown`) | ✅ | All implemented |
 
 ## 3. Rate limiting, quotas, and traffic control
 
@@ -82,25 +103,25 @@ No rate-limit or quota module in this package.
 
 ## 4. Distributed coordination and locking
 
-No lock, lease, semaphore, barrier, leader-election, or job-claiming API.
+Implemented under `@oneunit/redis/coordination` (also re-exported from the package root).
 
 | Feature | Status |
 |---|---|
-| Distributed mutex | ❌ |
-| Lease-based lock | ❌ |
-| Lock renewal | ❌ |
-| Safe lock release | ❌ |
-| Lock timeout | ❌ |
-| Try-lock | ❌ |
-| Lock with callback | ❌ |
-| Distributed semaphore | ❌ |
-| Single-flight execution | ❌ |
-| Leader election | ❌ |
-| Singleton scheduler | ❌ |
-| Job claiming | ❌ |
-| Fencing tokens | ❌ |
-| Resource leases | ❌ |
-| Distributed barriers | ❌ |
+| Distributed mutex | ✅ |
+| Lease-based lock | ✅ |
+| Lock renewal | ✅ |
+| Safe lock release | ✅ |
+| Lock timeout | ✅ |
+| Try-lock | ✅ |
+| Lock with callback | ✅ |
+| Distributed semaphore | ✅ |
+| Single-flight execution | ✅ |
+| Leader election | ✅ |
+| Singleton scheduler | ✅ |
+| Job claiming | ✅ |
+| Fencing tokens | ✅ |
+| Resource leases | ✅ |
+| Distributed barriers | ✅ |
 
 ## 5. Idempotency and duplicate prevention
 
@@ -124,28 +145,28 @@ No lock, lease, semaphore, barrier, leader-election, or job-claiming API.
 | Queue factory | ✅ | `createQueue` |
 | Worker factory | ✅ | `createWorker` |
 | Scheduled jobs | ✅ | Delayed jobs via BullMQ |
-| Recurring jobs | ⚠️ | BullMQ repeat options pass-through |
+| Recurring jobs | ✅ | `scheduleJob` / `removeJobScheduler` / `getJobSchedulers` wrappers plus BullMQ repeat options |
 | Retry and backoff policies | ✅ | Defaults + override merge |
 | Job priorities | ⚠️ | BullMQ `priority` option |
 | Job deduplication | ⚠️ | BullMQ `jobId` / deduplication pass-through |
 | Concurrency controls | ✅ | `WorkerConfig.concurrency` |
-| Job cancellation | ⚠️ | Native BullMQ `Job` methods; no wrapper |
-| Job progress | ⚠️ | Events logged; native progress reporting remains available |
-| Job result storage | ⚠️ | BullMQ return values accessible natively |
-| Dead-letter handling | ⚠️ | Failed-job retention; no dedicated DLQ abstraction |
+| Job cancellation | ✅ | `cancelJob`/`cancelWorkerJob` wrappers around native BullMQ cancellation |
+| Job progress | ✅ | `getJobProgress` wrapper plus native progress reporting |
+| Job result storage | ✅ | `getJobResult` wrapper plus native BullMQ return values |
+| Dead-letter handling | ✅ | `createDlqQueue`, `moveToDlq`, `replayDlqJob`, `getDlqEntries` wrappers |
 | Stalled-job recovery | ✅ | BullMQ built-in |
 | Graceful draining | ✅ | `worker.close(true)`, `queue.close()` |
-| Queue pause/resume | ⚠️ | Native BullMQ methods |
+| Queue pause/resume | ✅ | `pauseQueue`/`resumeQueue` wrappers over native BullMQ methods |
 | Queue rate limiting | ✅ | `WorkerConfig.limiter` |
 | Delayed execution | ✅ | Job `delay` |
-| Dependency workflows | ❌ | BullMQ `FlowProducer` is not exposed |
-| Batch jobs | ❌ | No high-level batch helper |
-| Bulk enqueueing | ⚠️ | Native `Queue.addBulk` on the returned queue |
+| Dependency workflows | ✅ | `createFlowProducer`, `addFlow`, `addBulkFlows` wrappers |
+| Batch jobs | ✅ | `addBulkJobs`/`enqueueBulkJobs`/`addBulkFlows` high-level wrappers |
+| Bulk enqueueing | ✅ | `addBulkJobs`/`enqueueBulkJobs`/`addBulkFlows` wrappers |
 | Job retention policies | ✅ | Defaults (`removeOnComplete`, `removeOnFail`) + override |
-| Queue health metrics | ⚠️ | Native BullMQ counts/metrics; no wrapper |
+| Queue health metrics | ✅ | `getQueueCounts`/`getQueueHealth`/`getWorkerHealth` wrappers |
 | Worker heartbeats | ✅ | BullMQ built-in |
 | Queue dashboard adapter | ❌ | None |
-| Higher-level additions (middleware, typed registries, error classification, tracing, per-queue policies) | ❌ | |
+| Higher-level additions (middleware, typed registries, error classification, tracing, per-queue policies) | ✅ | `createWorker` middleware, `createJobRegistry`/`validateJobData`, `createErrorClassifier`, `createTracingMiddleware`, policy registry helpers ||
 
 ## 7. Messaging and event infrastructure
 
@@ -376,6 +397,7 @@ The `features/` subtree is the only higher-level application support shipped in 
 | `createRedisStores(redis, options?)` | ✅ | Factory returning all three stores above |
 | `RedisStoreOptions` (`keyPrefix`, `revokedSessionTtlSeconds`) | ✅ | Store configuration options |
 | `createScheduledSessionRevocation(config)` | ✅ | Queue-backed delayed session revocation built on BullMQ delayed jobs |
+| `createRedisCache(redis, options?)` | ✅ | Optional Redis-backed cache with TTL, invalidation, tags, and stampede protection |
 | `buildKey(...parts)` | ✅ | Validated namespace/key builder primitive |
 | `serialize(value)` / `deserialize(raw)` | ✅ | JSON codec helpers |
 | `jitterTtl(baseSeconds, jitter?)` | ✅ | TTL jitter helper |
@@ -393,4 +415,20 @@ The `features/` subtree is the only higher-level application support shipped in 
 | Temporary tokens / temporary workflow state / short-lived authorization state (category 8) | `createRedisStateStore` |
 | Idempotency claim/complete and TTL policies (category 5) | `RefreshStore.consume`, `StateStore.consume`, store TTLs |
 | Queue factory / scheduled jobs / delayed execution (category 6) | `createScheduledSessionRevocation` uses `createQueue`/`createWorker` |
+
+### Local storage security
+
+The process-local store and pending journal retain values needed to serve or replay supported
+commands during an outage. They are process memory only, not encrypted, and may expose sensitive
+values if the process is compromised. They are not a durable store and are cleared on shutdown.
+
+### Resilience engine limitations
+
+| Limitation | Description |
+|---|---|
+| Process-local state | Local data and pending journal exist only in the current process. Other server instances cannot see buffered operations during an outage. Cross-instance consistency requires a shared/durable coordination mechanism. |
+| No crash durability | In-memory state is lost if the process crashes, restarts, or is terminated. `shutdown()` discards pending operations and local entries with an explicit event report. |
+| No exactly-once guarantee | The engine does not guarantee exactly-once execution. Non-idempotent commands report AMBIGUOUS rather than being blindly replayed. Callers must handle ambiguous outcomes. |
+| Conflict policy is advisory | Conflict detection during recovery checks if a key exists in Redis but cannot determine the exact version without a sidecar metadata key. The "overwrite" policy allows last-write-wins; "reject"/"abort" prevent overwriting but may leave operations unreconciled. |
+| Not a Redis emulator | Only explicitly supported commands can be buffered or served locally. Unsupported commands (e.g., `INCR`, `DECR`, transactions, locks) are rejected during outages. |
 | Secure temporary tokens (category 15) | `createRedisStateStore` with TTL + consume |

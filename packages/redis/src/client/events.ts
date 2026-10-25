@@ -25,7 +25,7 @@ type CommandError = Error & {
 function redactSensitiveString(value: unknown): unknown {
   if (typeof value === "string") {
     let safe = value;
-    safe = safe.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s/@]+:[^\s/@]+@/gi, "$1://***@");
+    safe = safe.replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s/@]*:[^\s/@]+@/gi, "$1://***@");
     safe = safe.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer ***");
     return safe;
   }
@@ -158,14 +158,14 @@ export function classifyError(error: unknown): ErrorClassification {
   const original = error instanceof Error ? error : undefined;
   const code = (original as { code?: unknown })?.code ? String((original as { code?: unknown }).code) : undefined;
 
-  if (code === "ECONNREFUSED" || /WRONGPASS|NOAUTH/i.test(message)) {
+  if (/WRONGPASS|NOAUTH/i.test(message)) {
     return { kind: "auth", retryable: false, code: code ?? "AUTH" };
   }
 
   if (
     code === "ECONNRESET" ||
     code === "ETIMEDOUT" ||
-    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket disconnected/i.test(message)
+    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket disconnected|connection is closed/i.test(message)
   ) {
     return {
       kind: "connection",

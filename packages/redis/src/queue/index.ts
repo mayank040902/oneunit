@@ -1,6 +1,10 @@
-export * from "./queue.js";
-export * from "./worker.js";
-export * from "./events.js";
+export { Queue } from "./queue.js";
+export { Worker } from "./worker.js";
+export { attachQueueEvents } from "./events.js";
+export { createQueue, addJob, addBulkJobs, scheduleJob, removeJobScheduler, getJobSchedulers, pauseQueue, resumeQueue, isQueuePaused, getQueueCounts, drainQueue, cleanQueue, closeQueue, obliterateQueue } from "./queue.js";
+export { createWorker, pauseWorker, resumeWorker, isWorkerPaused, isWorkerRunning, closeWorker, cancelWorkerJob, cancelAllWorkerJobs } from "./worker.js";
+export * from "./lifecycle.js";
 export type { QueueConfig } from "./queue.js";
-export type { WorkerConfig } from "./worker.js";
+export type { WorkerConfig, JobMiddleware } from "./worker.js";
 export type { QueueEventsConfig } from "./events.js";
+export type { QueuePolicy, PerQueuePolicies, DLQConfig, DLQEntry, TypedJobRegistry, JobProcessor, WorkerWithMiddleware } from "./lifecycle.js";
