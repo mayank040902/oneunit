@@ -30,7 +30,7 @@ import {
   createFlowProducer,
   addFlow,
   addBulkFlows,
-} from "../../dist/index.js";
+} from "@oneunit/redis";
 
 const redisUp = cachedRedisAvailable();
 const TEST_DB = TEST_REDIS_URL.endsWith("/") ? TEST_REDIS_URL + "1" : `${TEST_REDIS_URL}/1`;

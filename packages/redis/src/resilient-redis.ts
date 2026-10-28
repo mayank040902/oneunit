@@ -219,7 +219,11 @@ export function createResilientRedis<C extends Redis = Redis>(
   async function runSupportedCommand(command: string, args: unknown[]): Promise<unknown> {
     const op = makeOperation(command, args);
 
-    if (engine.state === "connected" && !engine.isDegraded) {
+    if (
+      engine.state === "connected" &&
+      !engine.isDegraded &&
+      (client as { status?: string }).status === "ready"
+    ) {
       try {
         const raw = (client as unknown as Record<string, (...a: unknown[]) => unknown>)[command](
           ...args,

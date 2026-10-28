@@ -4,11 +4,13 @@ import assert from "node:assert/strict";
 import { cachedRedisAvailable, TEST_REDIS_URL } from "../helpers.js";
 import {
   createClient,
-  createRedisSessionStore,
-  createScheduledSessionRevocation,
   shutdown,
   silentLogger,
 } from "../../dist/index.js";
+import {
+  createRedisSessionStore,
+  createScheduledSessionRevocation,
+} from "../../dist/features/index.js";
 
 const redisUp = cachedRedisAvailable();
 const SCHEDULED_REDIS_URL = TEST_REDIS_URL.endsWith("/") ? TEST_REDIS_URL + "1" : `${TEST_REDIS_URL}/1`;

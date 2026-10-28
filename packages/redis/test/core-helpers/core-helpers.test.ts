@@ -9,7 +9,7 @@ import {
   compareAndSwap,
   detectCapabilities,
 } from "../../dist/features/core-helpers.js";
-import { createClient, shutdown, silentLogger } from "../../dist/index.js";
+import { createClient, shutdown, silentLogger } from "@oneunit/redis";
 
 test("buildKey joins validated segments", () => {
   assert.equal(buildKey("user", 42, "session"), "user:42:session");

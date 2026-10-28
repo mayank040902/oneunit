@@ -13,7 +13,7 @@ import {
   silentLogger,
   createLogger,
   attachEvents,
-} from "../../dist/index.js";
+} from "@oneunit/redis";
 
 test("health reports up when ping succeeds", async () => {
   const client = {

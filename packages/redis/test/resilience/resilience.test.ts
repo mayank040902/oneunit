@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   createClient,
   silentLogger,
-} from "../../dist/index.js";
+} from "@oneunit/redis";
 import {
   createResilienceEngine,
   type ResilienceOperation,

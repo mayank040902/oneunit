@@ -11,7 +11,7 @@ import {
   health,
   shutdown,
   silentLogger,
-} from "../../dist/index.js";
+} from "@oneunit/redis";
 
 const KEY_PREFIX = "test:perf:";
 

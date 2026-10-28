@@ -138,6 +138,20 @@ export async function closeQueue(queue: Queue): Promise<void> {
 
   CLOSED_QUEUES.add(queue);
 
+  // BullMQ close() waits on a connection that may still be processing an
+  // in-flight "Connection is closed" error. Disconnecting the underlying
+  // duplicated client first prevents an unhandled error from escaping
+  // during teardown, mirroring ManagedQueueEvents.
+  const queueConnection = (queue as unknown as { connection?: { _client?: { disconnect?(): void }; initializing?: Promise<unknown> } }).connection;
+  if (queueConnection?.initializing) {
+    await queueConnection.initializing.catch(() => undefined);
+  }
+  try {
+    queueConnection?._client?.disconnect?.();
+  } catch {
+    /* ignore */
+  }
+
   try {
     await queue.close();
   } catch (error) {

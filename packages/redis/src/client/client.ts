@@ -4,7 +4,8 @@ import { normalizeLogger, type Logger } from "../logger.js";
 import type { RedisOptions } from "ioredis";
 import { createResilientRedis, type ResilientRedisOptions } from "../resilient-redis.js";
 import type { ResilientRedisFacade } from "../resilient-redis.js";
-import { createJobAtLeastOnce, type JobAtLeastOnce, type JobAtLeastOnceOptions } from "../jobs/at-least-once.js";
+import type { JobAtLeastOnce, JobAtLeastOnceOptions } from "../jobs/at-least-once.js";
+import { createRequire } from "node:module";
 
 export interface RedisClientOptions extends RedisOptions {
   url?: string;
@@ -34,6 +35,10 @@ export interface RedisClientOptions extends RedisOptions {
   recoveryConcurrency?: number;
   dedupeOnRecovery?: boolean;
   conflictPolicy?: import("../resilience/types.js").ConflictPolicy;
+  /** Enable at-least-once job processing. Can be a boolean or options object. */
+  atLeastOnce?: boolean | JobAtLeastOnceOptions;
+  /** Key prefix for at-least-once job queue (also used for BullMQ prefix). */
+  prefix?: string;
   jobAtLeastOnce?: JobAtLeastOnceOptions;
 }
 
@@ -65,6 +70,10 @@ export function createClient(
     // BullMQ throws unless this is null on the connections it drives, and
     // `createQueue`/`createWorker` take this same client instance.
     maxRetriesPerRequest = null,
+    // When BullMQ features are enabled, disable ioredis's built-in retry so
+    // that connection duplicates created by Queue/QueueEvents do not enter
+    // an unbounded reconnect loop that prevents clean teardown.
+    retryStrategy: providedRetryStrategy,
     resilience: resilienceOption,
     fallback: fallbackOption,
     recovery: recoveryOption,
@@ -91,8 +100,18 @@ export function createClient(
     dedupeOnRecovery: dedupeOnRecoveryOption,
     conflictPolicy: conflictPolicyOption,
     jobAtLeastOnce: jobAtLeastOnceOption,
+    atLeastOnce: atLeastOnceOption,
+    prefix: prefixOption,
     ...restOptions
   } = resolved;
+
+  const retryStrategy = providedRetryStrategy ?? (
+    atLeastOnceOption === true ||
+    (typeof atLeastOnceOption === "object" && atLeastOnceOption !== null && atLeastOnceOption.enabled) ||
+    (typeof jobAtLeastOnceOption === "object" && jobAtLeastOnceOption !== null && jobAtLeastOnceOption.enabled)
+      ? () => null
+      : undefined
+  );
 
   const url = explicitUrl ?? process.env.REDIS_URL;
 
@@ -108,8 +127,8 @@ export function createClient(
   // ioredis only reads `url` from the first positional argument; an options
   // object carrying `url` is silently ignored and connects to localhost.
   const client = url
-    ? new Redis(url, { ...restOptions, lazyConnect, maxRetriesPerRequest })
-    : new Redis({ ...restOptions, lazyConnect, maxRetriesPerRequest });
+    ? new Redis(url, { ...restOptions, lazyConnect, maxRetriesPerRequest, retryStrategy })
+    : new Redis({ ...restOptions, lazyConnect, maxRetriesPerRequest, retryStrategy });
 
   // A caller-supplied logger may implement only some of the levels. Completing
   // it here keeps `attachEvents` from throwing mid-connection-event.
@@ -141,12 +160,35 @@ export function createClient(
   };
 
   const hasDirectResilienceConfig = Object.keys(directResilienceFields).length > 0;
-  const jobFeature = createJobAtLeastOnce({
-    ...jobAtLeastOnceOption,
-    connection: client,
-    ownsConnection: false,
-    logger: jobAtLeastOnceOption?.logger ?? logger,
-  });
+
+  // Support atLeastOnce as boolean shorthand or options object, and use prefix from createClient options
+  const atLeastOnceObj = typeof atLeastOnceOption === "object" && atLeastOnceOption !== null
+    ? atLeastOnceOption
+    : jobAtLeastOnceOption ?? {};
+  const atLeastOnceEnabled = atLeastOnceOption === true || atLeastOnceObj.enabled === true;
+  const jobPrefix = prefixOption ?? atLeastOnceObj.prefix;
+  const queueName = atLeastOnceObj.queueName ?? jobAtLeastOnceOption?.queueName ?? "application-jobs";
+
+  let jobFeature: JobAtLeastOnce;
+  if (atLeastOnceEnabled) {
+    // Load BullMQ-backed job processing only when it is explicitly enabled so
+    // that importing `@oneunit/redis/client` does not pull BullMQ at rest.
+    const requireModule = createRequire(import.meta.url);
+    const { createJobAtLeastOnce } = requireModule("../jobs/at-least-once.js") as {
+      createJobAtLeastOnce: (options: JobAtLeastOnceOptions & { connection: unknown }) => JobAtLeastOnce;
+    };
+    jobFeature = createJobAtLeastOnce({
+      ...atLeastOnceObj,
+      ...jobAtLeastOnceOption,
+      enabled: true,
+      prefix: jobPrefix,
+      connection: client,
+      ownsConnection: false,
+      logger: atLeastOnceObj.logger ?? jobAtLeastOnceOption?.logger ?? logger,
+    });
+  } else {
+    jobFeature = createDisabledJobAtLeastOnce(queueName);
+  }
   (client as unknown as { jobAtLeastOnce?: JobAtLeastOnce }).jobAtLeastOnce = jobFeature;
 
   const resilienceConfig =
@@ -177,6 +219,61 @@ export function createClient(
   }
 
   return client;
+}
+
+
+function createDisabledJobAtLeastOnce(queueName: string): JobAtLeastOnce {
+  const disabled = (message: string): never => {
+    throw new Error(message);
+  };
+  return {
+    enabled: false,
+    queueName,
+    async add(): Promise<never> {
+      return disabled("At-least-once job processing is disabled");
+    },
+    async addBulk(): Promise<never> {
+      return disabled("At-least-once job processing is disabled");
+    },
+    async schedule(): Promise<never> {
+      return disabled("At-least-once job processing is disabled");
+    },
+    async removeSchedule(): Promise<never> {
+      return disabled("At-least-once job processing is disabled");
+    },
+    async getSchedules(): Promise<never> {
+      return disabled("At-least-once job processing is disabled");
+    },
+    createWorker(): never {
+      return disabled("At-least-once job processing is disabled");
+    },
+    async getCounts(): Promise<never> {
+      return disabled("At-least-once job processing is disabled");
+    },
+    async pause(): Promise<void> {
+      disabled("At-least-once job processing is disabled");
+    },
+    async resume(): Promise<void> {
+      disabled("At-least-once job processing is disabled");
+    },
+    async isPaused(): Promise<never> {
+      return disabled("At-least-once job processing is disabled");
+    },
+    async drain(): Promise<void> {
+      disabled("At-least-once job processing is disabled");
+    },
+    async obliterate(): Promise<void> {
+      disabled("At-least-once job processing is disabled");
+    },
+    async close(): Promise<void> {
+    },
+    status() {
+      return { enabled: false, queueName, isClosed: true };
+    },
+    getDlq() {
+      return null;
+    },
+  } as JobAtLeastOnce;
 }
 
 export type { Logger } from "../logger.js";

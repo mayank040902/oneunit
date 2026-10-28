@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from "vitest";
 import assert from "node:assert/strict";
-import { createClient, createRateLimiter, createConcurrencyLimiter, createQuota, createBurstProtector, shutdown, silentLogger } from "../../dist/index.js";
+import { createClient, createRateLimiter, createConcurrencyLimiter, createQuota, createBurstProtector, shutdown, silentLogger } from "@oneunit/redis";
 
 const URL = "redis://127.0.0.1:6379/9";
 

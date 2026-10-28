@@ -178,9 +178,27 @@ export function createClusterClient(
   options?: Record<string, unknown>,
 ): Cluster {
   // Runtime forwards options verbatim to ioredis Cluster.
-  const normalized = nodes.map((node) =>
-    typeof node === "string" ? { host: node, port: 6379 } : node,
-  );
+  const normalized = nodes.map((node) => {
+    if (typeof node !== "string") {
+      return node;
+    }
+    try {
+      if (node.includes("://")) {
+        const url = new URL(node);
+        return {
+          host: url.hostname,
+          port: url.port ? Number(url.port) : 6379,
+        };
+      }
+    } catch {
+      // Fall through to the simpler host:port parser.
+    }
+    const [host, port] = node.split(":");
+    return {
+      host,
+      port: port ? Number(port) : 6379,
+    };
+  });
 
   const cluster = new Cluster(normalized, (options ?? {}) as unknown as ConstructorParameters<typeof Cluster>[1]);
   return cluster;

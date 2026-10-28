@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { createClient, runTransaction, TransactionStepError, shutdown, silentLogger } from "../../dist/index.js";
+import { createClient, runTransaction, TransactionStepError, shutdown, silentLogger } from "@oneunit/redis";
 
 test("runTransaction executes commands atomically-ish", async () => {
   const client = createClient({ url: "redis://127.0.0.1:6379/6" }, silentLogger);

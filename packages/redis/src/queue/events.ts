@@ -46,6 +46,11 @@ class ManagedQueueEvents extends QueueEvents {
 
     // A duplicate that is already gone does not need disconnecting, and
     // `disconnect()` is a no-op at `end`.
+    const initializing = (connection as { initializing?: Promise<unknown> }).initializing;
+    if (initializing) {
+      await initializing.catch(() => undefined);
+    }
+
     connection._client?.disconnect();
 
     try {

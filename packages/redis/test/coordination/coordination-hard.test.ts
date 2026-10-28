@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { createClient, createCoordinationClient, shutdown, silentLogger } from "../../dist/index.js";
+import { createClient, createCoordinationClient, shutdown, silentLogger } from "@oneunit/redis";
 
 const URL = "redis://127.0.0.1:6379/7";
 

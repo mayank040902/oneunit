@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { createClient, createQueue, createWorker, addJob, closeQueue, shutdown, silentLogger } from "../../dist/index.js";
+import { createClient, createQueue, createWorker, addJob, closeQueue, shutdown, silentLogger } from "@oneunit/redis";
 import { cachedRedisAvailable, TEST_REDIS_URL } from "../helpers.js";
 
 const redisUp = cachedRedisAvailable();

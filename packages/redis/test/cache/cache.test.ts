@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { createClient, createRedisCache, shutdown, silentLogger } from "../../dist/index.js";
+import { createClient, createRedisCache, shutdown, silentLogger } from "@oneunit/redis";
 
 test("cache stores and retrieves values with TTL", async () => {
   const client = createClient({ url: "redis://127.0.0.1:6379/8" }, silentLogger);

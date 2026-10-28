@@ -84,10 +84,15 @@ export class ConnectionManager {
       this.ready = true;
       this.state = "connected";
     } else {
-      // Client is not ready yet (e.g. lazyConnect or not yet connected) -
-      // track as initial (not an outage) so recovery is not triggered for it.
+      // A client that has not connected yet (for example one constructed with
+      // lazyConnect, or one where connect() has not been awaited) is not an
+      // outage: it has not lost a connection it ever had. Keep the initial
+      // state vacant so callers do not observe an immediate degraded mode
+      // before they have even opened the connection, while still refusing to
+      // execute reads against it until "ready".
       this.initialPending = true;
-      setDegraded("client not yet ready");
+      this.state = "connected";
+      this.ready = false;
     }
 
     client.on("connect", () => {

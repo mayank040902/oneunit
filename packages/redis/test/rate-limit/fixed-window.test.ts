@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from "vitest";
 import assert from "node:assert/strict";
-import { createClient, createRateLimiter, shutdown, silentLogger } from "../../dist/index.js";
+import { createClient, createRateLimiter, shutdown, silentLogger } from "@oneunit/redis";
 
 const URL = "redis://127.0.0.1:6379/9";
 
@@ -209,13 +209,13 @@ describe("Fixed-Window: Retry-After Accuracy", () => {
   });
 
   test("retryAfterMs decreases as window approaches end", async () => {
-    const limiter = createRateLimiter(client, { algorithm: "fixed-window", limit: 1, intervalMs: 1000 });
+    const limiter = createRateLimiter(client, { algorithm: "fixed-window", limit: 1, intervalMs: 5000 });
     await limiter.consume("retry:1", 1);
     const r1 = await limiter.consume("retry:1", 1);
     assert.equal(r1.allowed, false);
     const firstRetry = r1.retryAfterMs;
     assert.ok(firstRetry !== null && firstRetry > 0);
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 500));
     const r2 = await limiter.consume("retry:1", 1);
     assert.equal(r2.allowed, false);
     const secondRetry = r2.retryAfterMs;

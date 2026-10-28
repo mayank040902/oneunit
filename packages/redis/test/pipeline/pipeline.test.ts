@@ -10,7 +10,7 @@ import {
   PipelineStepError,
   PipelineTimeoutError,
   silentLogger,
-} from "../../dist/index.js";
+} from "@oneunit/redis";
 import type { ChainableCommander } from "ioredis";
 
 // A stand-in for the subset of ioredis that `runPipeline` uses. Lets the result

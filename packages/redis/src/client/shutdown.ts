@@ -31,6 +31,28 @@ const isClosed = (client: RedisClient): boolean =>
  */
 const FORCED = new WeakSet<object>();
 
+
+async function waitForClose(client: RedisClient, ms: number): Promise<void> {
+  if (client.status === "end") {
+    return;
+  }
+
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      const handler = () => {
+        clearTimeout(timer);
+        if (typeof client.off === "function") client.off("close", handler);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        if (typeof client.off === "function") client.off("close", handler);
+        resolve();
+      }, ms);
+      if (typeof client.on === "function") client.on("close", handler);
+    }),
+  ]);
+}
+
 export interface ShutdownOptions {
   timeout?: number;
   logger?: Logger;
@@ -90,16 +112,23 @@ export async function shutdown(
     ]);
 
     if (outcome === "timeout") {
-      // The server never acknowledged QUIT. Tear the connection down
-      // directly so the retry loop stops and the process can exit; the
-      // caller asked to disconnect, and we are, one way or another.
       logger?.warn(
         `Redis did not acknowledge QUIT within ${timeout}ms, forcing the connection closed`,
       );
-      client.disconnect();
+      try { client.disconnect(); } catch { /* ignore */ }
       FORCED.add(client);
 
+      if (client.status !== "end") {
+        await waitForClose(client, 100);
+      }
+
       return;
+    }
+
+    if (client.status !== "end") {
+      try { client.disconnect(); } catch { /* ignore */ }
+      FORCED.add(client);
+      await waitForClose(client, 100);
     }
 
     logger?.info("Redis disconnected");

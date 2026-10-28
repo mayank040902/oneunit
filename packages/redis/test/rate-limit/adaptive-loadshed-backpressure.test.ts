@@ -1,6 +1,6 @@
 import { test, describe } from "vitest";
 import assert from "node:assert/strict";
-import { createAdaptiveThrottler, createLoadShedder, createBackpressureController } from "../../dist/index.js";
+import { createAdaptiveThrottler, createLoadShedder, createBackpressureController } from "@oneunit/redis";
 
 describe("Adaptive Throttling", () => {
   test("normal load signal - no adjustment", () => {

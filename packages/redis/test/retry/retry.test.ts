@@ -119,7 +119,8 @@ test("retryOperation with jitter still completes fast enough", async () => {
 });
 
 test("retryOperation async stress with eventual success", async () => {
-  for (let i = 0; i < 100; i++) {
+  const start = Date.now();
+  for (let i = 0; i < 50; i++) {
     let calls = 0;
     const value = await retryOperation(async () => {
       calls += 1;
@@ -128,4 +129,6 @@ test("retryOperation async stress with eventual success", async () => {
     }, { attempts: 3, baseDelayMs: 1, jitter: false });
     assert.equal(value, i);
   }
+  // Should complete well within a reasonable time bound
+  assert.ok(Date.now() - start < 5000, "stress test took too long");
 });

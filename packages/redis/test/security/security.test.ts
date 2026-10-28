@@ -15,7 +15,7 @@ import {
   redactError,
   shutdown,
   silentLogger,
-} from "../../dist/index.js";
+} from "@oneunit/redis";
 
 const UNREACHABLE_URL = "redis://127.0.0.1:6399";
 

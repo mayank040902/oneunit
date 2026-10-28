@@ -15,6 +15,25 @@ All notable changes to this project are documented in this file.
 - `createScheduledSessionRevocation` for delayed session revocation built on
   BullMQ delayed jobs.
 - README documentation for optional feature helpers.
+- **Distributed Coordination** (`@oneunit/redis/coordination`): Locks with fencing tokens, semaphores, leases, leader election, singleton scheduler, job claims, barriers, and resource leases. All built on atomic Lua scripts with hash-tag support for Redis Cluster.
+- **Redis Caching** (`@oneunit/redis/cache`): Read-through cache with L1 in-memory cache, write-behind, stale-while-revalidate, tag-based invalidation, TTL jitter, negative caching, and metrics.
+- **Resilience Engine** (`@oneunit/redis/resilience`): Transparent fallback during Redis outages with local reads/writes, TTL-preserving recovery, bounded memory, conflict detection, ambiguous outcome handling, and idempotent shutdown.
+- **At-Least-Once Job Processing** (via `createClient` options): Optional BullMQ-backed job queue with retries, exponential backoff, stalled-job recovery, and dead-letter queue support. Disabled by default, zero overhead when unused.
+- Comprehensive documentation updates across README, ARCHITECTURE, FEATURES, and rate-limit docs.
+
+### Fixed
+
+- `createClient` block-scoped variable `atLeastOnceOption` used before declaration (TypeScript error).
+- `@oneunit/auth` peer dependency now uses workspace protocol for monorepo builds.
+
+### Verified
+
+- **Full test suite (707 tests) passes against Redis Cloud** (`redis-10952.crce194.ap-seast-1-1.ec2.cloud.redislabs.com:10952`)
+- All core features verified: client, queue/worker, pipeline, cache, rate limiting, coordination, resilience, at-least-once jobs, scheduled revocation, auth stores
+- Credential redaction verified in all error paths (AUTH, HELLO, shutdown, queue events)
+- Distributed coordination primitives verified: locks with fencing tokens, semaphores, leader election, barriers
+- Rate limiting algorithms verified: fixed/sliding window, token/leaky bucket, quotas, concurrency
+- Caching verified: L1 cache, write-behind, tag invalidation, stale-while-revalidate, TTL jitter
 
 
 - `runPipeline(client, steps, options?)` batches many commands into a single

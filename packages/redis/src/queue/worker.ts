@@ -88,6 +88,15 @@ export function isWorkerRunning(worker: Worker): boolean {
 }
 
 export async function closeWorker(worker: Worker, force = false): Promise<void> {
+  const workerConnection = (worker as unknown as { connection?: { _client?: { disconnect?(): void }; initializing?: Promise<unknown> } }).connection;
+  if (workerConnection?.initializing) {
+    await workerConnection.initializing.catch(() => undefined);
+  }
+  try {
+    workerConnection?._client?.disconnect?.();
+  } catch {
+    /* ignore */
+  }
   await worker.close(force);
 }
 
