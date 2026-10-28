@@ -1,7 +1,7 @@
 <p align="center">
   <strong>@oneunit/redis</strong>
   <br/>
-  Redis client and BullMQ job queues for Node.js
+  Redis client, BullMQ job queues, and distributed rate limiting for Node.js
 </p>
 
 <p align="center">
@@ -13,7 +13,8 @@
 
 <p align="center">
   Shared connections · Safe Redis URL handling · Credential redaction · Bounded health checks<br/>
-  Idempotent graceful shutdown · Production BullMQ defaults · Safe pipeline batching · Universal logger support
+  Idempotent graceful shutdown · Production BullMQ defaults · Safe pipeline batching · Universal logger support<br/>
+  <strong>Distributed rate limiting · Quotas · Concurrency control · Burst protection · Fail-open/closed</strong>
 </p>
 
 ---
@@ -63,17 +64,18 @@ Production-ready Redis client wrapper and BullMQ job queue integration for Node.
 
 ## Highlights
 
-- **Shared Connection Architecture** — Default `maxRetriesPerRequest: null` allows a single `ioredis` client to be shared cleanly between standard Redis operations and BullMQ `Queue` / `Worker` instances.
+- **Shared Connection Architecture** — Default `maxRetriesPerRequest: null` allows a single `ioredis` client to be shared cleanly between standard Redis operations, BullMQ `Queue` / `Worker` instances, and rate limiting state.
 - **Safe Redis URL Handling** — Passes URL positionally to `ioredis` or falls back to `process.env.REDIS_URL`. Prevents the silent fallback to `localhost:6379` caused by passing `{ url }` in an options object.
-- **Credential Redaction** — `redactError` automatically strips sensitive plaintext passwords from `AUTH` and `HELLO` command failures across client events, `QueueEvents`, and `shutdown`.
+- **Credential Redaction** — `redactError` automatically strips sensitive plaintext passwords from `AUTH` and `HELLO` command failures across client events, `QueueEvents`, `shutdown`, and rate limiter errors.
 - **Bounded Health Checks** — `health(client, { timeout: 1000 })` returns latency and status, preventing health probes from hanging indefinitely on disconnected sockets.
 - **Robust Graceful Shutdown** — `shutdown(client)` issues an idempotent `QUIT` bounded by a 5-second deadline, falls back to forced `disconnect()` if unresponsive, and prevents crashes from duplicate `SIGINT` / `SIGTERM` signals.
 - **Production BullMQ Presets** — `createQueue` defaults to exponential backoff (1s initial delay), 3 retry attempts, and automatic retention pruning (100 completed, 1,000 failed jobs).
 - **Safe Pipeline Batching** — `runPipeline` sends many commands in one round trip and reports per-command failures explicitly, because a failed command inside a raw `client.pipeline()` resolves the batch and is otherwise invisible. Each step must queue exactly one command, enforced at runtime; errors are redacted and the batch is bounded by a timeout.
 - **Prefix Inheritance** — `attachQueueEvents` automatically inherits the queue's custom prefix, preventing lost event subscriptions.
 - **Universal Logger Adapter** — Duck-typed logger support for Console, Pino, Winston, etc. Automatically normalizes missing log levels and inverts argument ordering for Pino (`(bindings, message)` vs `(message, extra)`).
-- **Subpath Exports** — Modular imports via `@oneunit/redis`, `@oneunit/redis/client`, `@oneunit/redis/queue`, `@oneunit/redis/pipeline`, and `@oneunit/redis/features`.
+- **Subpath Exports** — Modular imports via `@oneunit/redis`, `@oneunit/redis/client`, `@oneunit/redis/queue`, `@oneunit/redis/pipeline`, `@oneunit/redis/features`, `@oneunit/redis/coordination`, `@oneunit/redis/cache`, and `@oneunit/redis/rate-limit`.
 - **Strict TypeScript Types** — Fully typed ESM package targeting Node.js 20+ with re-exported BullMQ and ioredis types.
+- **Distributed Rate Limiting** — Four atomic algorithms (fixed/sliding window, token/leaky bucket) with weighted requests, multi-dimensional composition, daily/monthly quotas, burst protection, distributed semaphores, and fail-open/fail-closed policies. All state in Redis, works across multiple instances.
 
 ---
 
@@ -159,6 +161,56 @@ process.on("SIGINT", closeApp);
 
 ---
 
+## Quick Start: Rate Limiting
+
+```typescript
+import {
+  createClient,
+  createRateLimiter,
+  createQuota,
+  createConcurrencyLimiter,
+  shutdown,
+} from "@oneunit/redis";
+
+const redis = createClient({ url: process.env.REDIS_URL });
+
+// Fixed-window: 100 requests per minute per user
+const rateLimiter = createRateLimiter(redis, {
+  algorithm: "fixed-window",
+  limit: 100,
+  intervalMs: 60_000,
+});
+
+const result = await rateLimiter.consume("user:123", 1);
+if (!result.allowed) {
+  return res.status(429).set("Retry-After", Math.ceil((result.retryAfterMs || 0) / 1000)).send("Too Many Requests");
+}
+
+// Daily quota: 10,000 requests per day per user
+const quota = createQuota(redis, {
+  resource: "api",
+  quota: 10_000,
+  period: "daily",
+});
+
+const quotaResult = await quota.consume("user:123", 1);
+
+// Distributed concurrency: max 10 simultaneous operations
+const concurrency = createConcurrencyLimiter(redis, {
+  resource: "db-pool",
+  maxConcurrency: 10,
+  leaseMs: 30_000,
+});
+
+await concurrency.run(async () => {
+  await db.query("...");
+}, "owner-1");
+
+await shutdown(redis);
+```
+
+---
+
 ## Subpath Imports
 
 Import only what you need to optimize module loading and boundaries:
@@ -189,6 +241,283 @@ import { runPipeline, pipelineValues } from "@oneunit/redis/pipeline";
 ---
 
 ## Core API Reference
+
+### Rate Limiting API (`@oneunit/redis/rate-limit` or `@oneunit/redis`)
+
+#### `createRateLimiter(client, options)`
+
+Creates a rate limiter with one of four algorithms. All algorithms use atomic Lua scripts.
+
+```typescript
+interface RateLimiterOptions {
+  algorithm: "fixed-window" | "sliding-window" | "token-bucket" | "leaky-bucket";
+  limit: number;              // Max requests (fixed/sliding) or capacity (token/leaky)
+  intervalMs: number;         // Window size (fixed/sliding) or metadata only (token/leaky)
+  keyPrefix?: string;         // Key namespace (default: "ratelimit")
+  failurePolicy?: "fail-open" | "fail-closed"; // Default: "fail-closed"
+
+  // Token bucket specific
+  tokenBucket?: {
+    capacity: number;              // Max tokens
+    refillRatePerSecond: number;   // Tokens added per second
+    initialTokens?: number;        // Default: capacity
+  };
+
+  // Leaky bucket specific
+  leakyBucket?: {
+    capacity: number;              // Max water level
+    leakRatePerSecond: number;     // Water drained per second
+  };
+}
+
+function createRateLimiter(
+  client: Redis,
+  options: RateLimiterOptions
+): RateLimiter;
+```
+
+**Algorithms:**
+
+| Algorithm | Use Case | Burst Handling |
+|-----------|----------|----------------|
+| `fixed-window` | Simple per-window limits | 2× burst at boundaries |
+| `sliding-window` | Smooth, exact limits | No boundary burst |
+| `token-bucket` | Burst allowance + sustained rate | Configurable burst capacity |
+| `leaky-bucket` | Policing (admission control) | Drops excess, no queue |
+
+```typescript
+import { createRateLimiter } from "@oneunit/redis/rate-limit";
+
+// Fixed window
+const fixed = createRateLimiter(redis, {
+  algorithm: "fixed-window",
+  limit: 100,
+  intervalMs: 60_000,
+});
+
+// Sliding window
+const sliding = createRateLimiter(redis, {
+  algorithm: "sliding-window",
+  limit: 100,
+  intervalMs: 60_000,
+});
+
+// Token bucket (burst + sustained)
+const token = createRateLimiter(redis, {
+  algorithm: "token-bucket",
+  limit: 100,
+  intervalMs: 60_000,
+  tokenBucket: { capacity: 100, refillRatePerSecond: 10, initialTokens: 100 },
+});
+
+// Leaky bucket (policing)
+const leaky = createRateLimiter(redis, {
+  algorithm: "leaky-bucket",
+  limit: 100,
+  intervalMs: 60_000,
+  leakyBucket: { capacity: 100, leakRatePerSecond: 10 },
+});
+
+// Consume with weight (default cost = 1)
+const result = await fixed.consume("user:123", 5);
+// { allowed: true, remaining: 95, consumed: 5, retryAfterMs: null, resetAt: 1234567890000, algorithm: "fixed-window", limit: 100, ... }
+
+// Check without consuming
+const check = await fixed.check("user:123", 1);
+```
+
+#### `createMultiRateLimiter(limiters)`
+
+Composes multiple limiters that must ALL allow for a request to proceed.
+
+```typescript
+import { createRateLimiter, createMultiRateLimiter } from "@oneunit/redis/rate-limit";
+
+const userLimit = createRateLimiter(redis, {
+  algorithm: "fixed-window",
+  limit: 10,
+  intervalMs: 60_000,
+  keyPrefix: "user",
+});
+
+const globalLimit = createRateLimiter(redis, {
+  algorithm: "fixed-window",
+  limit: 1000,
+  intervalMs: 60_000,
+  keyPrefix: "global",
+});
+
+const multi = createMultiRateLimiter([userLimit, globalLimit]);
+
+const result = await multi.consume("user:123", 1);
+// result.allowed = true only if BOTH allow
+// result.decisions = [userDecision, globalDecision]
+```
+
+#### `createQuota(client, options)`
+
+Calendar-based quotas (daily, monthly, or custom period).
+
+```typescript
+interface QuotaOptions {
+  resource: string;
+  quota: number;              // Max amount per period
+  period: "daily" | "monthly" | "custom";
+  customPeriodMs?: number;    // Required for "custom"
+  weight?: number;            // Multiplier per consume call (default: 1)
+  keyPrefix?: string;         // Default: "ratelimit"
+  failurePolicy?: "fail-open" | "fail-closed";
+}
+
+function createQuota(client: Redis, options: QuotaOptions): QuotaLimiter;
+
+const daily = createQuota(redis, { resource: "api", quota: 10_000, period: "daily" });
+const monthly = createQuota(redis, { resource: "api", quota: 100_000, period: "monthly" });
+const hourly = createQuota(redis, { resource: "api", quota: 1000, period: "custom", customPeriodMs: 3_600_000 });
+
+const result = await daily.consume("user:123", 5);
+// { allowed: true, used: 5, remaining: 9995, quota: 10000, resetAt: 1234567890000, period: "daily", ... }
+```
+
+#### `createConcurrencyLimiter(client, options)`
+
+Distributed semaphore for concurrency control.
+
+```typescript
+interface ConcurrencyLimiterOptions {
+  resource: string;
+  maxConcurrency: number;     // Max simultaneous permits
+  leaseMs: number;            // Lease duration (auto-expires)
+  timeoutMs?: number;         // Max wait for permit
+  retryIntervalMs?: number;   // Poll interval (default: 100)
+  keyPrefix?: string;         // Default: "ratelimit"
+  failurePolicy?: "fail-open" | "fail-closed";
+}
+
+function createConcurrencyLimiter(client: Redis, options: ConcurrencyLimiterOptions): ConcurrencyLimiter;
+
+const limiter = createConcurrencyLimiter(redis, {
+  resource: "db-pool",
+  maxConcurrency: 10,
+  leaseMs: 30_000,
+  timeoutMs: 5_000,
+});
+
+// Try acquire immediately
+const result = await limiter.tryAcquire("owner-1");
+// { acquired: true, token: "uuid", retryAfterMs: null }
+
+// Wait for permit (with timeout)
+const result = await limiter.acquire("owner-1");
+
+// Automatic release with run()
+const data = await limiter.run(async () => {
+  await db.query("...");
+}, "owner-1");
+
+// Manual release
+await limiter.release(token);
+```
+
+#### `createBurstProtector(client, options)`
+
+Multi-layer protection: sustained + burst + concurrency.
+
+```typescript
+interface BurstProtectionOptions {
+  sustainedLimit: number;
+  sustainedIntervalMs: number;
+  burstCapacity: number;
+  burstIntervalMs: number;
+  burstRefillRatePerSecond?: number;
+  concurrencyLimit?: number;
+  concurrencyLeaseMs?: number;
+  keyPrefix?: string;
+  failurePolicy?: "fail-open" | "fail-closed";
+}
+
+function createBurstProtector(client: Redis, options: BurstProtectionOptions): BurstProtector;
+
+const protector = createBurstProtector(redis, {
+  sustainedLimit: 100,
+  sustainedIntervalMs: 60_000,
+  burstCapacity: 20,
+  burstIntervalMs: 10_000,
+  burstRefillRatePerSecond: 5,
+  concurrencyLimit: 5,
+  concurrencyLeaseMs: 30_000,
+});
+
+const result = await protector.consume("user:123", 1, true); // true = acquire concurrency
+// result: { allowed, reason, retryAfterMs, metadata: { sustained, burst, concurrency }, concurrencyToken }
+
+if (result.concurrencyToken) {
+  await protector.releaseConcurrency(result.concurrencyToken);
+}
+```
+
+#### `createAdaptiveThrottler(baseLimit, options)` — Local Only
+
+Dynamically adjusts limit based on load signal (0-1). **Not distributed** — each instance operates independently.
+
+```typescript
+const throttler = createAdaptiveThrottler(100, {
+  minLimit: 10,
+  maxLimit: 200,
+  samplingIntervalMs: 1000,
+  maxAdjustmentPerStep: 5,
+  hysteresis: 0.1,
+  recoveryStep: 2,
+});
+
+const currentLimit = throttler.sample(0.75); // 75% load
+```
+
+#### `createLoadShedder(maxInFlight, queueThreshold)` — Local Only
+
+Admits or sheds requests based on in-flight count and priority. **Not distributed**.
+
+```typescript
+const shedder = createLoadShedder(10, 100);
+const result = shedder.acquire(0);   // Priority 0 (low) - may shed
+const result = shedder.acquire(10);  // Priority 10 (high) - admits
+shedder.release();
+```
+
+#### `createBackpressureController(maxPending, maxWaitMs)` — Local Only
+
+Admission control with optional waiting. **Not distributed**.
+
+```typescript
+const bp = createBackpressureController(10, 1000);
+const result = await bp.admit(1);
+const result = await bp.admit(1, async (ms) => {
+  await new Promise(r => setTimeout(r, ms));
+});
+bp.release(1);
+```
+
+#### Decision Metadata
+
+Every decision returns rich metadata:
+
+```typescript
+interface RateLimitDecision {
+  allowed: boolean;
+  algorithm: "fixed-window" | "sliding-window" | "token-bucket" | "leaky-bucket";
+  limit: number;
+  remaining: number;
+  consumed: number;
+  retryAfterMs: number | null;
+  resetAt: number | null;
+  resetAfterMs: number | null;
+  reason: "limited" | "cost_exceeds_limit" | "cost_exceeds_capacity" | "quota_exhausted" | "concurrency_limit" | "burst_limit" | "sustained_limit" | null;
+  fallback: boolean;          // true if fail-open allowed
+  metadata?: Record<string, unknown>;
+}
+```
+
+---
 
 ### Client API (`@oneunit/redis/client` or `@oneunit/redis`)
 

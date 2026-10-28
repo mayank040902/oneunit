@@ -8,3 +8,4 @@ export * from "./resilient-redis.js";
 export * from "./jobs/at-least-once.js";
 export * from "./coordination/index.js";
 export * from "./cache/index.js";
+export * from "./rate-limit/index.js";

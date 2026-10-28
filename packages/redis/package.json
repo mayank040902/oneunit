@@ -52,6 +52,11 @@
       "types": "./dist/cache/index.d.ts",
       "import": "./dist/cache/index.js",
       "default": "./dist/cache/index.js"
+    },
+    "./rate-limit": {
+      "types": "./dist/rate-limit/index.d.ts",
+      "import": "./dist/rate-limit/index.js",
+      "default": "./dist/rate-limit/index.js"
     }
   },
   "files": [

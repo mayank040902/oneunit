@@ -76,10 +76,13 @@ It does **not** exist to replace ioredis/BullMQ, introduce a connection pool, ca
 - Implementing Redis commands or replacing ioredis.
 - Implementing a queue engine or replacing BullMQ.
 - Application-specific cache policies, key schemas, or domain repositories.
-- Automatic distributed locks, rate limiting, or idempotency (unless introduced later as separately designed features).
+- Hidden infrastructure not justified by a concrete consumer requirement.
 - A mandatory logger, HTTP framework, metrics provider, or process manager.
 - Automatic lifecycle management for resources the package did not create.
 - Multi-tenant key isolation or encryption-at-rest.
+
+Optional modules now implemented as separate, explicitly designed features (not part of the thin core client):
+coordination, rate limiting, caching, resilience, scheduled revocation, at-least-once job processing, and core helper primitives.
 
 ---
 
@@ -87,12 +90,19 @@ It does **not** exist to replace ioredis/BullMQ, introduce a connection pool, ca
 
 ```mermaid
 flowchart TD
-    Core["core<br/>types · errors · timeout"]
+    Core["core<br/>types · errors · timeout · helpers"]
     Logging["logging<br/>contract · normalize · redact"]
-    Client["client<br/>factory · events · health · shutdown"]
-    Queue["queue<br/>Queue · Worker · QueueEvents"]
+    Client["client<br/>factory · events · health · shutdown · sentinel · transaction"]
+    Queue["queue<br/>Queue · Worker · QueueEvents · lifecycle · DLQ"]
     Pipeline["pipeline<br/>labelled batch execution"]
     Auth["features/auth-stores<br/>refresh · session · state"]
+    AuthStores["features/stores · scheduled · retry"]
+    Helpers["features/core-helpers<br/>keys · codec · ttl · CAS · capabilities"]
+    Cache["cache<br/>local L1 + Redis cache · SWR · write-behind"]
+    Coord["coordination<br/>lock · semaphore · lease · election · barrier · fencing"]
+    Resilience["resilience<br/>engine · local store · recovery · connection manager"]
+    JobProc["jobs<br/>at-least-once processing"]
+    RateLimit["rate-limit<br/>limiter · quota · concurrency · burst · adaptive · load-shed · backpressure · multi"]
     Ioredis["ioredis"]
     Bull["bullmq"]
     OneAuth["@oneunit/auth"]
@@ -100,6 +110,7 @@ flowchart TD
     Client --> Core
     Client --> Logging
     Client --> Ioredis
+    Client --> Resilience
     Queue --> Core
     Queue --> Logging
     Queue --> Bull
@@ -110,6 +121,21 @@ flowchart TD
     Auth --> Core
     Auth --> OneAuth
     Auth --> Ioredis
+    Cache --> Core
+    Cache --> Pipeline
+    Cache --> Ioredis
+    Coord --> Core
+    Coord --> Logging
+    Coord --> Ioredis
+    Resilience --> Core
+    Resilience --> Logging
+    Resilience --> Ioredis
+    RateLimit --> Core
+    RateLimit --> Coord
+    RateLimit --> Client
+    RateLimit --> Ioredis
+    JobProc --> Queue
+    JobProc --> Ioredis
 ```
 
 ### Boundary rules (must be enforced by tests)
@@ -120,6 +146,12 @@ flowchart TD
 | `queue/` does not import client health/shutdown implementation | Avoids coupling; may share types and redaction only |
 | `pipeline/` does not import the root barrel | Prevents accidental initialization and cycles |
 | Base client/queue subpaths never import `@oneunit/auth` | Auth remains truly optional |
+| `coordination/` does not import `queue/` or `pipeline/` | Keeps coordination free of queue weight |
+| `cache/` imports `pipeline/` but not `queue/` | Cache batching stays decoupled from queues |
+| `rate-limit/` never imports `queue/` or `pipeline/` | Keeps rate limiting free of queue weight |
+| `resilience/` and `resilient-redis` keep native client primary | Resilience remains optional and pass-through capable |
+| `jobs/` depends on `queue/` only | At-least-once processing stays queue-backed |
+| `features/core-helpers` has no Redis I/O except declared helpers | Helper primitives stay dependency-light |
 | Internal modules prefer direct file imports over broad barrels | Prevents cycles and accidental surface expansion |
 | Root `index.ts` only re-exports | No business logic in the composition root |
 | Every public subpath is independently loadable | No side effects from unrelated modules |
@@ -139,39 +171,68 @@ flowchart TD
 
 ```text
 src/
-├── index.ts                          # public composition only
-├── core/
-│   ├── types.ts
-│   ├── errors.ts
-│   └── timeout.ts                    # only if health/pipeline/shutdown share semantics
-├── logging/
-│   ├── index.ts
-│   ├── types.ts
-│   ├── normalize.ts
-│   └── redact.ts
+├── index.ts                          # public composition root (re-exports only)
+├── logger.ts                         # Logger contract, normalization, redaction helpers
 ├── client/
 │   ├── index.ts
-│   ├── client.ts
-│   ├── events.ts
-│   ├── health.ts
-│   └── shutdown.ts
+│   ├── client.ts                     # createClient(); optional resilience/job wiring
+│   ├── events.ts                     # attach events, redaction, error classification
+│   ├── check.ts                      # bounded health()
+│   ├── shutdown.ts                   # idempotent, bounded shutdown()
+│   ├── retry.ts                      # retry helpers
+│   ├── sentinel.ts                   # sentinel client factory
+│   └── transaction.ts               # labelled transaction orchestration
 ├── queue/
 │   ├── index.ts
-│   ├── queue.ts
-│   ├── worker.ts
-│   ├── events.ts
-│   └── lifecycle.ts
+│   ├── queue.ts                      # createQueue, queue operations
+│   ├── worker.ts                     # createWorker, worker operations
+│   ├── events.ts                     # attachQueueEvents
+│   └── lifecycle.ts                  # DLQ, pause/resume, queue policy, types
 ├── pipeline/
 │   ├── index.ts
-│   ├── builder.ts
+│   ├── builder.ts                    # runPipeline()
 │   └── types.ts
-└── features/
-    ├── index.ts
-    └── auth-stores/
-        ├── index.ts
-        ├── refresh-store.ts
-        ├── session-store.ts
-        └── state-store.ts
+├── cache/
+│   ├── index.ts
+│   ├── cache.ts                      # createRedisCache()
+│   ├── keys.ts
+│   ├── ttl.ts
+│   └── types.ts
+├── coordination/
+│   ├── index.ts
+│   ├── client.ts                    # createCoordinationClient()
+│   ├── types.ts · errors.ts · utils.ts · scripts.ts
+│   ├── lease.ts · lock.ts · semaphore.ts
+│   ├── single-flight.ts · leader-election.ts · job-claim.ts
+│   ├── resource-lease.ts · barrier.ts · fencing.ts
+│   └── singleton-scheduler.ts
+├── resilience/
+│   ├── index.ts
+│   ├── connection-manager.ts
+│   ├── events.ts
+│   ├── expiration-manager.ts
+│   ├── local-store.ts
+│   ├── operation-store.ts
+│   ├── policy.ts
+│   ├── recovery-coordinator.ts
+│   └── types.ts
+├── resilient-redis.ts                # createResilientRedis()
+├── rate-limit/
+│   ├── index.ts
+│   ├── types.ts · errors.ts · limiter.ts · quota.ts
+│   ├── concurrency.ts · adaptive.ts · load-shedding.ts
+│   ├── backpressure.ts · multi.ts · burst.ts
+│   ├── scripts.ts
+│   └── internal/{keys.ts,time.ts,validation.ts}
+├── features/
+│   ├── index.ts
+│   ├── stores.ts                    # auth refresh/session/state stores
+│   ├── scheduled.ts                 # scheduled session revocation
+│   ├── retry.ts                      # re-exports client retry
+│   └── core-helpers.ts              # keys, codec, ttl, CAS, capabilities, cluster client
+├── jobs/
+│   └── at-least-once.ts             # optional at-least-once facade + DLQ
+└── rate-limit internal not separately loadable (see subpath surface)
 ```
 
 This is a target structure. Move code only when separation improves cohesion or testability. Do not invent a generic `timeout` utility that obscures the distinct cancellation and settlement semantics of each operation.
@@ -182,11 +243,15 @@ This is a target structure. Move code only when separation improves cohesion or 
 
 | Entry point | Responsibility | May depend on |
 |---|---|---|
-| `@oneunit/redis` | Convenient root API | Client, queue, pipeline, logging; auth only if deliberately re-exported |
-| `@oneunit/redis/client` | Client factory, events, health, shutdown | ioredis only |
-| `@oneunit/redis/queue` | Queue, Worker, QueueEvents factories | bullmq + ioredis types |
+| `@oneunit/redis` | Convenient root API | Client, queue, pipeline, logging, features, resilience, coordination, cache, rate-limit, jobs |
+| `@oneunit/redis/client` | Client factory, events, health, shutdown, sentinel, transaction, retry | ioredis only |
+| `@oneunit/redis/queue` | Queue, Worker, QueueEvents factories, lifecycle, DLQ | bullmq + ioredis types |
 | `@oneunit/redis/pipeline` | Labelled pipeline execution | ioredis |
-| `@oneunit/redis/features` | Auth-store adapters | ioredis + `@oneunit/auth` |
+| `@oneunit/redis/features` / `@oneunit/redis/auth` | Auth-store adapters, scheduled revocation, retry re-export, core helpers, cache re-export | ioredis + `@oneunit/auth` (auth optional) |
+| `@oneunit/redis/resilience` | Resilience engine, connection/local/operation stores, recovery | ioredis + logger |
+| `@oneunit/redis/coordination` | Distributed locks, semaphores, leases, election, barriers, fencing, singleton scheduler, job claims | ioredis |
+| `@oneunit/redis/cache` | Redis-backed cache, L1, write-behind, SWR, invalidation | ioredis + pipeline |
+| `@oneunit/redis/rate-limit` | Distributed limiters, quotas, concurrency, burst, multi, adaptive, load-shed, backpressure | ioredis + coordination |
 
 ### Export rules
 
@@ -249,6 +314,13 @@ Rules:
 BullMQ may duplicate a supplied connection for blocking use. Closing a Worker or QueueEvents closes *its* owned connection, not the application client.
 
 If a future managed-resource API is added, it must track only resources *it* creates and must never silently take ownership of caller-provided clients.
+
+### Optional client capabilities
+
+- `createSentinelClient()` builds an ioredis client from a Sentinel configuration.
+- `runTransaction()` wraps native MULTI/EXEC with timeout and per-step error classification.
+- `createClient()` may be configured with `resilience`, `fallback`, `recovery`, job-at-least-once, or direct resilience fields; when configured it returns a `ResilientRedisFacade`-compatible proxy.
+- Native client remains primary unless resilience is explicitly enabled; helper support is limited to the documented command set.
 
 ---
 
@@ -605,6 +677,8 @@ The architecture is ready when **all** of the following are true:
 - [ ] The packed package works in a clean consumer project for every documented entry point.
 - [ ] Public API changes are intentional, versioned, documented, and covered by compatibility tests.
 - [ ] Optional auth remains optional in both metadata and install behavior.
+- [ ] Optional coordination, cache, rate-limit, resilience, and job-processing modules remain subpath-isolated.
+- [ ] Core helper primitives remain thin and dependency-light.
 
 ---
 
@@ -632,6 +706,388 @@ Optional at-least-once processing is implemented through BullMQ rather than a se
 - At-least-once semantics are documented, including possible duplicate handler execution.
 - Shutdown closes owned worker, event, and queue resources in order.
 
+## 20.8 Rate limiting & traffic control (optional)
+
+The rate limiting module is an optional, distributed traffic control layer built on Redis atomic Lua scripts. It is exposed via `@oneunit/redis/rate-limit` and does not change the default behavior of the base client.
+
+### Scope
+
+| Capability | Type | Distribution | Status |
+|------------|------|--------------|--------|
+| Fixed Window | Rate Limiter | Distributed | ✅ Verified |
+| Sliding Window | Rate Limiter | Distributed | ✅ Verified |
+| Token Bucket | Rate Limiter | Distributed | ✅ Verified |
+| Leaky Bucket | Rate Limiter (Policing) | Distributed | ✅ Verified |
+| Multi-Dimensional | Composable | Distributed | ✅ Verified |
+| Weighted Requests | All algorithms | Distributed | ✅ Verified |
+| Concurrency | Semaphore | Distributed | ✅ Verified |
+| Daily/Monthly Quotas | Calendar | Distributed | ✅ Verified |
+| Burst Protection | Multi-layer | Distributed | ✅ Verified |
+| Retry-After Metadata | All | Distributed | ✅ Verified |
+| Fail-Open/Fail-Closed | All | Distributed | ✅ Verified |
+| Adaptive Throttling | Local | Local-only | ⚠️ Local |
+| Load Shedding | Local | Local-only | ⚠️ Local |
+| Backpressure | Local | Local-only | ⚠️ Local |
+
+### Design Principles
+
+1. **Atomic by default** — Every operation executes in a single Lua script; no read-modify-write races.
+2. **Distributed state** — All counters, permits, and quotas live in Redis; multiple application instances share limits.
+3. **Observable decisions** — Every call returns rich metadata (remaining, retry-after, reset timestamp, algorithm, reason, fallback flag).
+4. **Explicit failure policy** — `fail-open` (allow on Redis failure) or `fail-closed` (deny) per limiter.
+5. **Subpath isolation** — Importing `@oneunit/redis/rate-limit` does not load BullMQ or queue subsystem.
+
+### Architecture
+
+```mermaid
+flowchart TD
+    RateLimit["rate-limit<br/>limiter · quota · concurrency · burst · multi · adaptive · loadshed · backpressure"]
+    Core["core<br/>types · errors · validation · time · keys"]
+    Scripts["scripts<br/>Lua scripts per algorithm"]
+    Coord["coordination<br/>semaphore · lease · fencing"]
+    Client["client<br/>ioredis factory"]
+    Redis["ioredis"]
+
+    RateLimit --> Core
+    RateLimit --> Scripts
+    RateLimit --> Coord
+    RateLimit --> Client
+    Coord --> Client
+    Client --> Redis
+```
+
+### Boundary Rules
+
+| Rule | Rationale |
+|------|-----------|
+| `rate-limit/` never imports `queue/` or `pipeline/` | Keeps rate limiting free of queue weight |
+| `rate-limit/` may import `coordination/` (semaphore) | Semaphore is a shared distributed primitive |
+| Root `index.ts` re-exports `rate-limit` subpath | Optional feature, additive surface |
+| Lua scripts are internal | No public API depends on script signatures |
+
+### Lua Script Safety
+
+- All scripts use `redis.call('TIME')` for server-side timestamps (no client clock dependency).
+- Keys use hash tags `{resource}` for Redis Cluster compatibility.
+- TTLs are set on every write; expired keys auto-cleaned.
+- Scripts validate inputs (positive finite costs, capacity bounds) before mutating state.
+
+### Failure Handling
+
+| Policy | Behavior | Use Case |
+|--------|----------|----------|
+| `fail-closed` (default) | Throws `RateLimitError` on Redis failure | Strict protection (payments, auth) |
+| `fail-open` | Returns `allowed: true, fallback: true` with error in metadata | Graceful degradation (analytics, non-critical) |
+
+⚠️ **Known limitation:** `fail-open` catches all errors including programming errors. Should only catch operational Redis failures.
+
+### Testing Requirements
+
+- Unit tests: validation, metadata shapes, algorithm config merge.
+- Integration tests (real Redis): atomicity under concurrency (1000 parallel), boundary conditions, window rollover, lease expiration, fail-open/closed.
+- Stress tests: sustained load, mixed check/consume, weighted requests.
+- Cluster key safety: hash tag verification, CROSSSLOT checks.
+- Lifecycle: idempotent shutdown, no cross-test state leakage, no unhandled rejections.
+
+## 20.9 Coordination (optional)
+
+Optional distributed coordination primitives over Redis Lua scripts and atomic compare-and-set. Exposed via `@oneunit/redis/coordination`; never imported by the base client subpath.
+
+### Capabilities
+
+| Factory / helper | Responsibility |
+|---|---|
+| `createCoordinationClient()` | Top-level client wrapper with key prefix, logger, typed sub-managers |
+| Lock manager | Distributed lock acquire/renew/release with fencing tokens |
+| Semaphore manager | Counting permits with acquire/release/renew/status |
+| Lease manager | Time-bound ownership lease |
+| Resource lease manager | Lease wrapper over a resource with epoch fencing |
+| Single-flight manager | Dedupe concurrent same-key execution |
+| Leader election | Term-based leader acquisition/loss and status |
+| Job claim manager | At-least-once-ish job claim/complete/release |
+| Barrier coordinator | Arrive-and-wait synchronization across participants |
+| Fencing helpers | Validate/compare/bump fencing tokens |
+| Singleton scheduler | One-owner periodic task scheduling |
+| Coordination utils | Key builders, validation, timeouts, Lua result parsing, time helpers |
+
+### Design principles
+
+1. Redis remains the source of truth; ownership is explicit via tokens/epochs.
+2. Operations are bounded by caller-provided deadlines where documented; `sleep` supports `AbortSignal`.
+3. Lua scripts use `redis.call('TIME')` for server timestamps and hash tags for cluster safety.
+4. Errors are stable `CoordinationError` subclasses with type guards.
+5. No hidden scheduler or worker is started by import; callers own lifecycle.
+
+## 20.10 Caching (optional)
+
+Optional Redis-backed cache layer over the pipeline subsystem. Exposed via `@oneunit/redis/cache` and re-exported from `@oneunit/redis/features`.
+
+### Capabilities
+
+| Feature | Behavior |
+|---|---|
+| `createRedisCache()` | Factory returning cache API |
+| `get` / `set` | JSON-serialized records with optional TTL |
+| `getOrLoad` / `remember` / `wrap` | Cache-aside with stampede protection |
+| Negative caching | Cache null/missing results for configured TTL |
+| Stale-while-revalidate | Serve stale values while refreshing in background |
+| Tag invalidation | Invalidate groups by tag; track invalidation tokens |
+| L1 local cache | Optional process-local Map with LRU/LFU/FIFO/random eviction and size policies |
+| Write-behind | Dirty-entry buffering with periodic flush, limits, and error callback |
+| Metrics / reset | Hits, misses, hit rate, L1 and write-behind counters |
+| Shutdown | Flush pending write-behind, clear timers and L1 state |
+
+### Design principles
+
+1. Backed by Redis via `runPipeline()`; no transactional/atomic multi-key guarantees beyond pipeline execution.
+2. Invalidation tokens and in-flight loading maps prevent stale repopulation after invalidation.
+3. Write-behind is opt-in and bounded; errors are surfaced via callback and metrics.
+4. L1 cache is process-local only; cluster-wide invalidation requires caller coordination.
+5. Serialization is JSON; complex types must be serializable.
+
+## 20.11 Core helper primitives (optional)
+
+The package ships dependency-light helper primitives, exposed through `@oneunit/redis/features` (core helpers) and partially documented in section 21. Includes:
+
+- Key/namespace builder (`buildKey`) with null/empty validation.
+- JSON encode/decode helpers (`serialize`, `deserialize`).
+- TTL jitter (`jitterTtl`).
+- Conditional writes (`setIfAbsent`, `compareAndSwap`).
+- Capability probing (`detectCapabilities`, `createClusterClient`).
+
+These are thin wrappers and must not become a cache, repository, serializer framework, or required runtime manager.
+
+## 20.12 Resilient client facade
+
+`createResilientRedis()` wraps an existing ioredis client and converts a supported subset of commands into `ResilienceOperation`s. When Redis is connected, commands run directly; connection failures mark the engine degraded and eligible operations follow local fallback/buffer/recovery policy. Optional at-least-once job processing can be attached through the same factory/client options.
+
+
+## 20.13 Complete Feature Implementation Matrix
+
+This section documents every feature shipped by the package, cross-referenced with the FEATURES.md matrix. Status: ✅ = dedicated API/contract, ⚠️ = pass-through or partial abstraction, ❌ = not implemented.
+
+### 20.13.1 Core Redis Infrastructure
+
+| Feature | Status | Implementation |
+|---|---|---|
+| Connection management — connect, reconnect, disconnect, lifecycle hooks | ✅ | `createClient`, `attachEvents` (`connect`, `ready`, `reconnecting`, `error`, `close`), `shutdown` |
+| Client adapters — ioredis adapter | ✅ | Native `ioredis` client constructed and returned |
+| Connection profile — standalone | ✅ | `createClient` returns standalone `Redis` client |
+| Connection profile — Sentinel | ✅ | `createSentinelClient` plus pass-through options |
+| Connection profile — Cluster | ✅ | Optional `createClusterClient` |
+| Namespace management — application, environment, service, tenant prefixes | ✅ | Optional `buildKey` and key validation |
+| Key builder — consistent keys, validation, hash-tag support | ✅ | Optional `buildKey` |
+| Serialization — JSON, strings, typed codecs, versioning | ✅ | Optional `serialize` / `deserialize` |
+| TTL management — default TTLs, expiration, TTL jitter | ✅ | Raw commands plus optional `jitterTtl` |
+| Atomic operations — transactions | ✅ | `runTransaction` wrapper with labelled steps, timeout, typed results |
+| Atomic operations — conditional writes | ✅ | Optional `setIfAbsent` / `compareAndSwap` |
+| Pipelines — batch commands, reduced round trips | ✅ | `runPipeline`, `pipelineValues`, labeled results, timeout, redaction |
+| Error handling — typed errors | ✅ | Typed pipeline/timeout/step errors plus `classifyError`, `isRetryable`, `attachErrorHandling` |
+| Error handling — timeout classification | ✅ | Health, pipeline, and shutdown are bounded |
+| Error handling — retry policies | ✅ | ioredis/BullMQ pass-through plus optional `retryOperation` helper |
+| Health checks — liveness, readiness, connectivity | ✅ | `health()` with bounded `PING` |
+| Graceful shutdown — stop workers, close subscriptions, release connections | ✅ | `shutdown()`, queue/worker close guidance |
+| Configuration validation — URLs, credentials, TLS, timeouts | ✅ | URL, `keyPrefix`, concurrency, TTL, and store validation |
+| Capability detection — supported commands and Redis features | ✅ | Optional `detectCapabilities` |
+| Resilience engine — transparent resilient client | ✅ | `createResilientRedis` and `createClient({ resilience, fallback, recovery })` |
+| Job processing — optional at-least-once BullMQ integration | ✅ | `jobAtLeastOnce`, BullMQ queue/worker wrappers, retries, backoff, graceful shutdown |
+
+### 20.13.2 Resilience Engine (detailed)
+
+| Feature | Status | Implementation |
+|---|---|---|
+| In-memory buffering during Redis outages | ✅ | `createResilienceEngine`, bounded operation store, TTL-preserving recovery |
+| Operation fallback policy | ✅ | Eligible commands buffered, non-idempotent/unsafe commands rejected |
+| Bounded memory | ✅ | Max operation count, max payload bytes, max per-operation size, overflow policy |
+| TTL preservation | ✅ | Absolute deadlines preserved across outage, remaining TTL applied on recovery |
+| Single-worker recovery | ✅ | One recovery coordinator per process, per-key ordering, bounded retries |
+| Ambiguous outcome handling | ✅ | Non-idempotent commands report AMBIGUOUS rather than blindly replaying |
+| Degraded-mode local reads | ✅ | Eligible reads served from local state (HIT/MISS/UNKNOWN) during outage |
+| Degraded-mode local writes | ✅ | Eligible mutations applied locally and journaled for reconciliation |
+| Local tombstones | ✅ | Deletions recorded as tombstones, preventing stale reads |
+| Local TTL preservation | ✅ | Original TTL deadlines preserved, remaining TTL served on read |
+| Bounded local store | ✅ | Max entries, max payload bytes, max entry size, overflow policy |
+| Read-your-writes | ✅ | Same-process local reads observe prior local mutations |
+| Conflict detection | ✅ | Recovery detects keys modified by other writers; configurable policy |
+| Shutdown reporting | ✅ | Shutdown reports discarded pending operations and local entries |
+| Multi-instance | ❌ | Process-local only; no cross-instance shared state |
+| Crash durability | ❌ | In-memory state lost on process crash |
+| Local state cleared on shutdown | ✅ | `shutdown()` clears local store and stops connection |
+
+### 20.13.3 Caching Infrastructure
+
+| Feature | Status | Implementation |
+|---|---|---|
+| Cache-aside | ✅ | Optional `createRedisCache` |
+| Read-through | ✅ | `getOrLoad` / `remember` |
+| Write-through | ✅ | Explicit `writeThrough(key, writer)` helper, `writeThrough` option on `set` |
+| Write-behind | ✅ | `writeBehind` option with async flush, `flushWriteBehind()`, `writeBehindStats()` |
+| Cache invalidation | ✅ | `invalidate` |
+| Tag-based invalidation | ✅ | `invalidateTag` |
+| Namespace invalidation | ⚠️ | Prefix-scoped keys, no global registry |
+| Negative caching | ✅ | `negativeTtlSeconds` option caches null results |
+| Cache stampede protection | ✅ | In-process coalescing |
+| Request coalescing | ✅ | In-process `getOrLoad` |
+| Stale-while-revalidate | ✅ | `staleWhileRevalidate` option serves stale while revalidating |
+| TTL jitter | ✅ | `jitter` option applies `jitterTtl` to stored TTLs |
+| Cache warming | ✅ | `warm(key, loader)` prepopulates without returning |
+| Local L1 cache | ✅ | `localL1` option with `enabled`, `ttlSeconds`, `populateOnMiss`, size policies |
+| Cache metrics | ✅ | `metrics()` returns hits, misses, hit rate, L1 stats, write-behind stats |
+| Cache size policies | ✅ | `sizePolicy` with `maxEntries`, `maxMemoryBytes`, `evictionPolicy` (LRU/LFU/FIFO/random) |
+| Recommended public API | ✅ | `get`, `set`, `getOrLoad`, `remember`, `invalidate`, `invalidateTag`, `wrap`, `warm`, `writeThrough`, `flushWriteBehind`, `writeBehindStats`, `l1Stats`, `clearL1`, `evictL1`, `shutdown` |
+
+### 20.13.4 Rate Limiting, Quotas, and Traffic Control
+
+| Feature | Status | Implementation |
+|---|---|---|
+| Fixed-window limiter | ✅ | `@oneunit/redis/rate-limit` |
+| Sliding-window limiter | ✅ | |
+| Token bucket | ✅ | |
+| Leaky bucket | ✅ | |
+| Multi-dimensional limiting | ✅ | |
+| Weighted rate limiting | ✅ | |
+| Concurrency limiter | ✅ | |
+| Distributed semaphore | ✅ | |
+| Daily/monthly quotas | ✅ | |
+| Burst protection | ✅ | Sustained fixed-window + burst token-bucket, optional concurrency semaphore |
+| Retry-after calculation | ✅ | |
+| Rate-limit metadata | ✅ | |
+| Fail-open/fail-closed policy | ✅ | |
+| Adaptive throttling | ✅ | |
+| Load shedding | ✅ | |
+| Backpressure | ✅ | |
+
+### 20.13.5 Distributed Coordination and Locking
+
+| Feature | Status | Implementation |
+|---|---|---|
+| Distributed mutex | ✅ | `@oneunit/redis/coordination` |
+| Lease-based lock | ✅ | |
+| Lock renewal | ✅ | |
+| Safe lock release | ✅ | |
+| Lock timeout | ✅ | |
+| Try-lock | ✅ | |
+| Lock with callback | ✅ | |
+| Distributed semaphore | ✅ | |
+| Single-flight execution | ✅ | |
+| Leader election | ✅ | |
+| Singleton scheduler | ✅ | |
+| Job claiming | ✅ | |
+| Fencing tokens | ✅ | |
+| Resource leases | ✅ | |
+| Distributed barriers | ✅ | |
+
+### 20.13.6 Queues and Background Jobs
+
+| Feature | Status | Implementation |
+|---|---|---|
+| Queue factory | ✅ | `createQueue` |
+| Worker factory | ✅ | `createWorker` |
+| Scheduled jobs | ✅ | Delayed jobs via BullMQ |
+| Recurring jobs | ✅ | `scheduleJob` / `removeJobScheduler` / `getJobSchedulers` wrappers |
+| Retry and backoff policies | ✅ | Defaults + override merge |
+| Job priorities | ⚠️ | BullMQ `priority` option |
+| Job deduplication | ⚠️ | BullMQ `jobId` / deduplication pass-through |
+| Concurrency controls | ✅ | `WorkerConfig.concurrency` |
+| Job cancellation | ✅ | `cancelJob`/`cancelWorkerJob` wrappers |
+| Job progress | ✅ | `getJobProgress` wrapper plus native progress |
+| Job result storage | ✅ | `getJobResult` wrapper plus native BullMQ return values |
+| Dead-letter handling | ✅ | `createDlqQueue`, `moveToDlq`, `replayDlqJob`, `getDlqEntries` |
+| Stalled-job recovery | ✅ | BullMQ built-in |
+| Graceful draining | ✅ | `worker.close(true)`, `queue.close()` |
+| Queue pause/resume | ✅ | `pauseQueue`/`resumeQueue` wrappers |
+| Queue rate limiting | ✅ | `WorkerConfig.limiter` |
+| Delayed execution | ✅ | Job `delay` |
+| Dependency workflows | ✅ | `createFlowProducer`, `addFlow`, `addBulkFlows` wrappers |
+| Batch jobs | ✅ | `addBulkJobs`/`enqueueBulkJobs`/`addBulkFlows` high-level wrappers |
+| Bulk enqueueing | ✅ | `addBulkJobs`/`enqueueBulkJobs`/`addBulkFlows` wrappers |
+| Job retention policies | ✅ | Defaults (`removeOnComplete`, `removeOnFail`) + override |
+| Queue health metrics | ✅ | `getQueueCounts`/`getQueueHealth`/`getWorkerHealth` wrappers |
+| Worker heartbeats | ✅ | BullMQ built-in |
+| Queue dashboard adapter | ❌ | None |
+| Higher-level additions (middleware, typed registries, error classification, tracing, per-queue policies) | ✅ | `createWorker` middleware, `createJobRegistry`/`validateJobData`, `createErrorClassifier`, `createTracingMiddleware`, policy registry helpers |
+
+### 20.13.7 Session, Identity, and Ephemeral State
+
+| Feature | Status | Implementation |
+|---|---|---|
+| Session store (shared across instances) | ✅ | `createRedisSessionStore` |
+| Session expiration | ⚠️ | Auth-side TTL handling; store tracks versions/revocation |
+| Session revocation | ✅ | `revokeSession` / `isSessionRevoked` |
+| Session versioning | ✅ | `getVersion` / `bumpVersion` |
+| One-time token consumption | ✅ | `StateStore.consume` |
+| Temporary workflow state | ✅ | `createRedisStateStore` |
+| Short-lived authorization state | ⚠️ | State store with TTL |
+
+### 20.13.8 Security Infrastructure
+
+| Feature | Status | Implementation |
+|---|---|---|
+| TLS configuration | ⚠️ | Pass-through ioredis options |
+| Secret redaction | ✅ | `redactError` in events and shutdown |
+| Redis ACL compatibility | ⚠️ | Pass-through |
+| Input validation | ⚠️ | URL, `keyPrefix`, concurrency guards |
+| Secure temporary tokens | ⚠️ | State store with TTL/consume |
+| Security event hooks | ⚠️ | Redacted connection/error events |
+
+### 20.13.9 Deployment and Infrastructure Integration
+
+| Feature | Status | Implementation |
+|---|---|---|
+| Environment-aware configuration | ⚠️ | `REDIS_URL`, logger detection |
+| Sentinel support | ⚠️ | Pass-through |
+| Readiness integration | ⚠️ | `health()` helper |
+| Shutdown integration | ✅ | `shutdown()` |
+| Integration-test environment | ✅ | Tests run against a real Redis service container |
+
+### 20.13.10 Idempotency and Duplicate Prevention (gaps noted)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Idempotency keys | ❌ | |
+| Request deduplication | ❌ | |
+| Job deduplication | ⚠️ | BullMQ `jobId` / deduplication options pass-through only |
+| Claim/complete states | ⚠️ | `createRedisStateStore` get/set/consume lifecycle |
+| Idempotency TTL policies | ⚠️ | Store keys carry TTLs |
+
+### 20.13.11 Messaging and Event Infrastructure (gaps noted)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Pub/Sub publisher | ⚠️ | `client.publish` on the native client |
+| Pub/Sub subscriber | ⚠️ | `subscribe` / `on("message")` on the native client |
+| Redis Streams producer | ⚠️ | Raw `XADD` via the client |
+| Retry and dead-letter workflow | ⚠️ | Queue-events path only |
+
+### 20.13.12 Observability and Diagnostics (gaps noted)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Structured logs | ⚠️ | Normalized logger with redaction |
+| Queue metrics | ⚠️ | Native BullMQ counts/metrics |
+| Connection metrics | ⚠️ | Connection event logs |
+
+### 20.13.13 Features Folder (`src/features`) — Exported API
+
+| Export | Status | Purpose |
+|---|---|---|
+| `createRedisRefreshStore(redis, options?)` | ✅ | Redis-backed `RefreshStore`: save, get, atomic consume (Lua), and revoke; TTL on expiry |
+| `createRedisSessionStore(redis, options?)` | ✅ | `SessionStore`: per-user version counters and revoked-session flags with TTL |
+| `createRedisStateStore(redis, options?)` | ✅ | `StateStore`: temporary single-use state with TTL and atomic consume |
+| `createRedisStores(redis, options?)` | ✅ | Factory returning all three stores above |
+| `RedisStoreOptions` (`keyPrefix`, `revokedSessionTtlSeconds`) | ✅ | Store configuration options |
+| `createScheduledSessionRevocation(config)` | ✅ | Queue-backed delayed session revocation built on BullMQ delayed jobs |
+| `createRedisCache(redis, options?)` | ✅ | Optional Redis-backed cache with TTL, invalidation, tags, and stampede protection |
+| `buildKey(...parts)` | ✅ | Validated namespace/key builder primitive |
+| `serialize(value)` / `deserialize(raw)` | ✅ | JSON codec helpers |
+| `jitterTtl(baseSeconds, jitter?)` | ✅ | TTL jitter helper |
+| `setIfAbsent(client, key, value, options?)` | ✅ | Conditional write helper |
+| `compareAndSwap(client, key, expected, next, options?)` | ✅ | Optimistic atomic CAS helper |
+| `detectCapabilities(client)` | ✅ | Redis capability probing helper |
+| `createClusterClient(nodes, options?)` | ✅ | Optional ioredis Cluster factory |
+
+
+
 ## Final recommendation
 
 Keep `@oneunit/redis` a **thin integration package**.
@@ -645,6 +1101,7 @@ Prioritize, in order:
 5. **Release verification** (tarball-tested, CI-enforced integration tests)
 
 Do **not** add a connection pool, custom retry engine, cache, generic repository layer, or broad abstraction framework without a demonstrated consumer requirement and an explicit architecture revision.
+
 ## 21. Optional core helper primitives
 
 The package may also ship dependency-free helper primitives as **optional features**:

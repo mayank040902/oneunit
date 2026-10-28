@@ -1,4 +1,4 @@
-/* eslint-disable */
+ 
 export function validateFencingToken(expected: number, provided: number, resource: string = ""): void {
   if (provided < expected) {
     throw new Error(`Fencing token ${provided} is older than expected ${expected} for ${resource}`.trim());

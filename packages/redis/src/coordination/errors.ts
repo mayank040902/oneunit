@@ -1,4 +1,4 @@
-/* eslint-disable */
+ 
 /** Base class for all coordination errors */
 export class CoordinationError extends Error {
   code: string;

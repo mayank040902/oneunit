@@ -88,7 +88,7 @@ function createLockManagerImpl(opts: CreateLeaseManagerOptions) {
       renewalTimer = setInterval(() => {
         void renew();
       }, renewIntervalMs);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       (renewalTimer as any).unref?.();
     }
 

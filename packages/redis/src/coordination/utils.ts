@@ -1,4 +1,4 @@
-/* eslint-disable */
+ 
 import { Redis } from "ioredis";
 import { buildKey } from "../features/core-helpers.js";
 import { normalizeLogger, type Logger } from "../logger.js";
@@ -41,7 +41,7 @@ export interface ResolvedCoordinationConfig {
   keyBuilder: ReturnType<typeof createCoordinationKeyBuilder>;
 }
 
-export function resolveCoordinationConfig(config: CoordinationClientConfig): ResolvedCoordinationConfig {
+export function resolveCoordinationConfig(config: CoordinationClientConfig & { keyBuilder?: ReturnType<typeof createCoordinationKeyBuilder> }): ResolvedCoordinationConfig {
   if (!config.client) {
     throw new CoordinationConfigError("Redis client is required", "client");
   }
@@ -73,7 +73,7 @@ export function resolveCoordinationConfig(config: CoordinationClientConfig): Res
     defaultTimeoutMs: config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
     defaultRetryIntervalMs: config.defaultRetryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS,
     logger: normalizeLogger(config.logger),
-    keyBuilder: createCoordinationKeyBuilder(keyPrefix),
+    keyBuilder: config.keyBuilder ?? createCoordinationKeyBuilder(keyPrefix),
   };
 }
 

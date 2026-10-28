@@ -1,5 +1,4 @@
 import { Redis } from "ioredis";
-import { jitterTtl } from "../features/core-helpers.js";
 import { normalizeLogger } from "../logger.js";
 import { runPipeline } from "../pipeline/builder.js";
 import type {
@@ -14,6 +13,8 @@ import type {
   ReadResult,
   CacheRecord,
 } from "./types.js";
+import { cacheKey, tagKey } from "./keys.js";
+import { effectiveTtl } from "./ttl.js";
 
 
 const DEFAULT_PREFIX = "oneunit:cache:";
@@ -26,32 +27,6 @@ const DEFAULT_L1_MAX_ENTRIES = 10000;
 const DEFAULT_L1_EVICTION_POLICY: EvictionPolicy = "lru";
 
 let l1InsertionCounter = 0;
-
-function cacheKey(prefix: string, key: string): string {
-  return `${prefix}${key}`;
-}
-
-function tagKey(prefix: string, tag: string): string {
-  return `${prefix}tag:${tag}`;
-}
-
-function expiresInSeconds(options?: CacheSetOptions, defaultTtlSeconds?: number): number | undefined {
-  if (options?.ttlSeconds !== undefined) {
-    return options.ttlSeconds;
-  }
-  return defaultTtlSeconds;
-}
-
-function effectiveTtl(
-  options: CacheSetOptions | undefined,
-  optionsRef: { defaultTtlSeconds?: number; jitter?: number },
-): number | undefined {
-  let ttl = expiresInSeconds(options, optionsRef.defaultTtlSeconds);
-  if (ttl !== undefined && ttl > 0 && optionsRef.jitter) {
-    ttl = jitterTtl(ttl, optionsRef.jitter);
-  }
-  return ttl;
-}
 
 export function createRedisCache(redis: Redis, options: RedisCacheOptions = {}): RedisCache {
   const prefix = options.keyPrefix ?? DEFAULT_PREFIX;

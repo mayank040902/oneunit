@@ -80,26 +80,26 @@ No dedicated cache module. Examples show manual cache-aside/TTL patterns on the 
 
 ## 3. Rate limiting, quotas, and traffic control
 
-No rate-limit or quota module in this package.
+Implemented under `@oneunit/redis/rate-limit`.
 
 | Feature | Status |
 |---|---|
-| Fixed-window limiter | ❌ |
-| Sliding-window limiter | ❌ |
-| Token bucket | ❌ |
-| Leaky bucket | ❌ |
-| Multi-dimensional limiting | ❌ |
-| Weighted rate limiting | ❌ |
-| Concurrency limiter | ❌ |
-| Distributed semaphore | ❌ |
-| Daily/monthly quotas | ❌ |
-| Burst protection | ❌ |
-| Retry-after calculation | ❌ |
-| Rate-limit metadata | ❌ |
-| Fail-open/fail-closed policy | ❌ |
-| Adaptive throttling | ❌ |
-| Load shedding | ❌ |
-| Backpressure | ❌ |
+| Fixed-window limiter | ✅ |
+| Sliding-window limiter | ✅ |
+| Token bucket | ✅ |
+| Leaky bucket | ✅ |
+| Multi-dimensional limiting | ✅ |
+| Weighted rate limiting | ✅ |
+| Concurrency limiter | ✅ |
+| Distributed semaphore | ✅ |
+| Daily/monthly quotas | ✅ |
+| Burst protection | ✅ | Sustained fixed-window + burst token-bucket, optional concurrency semaphore; evaluation-before-consume to avoid partial consumption |
+| Retry-after calculation | ✅ |
+| Rate-limit metadata | ✅ |
+| Fail-open/fail-closed policy | ✅ |
+| Adaptive throttling | ✅ |
+| Load shedding | ✅ |
+| Backpressure | ✅ |
 
 ## 4. Distributed coordination and locking
 
