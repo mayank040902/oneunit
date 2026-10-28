@@ -29,15 +29,11 @@ cross-instance coordination, and no durability across process crashes.
 ## 1.1 Recommended transparent API
 
 For normal application code, configure resilience inside `createClient` and then use ordinary
-Redis commands directly on the returned client. `createResilientRedis` remains available for
-wrapping an existing client.
-Redis commands. Outage detection, fallback, and recovery happen automatically:
+Redis commands directly on the returned client. Outage detection, fallback, and recovery happen automatically:
 
 ```ts
-import Redis from "ioredis";
-import { createResilientRedis } from "@oneunit/redis";
+import { createClient } from "@oneunit/redis";
 
-const redis = new Redis(process.env.REDIS_URL);
 export const cache = createClient({
   url: process.env.REDIS_URL,
   resilience: {
@@ -50,7 +46,20 @@ await cache.set("user:123", JSON.stringify(user));
 const value = await cache.get("user:123");
 await cache.hset("session:123", "status", "active");
 
-await cache.shutdown(); // does not close the caller-owned client by default
+await cache.shutdown();
+```
+
+Alternatively, `createResilientRedis` is available for wrapping an existing `ioredis` client:
+
+```ts
+import Redis from "ioredis";
+import { createResilientRedis } from "@oneunit/redis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const resilient = createResilientRedis(redis, {
+  fallback: { enabled: true, strategy: "memory" },
+  recovery: { enabled: true },
+});
 ```
 
 The resilience engine remains available on `cache.engine` for diagnostics. Manual `engine.execute()`

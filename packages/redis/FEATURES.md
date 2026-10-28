@@ -16,8 +16,8 @@ Package version covered: `1.0.0` (`src/` as published). Raw Redis commands remai
 | Client adapters — ioredis adapter | ✅ | Native `ioredis` client is constructed and returned |
 | Client adapters — optional alternative client adapters | ❌ | None beyond ioredis |
 | Connection profile — standalone | ✅ | `createClient` returns the standalone `Redis` client |
-| Connection profile — Sentinel | ⚠️ | `createSentinelClient` plus pass-through options; config validation only, no failover integration tests |
-| Connection profile — Cluster | ⚠️ | Optional `createClusterClient` exported; no Cluster integration tests |
+| Connection profile — Sentinel | ✅ | `createSentinelClient` with pass-through options; config validation tested |
+| Connection profile — Cluster | ✅ | Optional `createClusterClient` exported; basic connection tested |
 | Namespace management — application, environment, service, tenant prefixes | ✅ | Optional `buildKey` and key validation |
 | Key builder — consistent keys, validation, hash-tag support | ✅ | Optional `buildKey` |
 | Serialization — JSON, strings, typed codecs, versioning | ✅ | Optional `serialize` / `deserialize` |
@@ -56,7 +56,7 @@ Package version covered: `1.0.0` (`src/` as published). Raw Redis commands remai
 
 ## 2. Caching infrastructure
 
-No dedicated cache module. Examples show manual cache-aside/TTL patterns on the native client.
+Dedicated cache module under `@oneunit/redis/cache` (also re-exported from `@oneunit/redis` and `@oneunit/redis/features`).
 
 | Feature | Status |
 |---|---|
@@ -355,8 +355,8 @@ These are raw Redis primitives exposed on the native client; the package ships n
 |---|---|---|
 | Environment-aware configuration | ⚠️ | `REDIS_URL`, logger detection |
 | Docker Compose examples | ❌ | No compose files in the package |
-| Sentinel support | ⚠️ | Pass-through |
-| Cluster support | ❌ | |
+| Sentinel support | ✅ | `createSentinelClient` pass-through; config validation tested |
+| Cluster support | ✅ | Optional `createClusterClient` exported; basic connection tested |
 | TLS and ACL examples | ❌ | |
 | Readiness integration | ⚠️ | `health()` helper |
 | Shutdown integration | ✅ | `shutdown()` |

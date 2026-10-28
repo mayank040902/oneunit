@@ -78,14 +78,15 @@ npm run verify
 pnpm --filter @oneunit/redis verify
 ```
 
-`npm run verify` runs the exact five checks in order:
+`npm run verify` runs the exact checks in order:
 
 ```bash
-npm run build       # Clean dist/ and compile TypeScript
-npm run typecheck   # Typecheck without emitting files
-npm run lint        # ESLint across src/ and test/
-npm test            # Run test suite with Node's native test runner via tsx
-npm run pack:check  # Dry-run npm pack to catch packaging errors
+npm run build         # Clean dist/ and compile TypeScript
+npm run typecheck     # Typecheck without emitting files
+npm run lint          # ESLint across src/ and test/
+npm test              # Run test suite with Vitest
+npm run test:examples # Run example scripts smoke test
+npm run pack:check    # Dry-run npm pack to catch packaging errors
 ```
 
 CI runs these on **Node 20, 22, and 24** against a `redis` service container,
@@ -110,12 +111,17 @@ orders all five correctly; reach for it rather than the individual scripts.
 
 ## Writing tests
 
-Tests use the Node built-in runner (`node:test`) via `tsx`. There is no test
-framework to configure.
+Tests use **Vitest**. The configuration is in `vitest.config.ts`.
 
 ```bash
 # Inside packages/redis:
 npm test
+
+# Run tests with coverage:
+npm run test:coverage
+
+# Run example scripts tests:
+npm run test:examples
 
 # Run tests in watch mode:
 npm run test:watch
@@ -126,16 +132,28 @@ pnpm --filter @oneunit/redis test
 
 ### Test Suite Structure
 
-The test suite in `test/` is organized into focused suites:
+The test suite in `test/` is organized into focused directories and test files:
 
-| Test File                  | Scope & Responsibilities                                                                              |
+| Directory / Test Suite | Scope & Responsibilities |
 | :------------------------- | :---------------------------------------------------------------------------------------------------- |
-| `test/redis.test.ts`       | Client defaults, URL normalization, BullMQ queue/worker options, health timeout, shutdown idempotency. |
-| `test/pipeline.test.ts`    | Batch command execution, 1-to-1 step validation, timeout guarantees, error redaction, `pipelineValues`. |
-| `test/security.test.ts`    | Plaintext credential redaction (`AUTH`/`HELLO`), prototype pollution guards, safe key names.          |
-| `test/performance.test.ts` | Latency bounds, concurrent health checks, high-volume pipeline throughput.                            |
-| `test/examples.test.ts`    | End-to-end execution smoke tests verifying each runnable script in `examples/`.                      |
-| `test/helpers.ts`          | Shared connectivity probe (`redisAvailable()`, `cachedRedisAvailable()`).                            |
+| `test/redis/` | Client defaults, URL normalization, BullMQ queue/worker options, health timeout, shutdown idempotency. |
+| `test/pipeline/` | Batch command execution, 1-to-1 step validation, timeout guarantees, error redaction, `pipelineValues`. |
+| `test/queue/` | Queue, Worker, QueueEvents lifecycles, DLQ management, error handlers. |
+| `test/cache/` | L1 in-memory + L2 Redis caching, write-behind, tag invalidation, SWR, stampede protection. |
+| `test/coordination/` | Distributed locks with fencing, semaphores, leases, leader election, barriers, singleton scheduler. |
+| `test/rate-limit/` | Fixed/sliding window, token/leaky bucket, quotas, concurrency, burst, adaptive, load shedding. |
+| `test/resilience/` | Transparent Redis outage fallback, local journal/store, recovery coordinator, TTL preservation. |
+| `test/jobs/` | At-least-once BullMQ-backed jobs facade, stalled-job recovery, retries, DLQ. |
+| `test/scheduled/` | Scheduled session revocation and delayed jobs. |
+| `test/security/` | Plaintext credential redaction (`AUTH`/`HELLO`), prototype pollution guards, safe key names. |
+| `test/performance/` | Latency bounds, concurrent health checks, high-volume pipeline throughput. |
+| `test/examples/` | End-to-end execution smoke tests verifying runnable scripts in `examples/`. |
+| `test/sentinel/` | Sentinel client configuration and connectivity. |
+| `test/transaction/` | Multi/exec labelled transaction wrapper. |
+| `test/retry/` | Retry policies, retryOperation, and retryOperationWithResult helpers. |
+| `test/core-helpers/` | Key builder, serialization codec, TTL jitter, CAS, conditional writes, capability detection. |
+| `test/auth-adapter/` | Refresh, session, and state store adapters for `@oneunit/auth`. |
+| `test/helpers.ts` | Shared connectivity probe (`redisAvailable()`, `cachedRedisAvailable()`). |
 
 ### A regression test must fail without its fix
 

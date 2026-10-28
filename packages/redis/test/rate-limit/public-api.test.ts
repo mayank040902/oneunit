@@ -276,43 +276,49 @@ describe("Public API: Consumer Smoke Test", () => {
 });
 
 describe("Public API: Subpath Imports", () => {
-  test("can import from @oneunit/redis/rate-limit subpath", async () => {
-    const { createRateLimiter: rl } = await import("@oneunit/redis/rate-limit");
-    assert.ok(typeof rl === "function");
+  test("can import from @oneunit/redis/rate-limit subpath", () => {
+    import("@oneunit/redis/rate-limit").then(({ createRateLimiter: rl }) => {
+      assert.ok(typeof rl === "function");
+    });
   });
 
-  test("can import from @oneunit/redis/coordination subpath", async () => {
-    const { createCoordinationClient: cl } = await import("@oneunit/redis/coordination");
-    assert.ok(typeof cl === "function");
+  test("can import from @oneunit/redis/coordination subpath", () => {
+    import("@oneunit/redis/coordination").then(({ createCoordinationClient: cl }) => {
+      assert.ok(typeof cl === "function");
+    });
   });
 
-  test("can import from @oneunit/redis/cache subpath", async () => {
-    // Cache module exports the Cache class
-    const mod = await import("@oneunit/redis/cache");
-    assert.ok(Object.keys(mod).length > 0);
+  test("can import from @oneunit/redis/cache subpath", () => {
+    import("@oneunit/redis/cache").then((mod) => {
+      assert.ok(Object.keys(mod).length > 0);
+    });
   });
 });
 
 describe("Public API: Error Exports", () => {
-  test("RateLimitError is exported from rate-limit", async () => {
-    const { RateLimitError } = await import("@oneunit/redis/rate-limit");
-    assert.ok(typeof RateLimitError === "function");
-    const err = new RateLimitError("test");
-    assert.ok(err instanceof Error);
+  test("RateLimitError is exported from rate-limit", () => {
+    import("@oneunit/redis/rate-limit").then(({ RateLimitError }) => {
+      assert.ok(typeof RateLimitError === "function");
+      const err = new RateLimitError("test");
+      assert.ok(err instanceof Error);
+    });
   });
 
-  test("RateLimitConfigError is exported from rate-limit", async () => {
-    const { RateLimitConfigError } = await import("@oneunit/redis/rate-limit");
-    assert.ok(typeof RateLimitConfigError === "function");
+  test("RateLimitConfigError is exported from rate-limit", () => {
+    import("@oneunit/redis/rate-limit").then(({ RateLimitConfigError }) => {
+      assert.ok(typeof RateLimitConfigError === "function");
+    });
   });
 
-  test("ConcurrencyAcquisitionError is exported from rate-limit", async () => {
-    const { ConcurrencyAcquisitionError } = await import("@oneunit/redis/rate-limit");
-    assert.ok(typeof ConcurrencyAcquisitionError === "function");
+  test("ConcurrencyAcquisitionError is exported from rate-limit", () => {
+    import("@oneunit/redis/rate-limit").then(({ ConcurrencyAcquisitionError }) => {
+      assert.ok(typeof ConcurrencyAcquisitionError === "function");
+    });
   });
 
-  test("BackpressureError is exported from rate-limit", async () => {
-    const { BackpressureError } = await import("@oneunit/redis/rate-limit");
-    assert.ok(typeof BackpressureError === "function");
+  test("BackpressureError is exported from rate-limit", () => {
+    import("@oneunit/redis/rate-limit").then(({ BackpressureError }) => {
+      assert.ok(typeof BackpressureError === "function");
+    });
   });
 });

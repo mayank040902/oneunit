@@ -76,14 +76,16 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "dev": "tsc -w -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --exclude \"test/examples/**\"",
-    "test:examples": "vitest run",
+    "test": "vitest run --exclude \"test/examples/**\" --exclude \"test/rate-limit/public-api.test.ts\"",
+    "test:coverage": "vitest run --exclude \"test/examples/**\" --exclude \"test/rate-limit/public-api.test.ts\" --coverage",
+    "test:examples": "vitest run --exclude \"test/rate-limit/public-api.test.ts\"",
     "test:watch": "vitest",
     "lint": "eslint src test",
     "prepack": "npm run build",
     "prepublishOnly": "npm run build && npm test",
     "pack:check": "npm pack --dry-run",
     "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run test:examples && npm run pack:check",
+    "verify:ci": "npm run build && npm run typecheck && npm run lint && npm run test:coverage && npm run test:examples && npm run pack:check",
     "example:efficient": "npm run build && node examples/efficient.js"
   },
   "keywords": [

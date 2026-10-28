@@ -772,9 +772,13 @@ import {
 ### Subpath Imports
 
 ```typescript
-import { createRateLimiter } from '@oneunit/redis/rate-limit';
-import { createConcurrencyLimiter } from '@oneunit/redis/coordination';
-import { createCache } from '@oneunit/redis/cache';
+import {
+  createRateLimiter,
+  createMultiRateLimiter,
+  createQuota,
+  createConcurrencyLimiter,
+  createBurstProtector,
+} from '@oneunit/redis/rate-limit';
 ```
 
 ---
@@ -796,9 +800,9 @@ import { createCache } from '@oneunit/redis/cache';
 
 Run the test suite:
 ```bash
-npm test              # All tests (693+)
-npm run test:unit     # Unit tests only
-npm run test:integration # Redis integration tests
+npm test              # Run test suite
+npm run test:coverage # Run with coverage
+npm run test:examples # Run examples smoke tests
 npm run verify        # Full CI pipeline (build, typecheck, lint, test, pack)
 ```
 
@@ -880,7 +884,7 @@ All rate limiting algorithms have been tested against a production Redis Cloud i
 ### Run Tests Against Cloud Redis
 
 ```bash
-export REDIS_URL="redis://default:ReLOs9xAYAHM7RbqbkNiEc2CAqFuGliY@redis-10952.crce194.ap-seast-1-1.ec2.cloud.redislabs.com:10952"
+export REDIS_URL="redis://default:<password>@redis-10952.crce194.ap-seast-1-1.ec2.cloud.redislabs.com:10952"
 npm test
 ```
 

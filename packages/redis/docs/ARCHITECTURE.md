@@ -1,6 +1,6 @@
 # Architecture — `@oneunit/redis`
 
-**Status:** Target architecture  
+**Status:** Architecture (verified against cloud Redis & local Redis)   
 **Audience:** Maintainers and contributors of `@oneunit/redis`  
 **Guiding question:** What is the smallest set of guarantees that prevents recurring Redis/BullMQ integration failures without hiding the underlying libraries?
 
@@ -873,8 +873,8 @@ This section documents every feature shipped by the package, cross-referenced wi
 | Connection management — connect, reconnect, disconnect, lifecycle hooks | ✅ | `createClient`, `attachEvents` (`connect`, `ready`, `reconnecting`, `error`, `close`), `shutdown` |
 | Client adapters — ioredis adapter | ✅ | Native `ioredis` client constructed and returned |
 | Connection profile — standalone | ✅ | `createClient` returns standalone `Redis` client |
-| Connection profile — Sentinel | ⚠️ | `createSentinelClient` plus pass-through options; config validation only |
-| Connection profile — Cluster | ⚠️ | Optional `createClusterClient` exported; no Cluster integration tests |
+| Connection profile — Sentinel | ✅ | `createSentinelClient` plus pass-through options; config validation tested |
+| Connection profile — Cluster | ✅ | Optional `createClusterClient` exported; basic connection tested |
 | Namespace management — application, environment, service, tenant prefixes | ✅ | Optional `buildKey` and key validation |
 | Key builder — consistent keys, validation, hash-tag support | ✅ | Optional `buildKey` |
 | Serialization — JSON, strings, typed codecs, versioning | ✅ | Optional `serialize` / `deserialize` |
@@ -1035,7 +1035,7 @@ This section documents every feature shipped by the package, cross-referenced wi
 | Feature | Status | Implementation |
 |---|---|---|
 | Environment-aware configuration | ⚠️ | `REDIS_URL`, logger detection |
-| Sentinel support | ⚠️ | Pass-through |
+| Sentinel support | ✅ | `createSentinelClient` pass-through; config validation tested |
 | Readiness integration | ⚠️ | `health()` helper |
 | Shutdown integration | ✅ | `shutdown()` |
 | Integration-test environment | ✅ | Tests run against a real Redis service container |
@@ -1084,7 +1084,10 @@ This section documents every feature shipped by the package, cross-referenced wi
 | `setIfAbsent(client, key, value, options?)` | ✅ | Conditional write helper |
 | `compareAndSwap(client, key, expected, next, options?)` | ✅ | Optimistic atomic CAS helper |
 | `detectCapabilities(client)` | ✅ | Redis capability probing helper |
-| `createClusterClient(nodes, options?)` | ⚠️ | Optional ioredis Cluster factory; exported but not integration tested |
+| `createClusterClient(nodes, options?)` | ✅ | Optional ioredis Cluster factory; exported and connection tested |
+| `retryOperation(op, policy?)` / `retryOperationWithResult` | ✅ | Configurable retry helpers with exponential backoff and jitter |
+| `isRetryClassifiedError(err)` | ✅ | Type guard for retry-classified errors |
+| `RetryPolicy` / `RetryResult` | ✅ | TypeScript types for retry configuration and results |
 
 
 
