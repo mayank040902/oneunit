@@ -502,7 +502,27 @@ DATABASE_URL=postgresql://localhost:5432/app node examples/basic.js
 npm test
 ```
 
-Tests use Node's built-in test runner and do **not** require a live PostgreSQL instance.
+Tests use [vitest](https://vitest.dev/). All tests mock `pg.Pool` and `PoolClient` — no live PostgreSQL instance required.
+
+Tests are organized under `test/` to mirror `src/`:
+
+| Directory | Covers |
+| :--- | :--- |
+| `test/client/` | client, transactions, retry, batch, check, health, shutdown, stream, cursor |
+| `test/query/` | SQL fragments & QueryBuilder |
+| `test/schema/` | DDL helpers, migration runner |
+| `test/model/` | Model CRUD abstraction |
+| `test/json-serialization/` | encode/decode utilities |
+| `test/errors/` | error normalization & classifiers |
+| `test/config/` | env-based config loading |
+| `test/database.test.js` | `createDatabase()` composition surface |
+| `test/edge-cases.test.js` | edge, extreme, behaviour & real-world scenarios |
+
+```bash
+npm test                    # run all tests
+npm run test:watch          # watch mode
+npx vitest run test/client  # run one directory
+```
 
 ---
 

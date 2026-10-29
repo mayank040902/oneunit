@@ -103,7 +103,16 @@ packages/database/
 │       ├── id.ts                # id(), bigIntId(), uuid()
 │       └── timestamp.ts         # timestamp()
 │
-├── test/                        # Tests (Node.js built-in test runner)
+├── test/                        # Tests (vitest), mirrors src/ structure
+│   ├── client/                  # client, transaction, retry, batch, check, stream, cursor, shutdown
+│   ├── query/                   # QueryBuilder
+│   ├── schema/                  # migrator, schema manager
+│   ├── model/                   # model CRUD
+│   ├── json-serialization/      # encode/decode utilities
+│   ├── errors/                  # error classifiers
+│   ├── config/                  # config loading
+│   ├── database.test.js         # createDatabase() composition surface
+│   └── edge-cases.test.js       # edge, extreme, behaviour & real-world scenarios
 ├── dist/                        # Compiled output (git-ignored, auto-generated)
 ├── examples/                    # Runnable usage examples
 ├── ARCHITECTURE.md              # Internal design reference
@@ -198,38 +207,43 @@ npm run typecheck && npm test && npm run build && npm run pack:check
 - **No live PostgreSQL required** — all tests use mocked `pg.Pool` and `PoolClient`
 - **Fast** — the full suite runs in seconds
 - **Isolated** — each test sets up its own mocks; no shared mutable state
+- **Structure** — tests live under `test/` and mirror `src/` (e.g., `test/client/client.test.js`, `test/query/builder.test.js`, `test/model/model.test.js`, etc.)
 
 ### Running Tests
 
 ```bash
-npm test                                 # all tests
+npm test                                 # all tests (vitest)
 npm run test:watch                       # re-run on file changes
-node --test test/specific.test.js        # single file
+npx vitest run test/client/client.test.js   # single file
+npx vitest run test/client               # one directory
 ```
 
 ### Writing Tests
 
-- Test files go in `test/` with the naming convention `*.test.js`
-- Use Node's built-in `node:test` and `node:assert` modules
+- Test files go in `test/` (or a subdirectory mirroring `src/`) with the naming convention `*.test.js`
+- Use vitest's `describe` / `it` / `expect` API
 - Mock `pg.Pool` and `PoolClient` — see existing tests for patterns
 - Test both success paths and error paths
 - For error classifiers, test with realistic PostgreSQL error codes
 
 ### Test Coverage Map
 
-| Area | Test Files |
+| Area | Test Location |
 | :--- | :--- |
-| Database composition | `create-database.test.js`, `database.test.js` |
-| Query execution | `client-extended.test.js` |
-| Config loading | `config.test.js`, `config-extended.test.js` |
-| Error handling | `errors.test.js` |
-| Health & shutdown | `lifecycle.test.js` |
-| Retry logic | `retry.test.js` |
-| Transactions | `transaction-extended.test.js` |
-| Batch & models | `batch-model.test.js` |
-| Migrations | `migrations.test.js` |
-| Query builder | `query-builder.test.js` |
-| Serialization | `msgpack.test.js` |
+| Database composition | `test/database.test.js` |
+| Query execution | `test/client/client.test.js` |
+| Config loading | `test/config/config.test.js` |
+| Error handling | `test/errors/errors.test.js` |
+| Health & shutdown | `test/client/check.test.js`, `test/client/shutdown.test.js` |
+| Retry logic | `test/client/retry.test.js` |
+| Transactions | `test/client/transaction.test.js` |
+| Batch & models | `test/client/batch.test.js`, `test/model/model.test.js` |
+| Migrations | `test/schema/migrator.test.js` |
+| Query builder | `test/query/builder.test.js` |
+| Serialization | `test/json-serialization/serialization.test.js` |
+| Schema DDL | `test/schema/schema.test.js` |
+| Streaming / cursor | `test/client/stream.test.js`, `test/client/cursor.test.js` |
+| Edge / extreme / real-world | `test/edge-cases.test.js` |
 
 ---
 
@@ -248,26 +262,26 @@ node --test test/specific.test.js        # single file
 
 1. Add the method to the `QueryBuilder` class in `src/query/builder.ts`
 2. Add the type signature to the `QueryBuilder` interface in `src/types.ts`
-3. Add tests in `test/query-builder.test.js`
+3. Add tests in `test/query/builder.test.js`
 
 ### Adding a Model Method
 
 1. Add the method in `src/model/model.ts`
 2. Add the type signature to the `Model` interface in `src/types.ts`
-3. Add tests in `test/batch-model.test.js`
+3. Add tests in `test/model/model.test.js`
 
 ### Adding an Error Classifier
 
 1. Add the PostgreSQL error code constant and classifier function in `src/client/errors.ts`
 2. Export the classifier
 3. Add the type declaration in `src/types.ts`
-4. Add tests in `test/errors.test.js`
+4. Add tests in `test/errors/errors.test.js`
 5. Document in README.md error helpers table
 
 ### Adding a Configuration Variable
 
 1. Add the env variable mapping in `loadDatabaseConfig()` in `src/client/config.ts`
-2. Add tests in `test/config.test.js`
+2. Add tests in `test/config/config.test.js`
 3. Update the configuration table in README.md
 
 ### Adding a Schema Operation

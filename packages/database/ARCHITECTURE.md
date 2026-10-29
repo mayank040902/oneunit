@@ -519,29 +519,28 @@ graph LR
 
 ## Testing Strategy
 
-- **Runner**: Node.js built-in test runner (`node:test`)
+- **Runner**: [vitest](https://vitest.dev/) (`vitest run`)
 - **Mocking**: All tests mock `pg.Pool` and `PoolClient` — no live PostgreSQL required
-- **Coverage areas**: query building, transactions, retries, batch inserts, models, migrations, schema helpers, error classification, config parsing, lifecycle management
+- **Structure**: Tests under `test/` mirror `src/` (`test/client/`, `test/query/`, `test/schema/`, `test/model/`, etc.)
+- **Coverage areas**: query building, transactions, retries, batch inserts, models, migrations, schema helpers, error classification, config parsing, lifecycle management, plus 77 edge/extreme/behaviour/real-world cases
 
-| Test File | Covers |
+| Directory / File | Covers |
 | :--- | :--- |
-| `create-database.test.js` | `createDatabase()` composition |
-| `database.test.js` | End-to-end Database API |
-| `client-extended.test.js` | Query execution, prepared statements |
-| `config.test.js`, `config-extended.test.js` | Environment parsing, SSL config |
-| `errors.test.js` | Error normalization, classifiers |
-| `lifecycle.test.js` | Health checks, shutdown |
-| `retry.test.js` | Retry logic, backoff |
-| `transaction-extended.test.js` | Transactions, savepoints, isolation |
-| `batch-model.test.js` | Batch inserts, model CRUD |
-| `migrations.test.js` | Migration runner, rollback, status |
-| `query-builder.test.js` | QueryBuilder fluent API |
-| `msgpack.test.js` | JSON serialization utilities |
+| `test/database.test.js` | `createDatabase()` composition surface |
+| `test/client/` | client, transaction, retry, batch, check, health, shutdown, stream, cursor |
+| `test/query/` | SQL fragments & QueryBuilder |
+| `test/schema/` | DDL helpers, migration runner |
+| `test/model/` | Model CRUD abstraction |
+| `test/json-serialization/` | encode/decode utilities |
+| `test/errors/` | error normalization & classifiers |
+| `test/config/` | env-based config loading |
+| `test/edge-cases.test.js` | edge, extreme, behaviour & real-world scenarios |
 
 ```bash
-npm test                               # run all tests
-npm run test:watch                     # watch mode
-node --test test/specific.test.js      # run a single file
+npm test                           # run all tests (vitest)
+npm run test:watch                 # watch mode
+npx vitest run test/client         # run one directory
+npx vitest run test/edge-cases.test.js  # run a single file
 ```
 
 ---

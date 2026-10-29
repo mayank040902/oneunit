@@ -311,7 +311,7 @@ export class QueryBuilder implements QueryBuilderType {
 
             if (condition.text !== undefined) {
                 text = condition.text;
-                let valueIndex = 0;
+                const valueIndex = 0;
                 text = text.replace(/\$(\d+)/g, (_, position) => {
                     const idx = Number(position) - 1;
                     if (idx < (condition.values ?? []).length) {

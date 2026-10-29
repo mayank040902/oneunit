@@ -55,8 +55,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -w -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/*.test.js",
-    "test:watch": "tsx --test --watch test/*.test.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepack": "npm run build",
     "prepublishOnly": "npm run build && npm test",
     "pack:check": "npm pack --dry-run"
@@ -104,7 +104,8 @@
     "pg-cursor": "^2.21.0",
     "pg-query-stream": "^4.16.0",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.7"
   },
   "peerDependencies": {
     "pg-cursor": "^2.21.0",
