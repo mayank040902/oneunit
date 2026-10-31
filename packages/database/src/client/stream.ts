@@ -8,17 +8,23 @@ interface QueryStreamInstance extends NodeJS.ReadableStream {
     destroy?: (error: Error) => void;
 }
 
+type PoolResolver = (shardKey?: string, shardId?: string) => Pool;
+
 export function createStream(
     pool: Pool,
     logger: unknown,
     defaults: { timeout?: number } = {},
+    resolvePool?: PoolResolver,
 ): StreamApi {
     async function stream(
         text: string,
         values: unknown[] = [],
         streamOptions: StreamOptions = {},
     ): Promise<NodeJS.ReadableStream> {
-        const client = await pool.connect();
+        const targetPool = resolvePool
+            ? resolvePool(streamOptions.shardKey, streamOptions.shardId)
+            : pool;
+        const client = await targetPool.connect();
 
         try {
             const query = new QueryStream(text, values, streamOptions as Record<string, unknown>);

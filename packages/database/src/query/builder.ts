@@ -82,6 +82,11 @@ interface OrderClause {
     direction: string;
 }
 
+interface ShardRoutingHint {
+    shardKey?: string;
+    shardId?: string;
+}
+
 /**
  * Immutable-ish fluent builder for the common CRUD shapes. It produces fully
  * parameterized statements and leaves anything complex to the caller via
@@ -106,14 +111,30 @@ export class QueryBuilder implements QueryBuilderType {
     private _updateValues: Record<string, unknown> | null = null;
     private _conflict: unknown = null;
     private _returning: string[] | null = null;
+    private _shardKey: string | undefined;
+    private _shardId: string | undefined;
 
-    constructor({ query, table, logger }: { query?: QueryRunner; table: string; logger?: unknown } = { table: "" }) {
+    constructor({
+        query,
+        table,
+        logger,
+        shardKey,
+        shardId,
+    }: {
+        query?: QueryRunner;
+        table: string;
+        logger?: unknown;
+        shardKey?: string;
+        shardId?: string;
+    } = { table: "" }) {
         if (!table) {
             throw new TypeError("QueryBuilder requires a table name");
         }
         this._query = query;
         this._logger = logger;
         this._table = table;
+        this._shardKey = shardKey;
+        this._shardId = shardId;
         this._params = new ParamCollector();
     }
 
@@ -134,6 +155,8 @@ export class QueryBuilder implements QueryBuilderType {
         next._updateValues = this._updateValues;
         next._conflict = this._conflict;
         next._returning = this._returning;
+        next._shardKey = this._shardKey;
+        next._shardId = this._shardId;
         return next;
     }
 
@@ -298,6 +321,27 @@ export class QueryBuilder implements QueryBuilderType {
 
     onConflict(options: Record<string, unknown>): this {
         this._conflict = options;
+        return this;
+    }
+
+    /**
+     * Pin this builder (and all clones) to a specific shard key. The shard key
+     * is merged into execution options at `.execute()` time and routed through
+     * the unified executor. Calling `withShard()` after routing has already
+     * been established replaces the previous shard key.
+     */
+    withShard(shardKey: string): this {
+        this._shardKey = shardKey;
+        this._shardId = undefined;
+        return this;
+    }
+
+    /**
+     * Pin this builder (and all clones) to a specific shard id.
+     */
+    withShardId(shardId: string): this {
+        this._shardId = shardId;
+        this._shardKey = undefined;
         return this;
     }
 
@@ -537,7 +581,16 @@ export class QueryBuilder implements QueryBuilderType {
         if (typeof runner !== "function") {
             throw new TypeError("QueryBuilder was not given a query function to execute with");
         }
-        const result = await runner(text, values, queryOptions);
+        // Merge builder-level shard routing into execution options. Per-call
+        // options take precedence over builder-level configuration.
+        const mergedOptions: Record<string, unknown> = { ...queryOptions };
+        if (this._shardKey && mergedOptions.shardKey === undefined) {
+            mergedOptions.shardKey = this._shardKey;
+        }
+        if (this._shardId && mergedOptions.shardId === undefined) {
+            mergedOptions.shardId = this._shardId;
+        }
+        const result = await runner(text, values, mergedOptions);
         return result ?? { rows: [], command: "", rowCount: 0, oid: 0, fields: [] };
     }
 
@@ -559,8 +612,13 @@ export class QueryBuilder implements QueryBuilderType {
     }
 }
 
-export function createQueryBuilder({ query, logger }: { query?: QueryRunner; logger?: unknown } = {}): (table: string) => QueryBuilderType {
+export function createQueryBuilder({ query, logger, shardKey, shardId }: {
+    query?: QueryRunner;
+    logger?: unknown;
+    shardKey?: string;
+    shardId?: string;
+} = {}): (table: string) => QueryBuilderType {
     return function from(table: string) {
-        return new QueryBuilder({ query, table, logger });
+        return new QueryBuilder({ query, table, logger, shardKey, shardId });
     };
 }

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { PoolConfig } from "pg";
+import type { DatabaseConfig, IdleTransactionTimeout } from "../types.js";
 
 const DEFAULT_APPLICATION_NAME = "Unknown App";
 const DEFAULT_POOL_MAX = 20;
@@ -63,6 +64,77 @@ function withOptional<T>(target: Record<string, unknown>, key: string, value: T)
     }
 }
 
+const IDLE_TRANSACTION_TIMEOUT_MAX = 2147483647;
+
+function validateIdleTransactionTimeout(
+    value: IdleTransactionTimeout | undefined,
+): IdleTransactionTimeout | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+
+    if (!value.enabled) {
+        return { enabled: false };
+    }
+
+    const { timeout } = value;
+
+    if (timeout === undefined || timeout === null) {
+        throw new TypeError(
+            "idleTransactionTimeout requires a numeric timeout (milliseconds) when enabled",
+        );
+    }
+
+    if (typeof timeout !== "number") {
+        throw new TypeError(
+            "idleTransactionTimeout timeout must be a number (milliseconds)",
+        );
+    }
+
+    if (!Number.isFinite(timeout)) {
+        throw new RangeError(
+            "idleTransactionTimeout timeout must be a finite number",
+        );
+    }
+
+    if (timeout <= 0) {
+        throw new RangeError(
+            "idleTransactionTimeout timeout must be greater than 0 when enabled",
+        );
+    }
+
+    if (timeout > IDLE_TRANSACTION_TIMEOUT_MAX) {
+        throw new RangeError(
+            `idleTransactionTimeout timeout must not exceed ${IDLE_TRANSACTION_TIMEOUT_MAX}ms`,
+        );
+    }
+
+    return { enabled: true, timeout: Math.floor(timeout) };
+}
+
+function mergeIdleTransactionOptions(
+    existingOptions: string | undefined,
+    idleTimeout: IdleTransactionTimeout | undefined,
+): string | undefined {
+    if (!idleTimeout?.enabled) {
+        return existingOptions;
+    }
+
+    const setting = `-c idle_in_transaction_session_timeout=${idleTimeout.timeout}`;
+
+    if (!existingOptions) {
+        return setting;
+    }
+
+    const cleaned = existingOptions
+        .replace(/-c\s+idle_in_transaction_session_timeout=\S*/gi, "")
+        .replace(/\bidle_in_transaction_session_timeout=\S*/gi, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    return cleaned ? `${cleaned} ${setting}` : setting;
+}
+
 /**
  * Build a `pg` configuration object from environment variables and explicit
  * overrides. This is the single place in the package that reads configuration
@@ -72,9 +144,9 @@ function withOptional<T>(target: Record<string, unknown>, key: string, value: T)
  * are ignored so callers can spread partial configuration safely.
  */
 export function loadDatabaseConfig(
-    overrides: Partial<PoolConfig> & { logger?: { warn?: (meta: object, msg: string) => void } } = {},
+    overrides: Partial<DatabaseConfig> & { logger?: { warn?: (meta: object, msg: string) => void } } = {},
     env: NodeJS.ProcessEnv = process.env,
-): PoolConfig {
+): DatabaseConfig {
     const config: Record<string, unknown> = {};
 
     withOptional(
@@ -142,14 +214,30 @@ export function loadDatabaseConfig(
 
     config.ssl = overrides.ssl ?? parseSslConfig(env, overrides.logger as { warn?: (meta: object, msg: string) => void } | undefined);
 
+    const idleTimeout = validateIdleTransactionTimeout(
+        overrides.idleTransactionTimeout,
+    );
+
+    const mergedOptions = mergeIdleTransactionOptions(
+        overrides.options ?? readEnv(env, "PGOPTIONS"),
+        idleTimeout,
+    );
+    if (mergedOptions) {
+        config.options = mergedOptions;
+    }
+
     for (const [key, value] of Object.entries(overrides)) {
-        if (value === undefined || key in config) {
+        if (
+            value === undefined ||
+            key === "idleTransactionTimeout" ||
+            key in config
+        ) {
             continue;
         }
         config[key] = value;
     }
 
-    return config as PoolConfig;
+    return config as DatabaseConfig;
 }
 
 export const dbConfig = loadDatabaseConfig();

@@ -8,9 +8,14 @@ interface CursorInstance {
     close(callback: (error: Error | null) => void): void;
 }
 
-export function createCursor(pool: Pool): CursorApi {
+type PoolResolver = (shardKey?: string, shardId?: string) => Pool;
+
+export function createCursor(pool: Pool, resolvePool?: PoolResolver): CursorApi {
     async function cursor(text: string, values: unknown[] = [], options: Record<string, unknown> = {}): Promise<CursorHandle> {
-        const client = await pool.connect();
+        const targetPool = resolvePool
+            ? resolvePool(options.shardKey as string | undefined, options.shardId as string | undefined)
+            : pool;
+        const client = await targetPool.connect();
         let instance: CursorInstance;
 
         try {

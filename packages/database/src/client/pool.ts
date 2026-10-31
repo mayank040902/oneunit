@@ -1,6 +1,5 @@
 import { Pool } from "pg";
-import type { PoolConfig } from "pg";
-import type { Logger } from "../types.js";
+import type { DatabaseConfig, Logger } from "../types.js";
 import { loadDatabaseConfig } from "./config.js";
 
 /**
@@ -14,11 +13,23 @@ export function createPool({
     onError,
 }: {
     logger?: Logger;
-    config?: Partial<PoolConfig>;
+    config?: Partial<DatabaseConfig>;
     onError?: (error: Error) => void;
 } = {}): Pool {
     const mergedConfig = loadDatabaseConfig(config);
     const pool = new Pool(mergedConfig);
+
+    const idleTimeout = mergedConfig.idleTransactionTimeout;
+    if (idleTimeout?.enabled) {
+        logger?.info?.(
+            {
+                database: mergedConfig.database,
+                applicationName: mergedConfig.application_name,
+                idleTransactionTimeoutMs: idleTimeout.timeout,
+            },
+            "Database idle-in-transaction timeout enabled",
+        );
+    }
 
     pool.on("connect", () => {
         logger?.info?.(

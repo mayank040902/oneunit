@@ -158,9 +158,17 @@ export function createClient(
 
     async function executeOnce(config: QueryConfig, queryOptions: QueryOptions): Promise<QueryResult> {
         const client = await getClient(queryOptions);
-        const context: { sql?: string; parameters?: unknown[]; rowCount?: number } = {
+        const context: {
+            sql?: string;
+            parameters?: unknown[];
+            rowCount?: number;
+            shardId?: string;
+            routingStrategy?: string;
+        } = {
             sql: typeof config?.text === "string" ? config.text : config?.name,
             parameters: config?.values,
+            shardId: (queryOptions as { __shardId?: string }).__shardId,
+            routingStrategy: (queryOptions as { __routingStrategy?: string }).__routingStrategy,
         };
         let destroy = false;
 

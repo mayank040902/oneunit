@@ -16,22 +16,35 @@ export function createModel({
     table,
     idColumn = "id",
     logger,
+    shardKey,
+    shardId,
 }: {
     query?: QueryRunner;
     table: string;
     idColumn?: string;
     logger?: unknown;
+    shardKey?: string;
+    shardId?: string;
 } = { table: "" }): Model {
     if (!table) {
         throw new TypeError("createModel requires a table name");
     }
 
     function builder(): QueryBuilderType {
-        return new QueryBuilder({ query: query as QueryRunner, table, logger });
+        return new QueryBuilder({ query: query as QueryRunner, table, logger, shardKey, shardId });
     }
 
     async function run(builderInstance: QueryBuilderType, options: ModelFindOptions = {}): Promise<{ rows: QueryResultRow[] }> {
         const { text, values } = builderInstance.toSQL();
+        // Merge model-level shard routing into per-call options. Per-call
+        // shardKey/shardId take precedence over model-level configuration.
+        const mergedOptions: ModelFindOptions = { ...options };
+        if (shardKey && mergedOptions.shardKey === undefined) {
+            mergedOptions.shardKey = shardKey;
+        }
+        if (shardId && mergedOptions.shardId === undefined) {
+            mergedOptions.shardId = shardId;
+        }
         if (options.client?.query) {
             const result = await options.client.query(text, values);
             return { rows: (result?.rows ?? []) as QueryResultRow[] };
@@ -39,7 +52,7 @@ export function createModel({
         if (!query) {
             throw new TypeError("No query function available");
         }
-        const result = await query(text, values, options);
+        const result = await query(text, values, mergedOptions);
         return { rows: (result?.rows ?? []) as QueryResultRow[] };
     }
 

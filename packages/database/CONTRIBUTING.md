@@ -103,16 +103,24 @@ packages/database/
 │       ├── id.ts                # id(), bigIntId(), uuid()
 │       └── timestamp.ts         # timestamp()
 │
+│   └── sharding/                  # Database sharding
+│       ├── shard-manager.ts     # Per-shard pool lifecycle
+│       ├── shard-router.ts      # Shard key routing
+│       ├── strategies.ts        # Hash and directory strategies
+│       ├── index.ts             # Sharding barrel exports
+│       └── errors.ts            # Sharding error classes
+│
 ├── test/                        # Tests (vitest), mirrors src/ structure
 │   ├── client/                  # client, transaction, retry, batch, check, stream, cursor, shutdown
+│   ├── config/                  # config loading, idleTransactionTimeout validation
 │   ├── query/                   # QueryBuilder
 │   ├── schema/                  # migrator, schema manager
 │   ├── model/                   # model CRUD
 │   ├── json-serialization/      # encode/decode utilities
 │   ├── errors/                  # error classifiers
-│   ├── config/                  # config loading
 │   ├── database.test.js         # createDatabase() composition surface
 │   └── edge-cases.test.js       # edge, extreme, behaviour & real-world scenarios
+│   └── sharding/                  # sharding config, routing, pool lifecycle
 ├── dist/                        # Compiled output (git-ignored, auto-generated)
 ├── examples/                    # Runnable usage examples
 ├── ARCHITECTURE.md              # Internal design reference
@@ -244,6 +252,7 @@ npx vitest run test/client               # one directory
 | Schema DDL | `test/schema/schema.test.js` |
 | Streaming / cursor | `test/client/stream.test.js`, `test/client/cursor.test.js` |
 | Edge / extreme / real-world | `test/edge-cases.test.js` |
+| Sharding (all 9 strategies + unified API) | `test/sharding/config.test.js`, `test/sharding/execution.test.js`, `test/sharding/strategies.test.js` |
 
 ---
 
@@ -283,6 +292,35 @@ npx vitest run test/client               # one directory
 1. Add the env variable mapping in `loadDatabaseConfig()` in `src/client/config.ts`
 2. Add tests in `test/config/config.test.js`
 3. Update the configuration table in README.md
+
+### Configuring idleTransactionTimeout
+
+The `idleTransactionTimeout` option is a nested object on `DatabaseConfig`:
+
+```typescript
+interface IdleTransactionTimeout {
+    enabled: boolean;
+    timeout?: number;
+}
+```
+
+1. Add validation in `validateIdleTransactionTimeout()` in `src/client/config.ts`
+2. Add option-to-pg-options merging in `mergeIdleTransactionOptions()` in `src/client/config.ts`
+3. Add tests in `test/config/idle-transaction-timeout.test.js`
+4. Update README.md configuration examples
+5. Update ARCHITECTURE.md if the connection lifecycle changes
+
+### Adding a Sharding Strategy
+
+1. Implement the `ShardStrategy` interface in `src/sharding/strategies.ts`
+2. Register the strategy in the `STRATEGY_REGISTRY` map in `src/sharding/strategies.ts`
+3. Add the strategy name to the `ShardStrategyName` union in `src/types.ts`
+4. Add strategy-specific config interface to the `ShardingConfig` discriminated union in `src/types.ts`
+5. Handle strategy-specific options in `createDatabase()` in `src/database.ts`
+6. Export the strategy class from `src/sharding/index.ts` and `src/index.ts`
+7. Add comprehensive tests in `test/sharding/strategies.test.js`
+8. Update README.md sharding section
+9. Update ARCHITECTURE.md module map
 
 ### Adding a Schema Operation
 

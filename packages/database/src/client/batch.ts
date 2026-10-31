@@ -81,7 +81,16 @@ export function createBatch({
         if (options.client) {
             return options.client.query(sqlText, params);
         }
-        return query(sqlText, params, options.queryOptions);
+        // Merge shard routing from batch options into query options so the
+        // unified executor routes the batch to the correct shard.
+        const mergedOptions: Record<string, unknown> = { ...(options.queryOptions ?? {}) };
+        if (options.shardKey && mergedOptions.shardKey === undefined) {
+            mergedOptions.shardKey = options.shardKey;
+        }
+        if (options.shardId && mergedOptions.shardId === undefined) {
+            mergedOptions.shardId = options.shardId;
+        }
+        return query(sqlText, params, mergedOptions);
     }
 
     async function insertMany(
